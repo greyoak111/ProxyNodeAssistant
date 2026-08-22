@@ -1,8 +1,11 @@
 # Local build products and downloaded toolchains
 .build-tools/
 dist/
-assets/*.tar.gz
 package-stage-*/
+
+# The versioned toolkit under assets/ is a required go:embed build input.
+# Ignore only ad-hoc or temporary archives, never the official embedded asset.
+assets/*.tmp.tar.gz
 
 # Local audits, reports, and runtime data
 audit-*/

@@ -50,7 +50,9 @@ try {
     $sourceRunbook = Join-Path $Source "runbook"
     New-Item -ItemType Directory -Force -Path $sourceRunbook | Out-Null
     Copy-Item -LiteralPath (Join-Path $Root "runbook\proxy-runbook-v$ToolkitVersion") -Destination $sourceRunbook -Recurse
-    New-Item -ItemType Directory -Force -Path (Join-Path $Source "assets"), (Join-Path $Source "dist") | Out-Null
+    $sourceAssets = Join-Path $Source "assets"
+    New-Item -ItemType Directory -Force -Path $sourceAssets, (Join-Path $Source "dist") | Out-Null
+    Copy-Item -LiteralPath $toolkit -Destination $sourceAssets
 
     $portableZip = Join-Path $Output "ProxyNodeAssistant-v$Version-便携包.zip"
     $sourceZip = Join-Path $Output "ProxyNodeAssistant-v$Version-source.zip"

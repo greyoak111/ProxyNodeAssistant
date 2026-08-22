@@ -1,4 +1,6 @@
 * text=auto
+.gitattributes text eol=lf
+.gitignore text eol=lf
 
 # Linux runbook scripts must stay LF even after a Windows checkout.
 *.sh text eol=lf
