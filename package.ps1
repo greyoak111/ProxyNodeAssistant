@@ -25,25 +25,26 @@ try {
     $beginnerGuide = Join-Path $Root "ProxyNodeAssistant-v$Version-从零部署教程.md"
     $notes = Join-Path $Root "ProxyNodeAssistant-v$Version-更新说明.md"
     $readme = Join-Path $Root "README.md"
+    $license = Join-Path $Root "LICENSE"
     $androidManual = Join-Path $Root "ANDROID.md"
     $androidManualName = "ProxyNodeAssistant-v$Version-android-manual-zh-CN.md"
     $androidApk = Join-Path $Root "android\dist\ProxyNodeAssistant-v$Version-android-universal.apk"
     $iconPng = Join-Path $Root "gui\ProxyNodeAssistant-v$Version-app-icon.png"
     $iconIco = Join-Path $Root "gui\ProxyNodeAssistant-v$Version.ico"
-    foreach ($required in @($executables + @($preview, $workflowPreview, $toolkit, $manual, $beginnerGuide, $notes, $readme, $androidManual, $iconPng, $iconIco))) {
+    foreach ($required in @($executables + @($preview, $workflowPreview, $toolkit, $manual, $beginnerGuide, $notes, $readme, $license, $androidManual, $iconPng, $iconIco))) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required release input is missing: $required"
         }
     }
 
-    Copy-Item -LiteralPath ($executables + @($preview, $workflowPreview, $toolkit, $manual, $beginnerGuide, $notes, $readme, $iconPng, $iconIco)) -Destination $Portable
+    Copy-Item -LiteralPath ($executables + @($preview, $workflowPreview, $toolkit, $manual, $beginnerGuide, $notes, $readme, $license, $iconPng, $iconIco)) -Destination $Portable
     Copy-Item -LiteralPath $androidManual -Destination (Join-Path $Portable $androidManualName)
     if (Test-Path -LiteralPath $androidApk -PathType Leaf) {
         Copy-Item -LiteralPath $androidApk -Destination $Portable
     }
 
     Get-ChildItem -LiteralPath $Root -File | Where-Object {
-        ($_.Extension -in @(".go", ".ps1", ".bat") -or $_.Name -eq "go.mod") -or
+        ($_.Extension -in @(".go", ".ps1", ".bat") -or $_.Name -in @("go.mod", "LICENSE")) -or
         ($_.Extension -eq ".md" -and $_.Name -notmatch '^ProxyNodeAssistant-v0\.[0-8]')
     } | Copy-Item -Destination $Source
     $sourceGui = Join-Path $Source "gui"
@@ -125,8 +126,20 @@ try {
     }
     $sumPath = Join-Path $Output "SHA256SUMS-v$Version.txt"
     [IO.File]::WriteAllText($sumPath, (($hashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+    $githubAssetNames = @{
+        "ProxyNodeAssistant-v$Version-便携包.zip" = "ProxyNodeAssistant-v$Version-portable.zip"
+        "ProxyNodeAssistant-v$Version-更新说明.md" = "ProxyNodeAssistant-v$Version-release-notes-zh-CN.md"
+        "ProxyNodeAssistant-v$Version-从零部署教程.md" = "ProxyNodeAssistant-v$Version-beginner-guide-zh-CN.md"
+        "ProxyNodeAssistant-v$Version-完整使用说明书.md" = "ProxyNodeAssistant-v$Version-manual-zh-CN.md"
+    }
+    $githubHashLines = foreach ($name in $releaseNames) {
+        $path = Join-Path $Output $name
+        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $githubName = if ($githubAssetNames.ContainsKey($name)) { $githubAssetNames[$name] } else { $name }
+        "$hash  $githubName"
+    }
     $githubSumPath = Join-Path $Output "SHA256SUMS-GITHUB-v$Version.txt"
-    [IO.File]::WriteAllText($githubSumPath, (($hashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($githubSumPath, (($githubHashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
     $releasePaths = @($releaseNames | ForEach-Object { Join-Path $Output $_ }) + @($sumPath, $githubSumPath)
     Get-Item -LiteralPath $releasePaths | Select-Object Name, Length
 } finally {
