@@ -29,6 +29,8 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.util.Collections
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 
 data class SessionCredential(val mode: AuthMode, val password: String? = null)
@@ -88,14 +90,23 @@ class SshEngine(
 
         try {
             connection.connect(verifier, 12_000, 25_000)
-            val authenticated = when (credential.mode) {
-                AuthMode.TEMPORARY_PASSWORD -> authenticatePassword(connection, target.user, requireNotNull(credential.password))
+            when (credential.mode) {
+                AuthMode.TEMPORARY_PASSWORD -> {
+                    val authenticated = authenticatePassword(connection, target.user, requireNotNull(credential.password))
+                    check(authenticated) {
+                        if (language == Language.ZH) "SSH 服务器拒绝了 ${target.id} 的密码。密码区分大小写；粘贴时请确认没有多余字符，也可改用已绑定密钥。"
+                        else "The SSH server rejected the password for ${target.id}. Passwords are case-sensitive; check pasted characters or use a bound key."
+                    }
+                }
                 AuthMode.MANAGED_KEY -> {
                     val key = managedKeys.get(target.id) ?: error(if (language == Language.ZH) "${target.id} 没有已绑定的 SSH 密钥" else "No bound SSH key for ${target.id}")
-                    connection.authenticateWithPublicKey(target.user, key.privateKeyOpenSsh.toCharArray(), null)
+                    val authenticated = connection.authenticateWithPublicKey(target.user, key.privateKeyOpenSsh.toCharArray(), null)
+                    check(authenticated) {
+                        if (language == Language.ZH) "SSH 服务器拒绝了 ${target.id} 的已绑定密钥；请检查远端 authorized_keys，或改用临时密码后重新绑定。"
+                        else "The SSH server rejected the bound key for ${target.id}; check authorized_keys or rebind using a temporary password."
+                    }
                 }
             }
-            check(authenticated) { if (language == Language.ZH) "${target.id} 的 SSH 身份认证失败" else "SSH authentication failed for ${target.id}" }
             candidate?.let(hostKeys::put)
             SshHandle(connection, target, credential.password, prompts, language)
         } catch (error: Throwable) {
@@ -123,6 +134,11 @@ class SshHandle internal constructor(
 ) : Closeable {
     private val forwards = Collections.synchronizedList(mutableListOf<LocalPortForwarder>())
     private var cachedSudoPassword: String? = loginPassword
+    private val keepAlive = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "pna-ssh-keepalive").apply { isDaemon = true }
+    }.apply {
+        scheduleWithFixedDelay({ runCatching { connection.sendIgnorePacket() } }, 15, 15, TimeUnit.SECONDS)
+    }
 
     suspend fun exec(
         command: String,
@@ -231,6 +247,7 @@ class SshHandle internal constructor(
     }
 
     override fun close() {
+        keepAlive.shutdownNow()
         synchronized(forwards) { forwards.toList().forEach { runCatching { it.close() } }; forwards.clear() }
         connection.close()
     }

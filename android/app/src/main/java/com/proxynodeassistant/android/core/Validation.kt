@@ -24,6 +24,10 @@ object Validation {
 
     fun validEmail(value: String) = emailPattern.matches(value.trim())
 
+    // Password managers and chat apps commonly append CR/LF when copying a
+    // single-line secret. Preserve every other character, including spaces.
+    fun singleLineSecret(value: String): String = value.replace("\r", "").replace("\n", "")
+
     fun normalizeTemplate(value: String): String? = when (val answer = value.trim().lowercase()) {
         "", "r", "random" -> "random"
         "a", "auto", "stable" -> "auto"

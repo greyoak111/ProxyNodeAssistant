@@ -105,27 +105,31 @@ class WorkflowRunner(
                 PromptKind.YES_NO,
                 defaultValue = "n",
             )
-            if (answer.equals("y", true) || answer.equals("yes", true)) bindNewKey(handle)
+            if (answer.equals("y", true) || answer.equals("yes", true)) return bindNewKey(handle)
         }
         return handle
     }
 
-    private suspend fun bindNewKey(handle: SshHandle) {
+    private suspend fun bindNewKey(handle: SshHandle): SshHandle {
         val record = managedKeys.generate(handle.target.id)
         installPublicKey(handle, record.publicKeyOpenSsh)
         managedKeys.put(record)
+        var verified: SshHandle? = null
         try {
-            ssh.connect(handle.target, SessionCredential(AuthMode.MANAGED_KEY), language).use { verifier ->
-                val result = verifier.exec("printf SSH_KEY_OK", root = false)
-                check(result.ok && result.stdout.trim() == "SSH_KEY_OK") { "new SSH key did not verify" }
-            }
+            verified = ssh.connect(handle.target, SessionCredential(AuthMode.MANAGED_KEY), language)
+            val result = verified.exec("printf SSH_KEY_OK", root = false)
+            check(result.ok && result.stdout.trim() == "SSH_KEY_OK") { "new SSH key did not verify" }
         } catch (error: Throwable) {
+            runCatching { verified?.close() }
             managedKeys.delete(handle.target.id, KeyStatus.BOUND)
             removePublicKey(handle, record.publicKeyOpenSsh)
             throw IllegalStateException("New key verification failed; the key was rolled back", error)
         }
         _state.update { it.copy(secretHandoff = "SSH_PRIVATE_KEY\n${record.privateKeyOpenSsh}\nSSH_PUBLIC_KEY\n${record.publicKeyOpenSsh}") }
         log("SSH_KEY_BOUND_AND_VERIFIED")
+        log("SSH_SESSION_SWITCHED_TO_MANAGED_KEY")
+        runCatching { handle.close() }
+        return checkNotNull(verified)
     }
 
     private suspend fun execute(code: String, handle: SshHandle): Boolean = when (code) {

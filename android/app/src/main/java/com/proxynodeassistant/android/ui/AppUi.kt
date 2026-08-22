@@ -1,6 +1,9 @@
 package com.proxynodeassistant.android.ui
 
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -93,6 +96,7 @@ import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -260,11 +264,15 @@ private fun ConnectionDialog(
     onDismiss: () -> Unit,
     onLaunch: (NodeTarget, AuthMode, String?) -> Unit,
 ) {
+    val context = LocalContext.current
     var host by rememberSaveable { mutableStateOf(targets.firstOrNull()?.host.orEmpty()) }
     var user by rememberSaveable { mutableStateOf(targets.firstOrNull()?.user ?: "root") }
     var port by rememberSaveable { mutableStateOf((targets.firstOrNull()?.port ?: 22).toString()) }
     var mode by rememberSaveable { mutableStateOf(AuthMode.MANAGED_KEY) }
     var password by remember { mutableStateOf("") }
+    var showPassword by rememberSaveable { mutableStateOf(false) }
+    val vpnActive = remember { isVpnActive(context) }
+    var vpnAcknowledged by rememberSaveable { mutableStateOf(false) }
     val valid = Validation.validHost(host) && Validation.validUser(user) && port.toIntOrNull()?.let(Validation::validPort) == true
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(), color = Ink) {
@@ -284,6 +292,20 @@ private fun ConnectionDialog(
                     }
                     Text(if (language == Language.ZH) "长期 key 按 user@host:port 独立查找；若不存在，会先询问一次密码，再明确询问是否绑定。" else "Managed keys are isolated by user@host:port. If absent, one password is requested before an explicit bind prompt.", color = TextMuted, fontSize = 12.sp)
 
+                    if (vpnActive) {
+                        OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(2.dp), border = BorderStroke(1.dp, Amber), colors = CardDefaults.outlinedCardColors(containerColor = Panel)) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(uiText(language, "检测到 Android VPN 正在运行", "ANDROID VPN DETECTED"), color = Amber, fontWeight = FontWeight.Bold)
+                                Text(
+                                    uiText(language, "若当前 VPN/代理正通过目标 VPS，施工时重启 Xray、WARP 或网络服务会切断自己的 SSH。请先断开该 VPN；若确认与目标无关，再继续。", "If this VPN/proxy uses the target VPS, restarting Xray, WARP, or networking can cut off its own SSH session. Disconnect it first, or continue only if it is unrelated."),
+                                    color = TextMuted,
+                                    fontSize = 12.sp,
+                                )
+                                FilterChip(selected = vpnAcknowledged, onClick = { vpnAcknowledged = !vpnAcknowledged }, label = { Text(uiText(language, "我已断开或确认与目标无关", "DISCONNECTED / UNRELATED")) })
+                            }
+                        }
+                    }
+
                     if (targets.isNotEmpty()) {
                         SectionLabel(uiText(language, "最近使用的节点", "RECENT TARGETS"))
                         targets.take(8).forEach { target ->
@@ -302,12 +324,21 @@ private fun ConnectionDialog(
                         OutlinedTextField(port, { port = it.filter(Char::isDigit).take(5) }, Modifier.weight(1f), label = { Text(uiText(language, "SSH 端口", "PORT")) }, singleLine = true)
                     }
                     if (mode == AuthMode.TEMPORARY_PASSWORD) {
-                        OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), label = { Text(uiText(language, "SSH 密码（不会保存）", "SSH PASSWORD (NOT SAVED)")) }, visualTransformation = PasswordVisualTransformation(), singleLine = true)
+                        OutlinedTextField(
+                            password,
+                            { password = Validation.singleLineSecret(it) },
+                            Modifier.fillMaxWidth(),
+                            label = { Text(uiText(language, "SSH 密码（不会保存）", "SSH PASSWORD (NOT SAVED)")) },
+                            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = { TextButton(onClick = { showPassword = !showPassword }) { Text(uiText(language, if (showPassword) "隐藏" else "显示", if (showPassword) "HIDE" else "SHOW")) } },
+                            supportingText = { Text(uiText(language, "粘贴时自动移除回车/换行，其他字符原样保留", "Pasted CR/LF is removed; all other characters are preserved")) },
+                            singleLine = true,
+                        )
                     }
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = { onLaunch(NodeTarget(host.trim(), user.trim(), port.toInt()), mode, password.takeIf { it.isNotBlank() }) },
-                        enabled = valid && (mode == AuthMode.MANAGED_KEY || password.isNotBlank()),
+                        enabled = valid && (mode == AuthMode.MANAGED_KEY || password.isNotBlank()) && (!vpnActive || vpnAcknowledged),
                         modifier = Modifier.fillMaxWidth().height(54.dp),
                         shape = RoundedCornerShape(2.dp),
                     ) { Text(if (language == Language.ZH) "建立安全会话并执行" else "ESTABLISH SESSION + EXECUTE", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) }
@@ -316,6 +347,11 @@ private fun ConnectionDialog(
         }
     }
 }
+
+private fun isVpnActive(context: Context): Boolean = runCatching {
+    val manager = context.getSystemService(ConnectivityManager::class.java)
+    manager.getNetworkCapabilities(manager.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+}.getOrDefault(false)
 
 @Composable
 private fun WorkflowScreen(state: WorkflowUiState, prompt: WorkflowPrompt?, tunnelUrl: String?, language: Language, viewModel: AppViewModel) {

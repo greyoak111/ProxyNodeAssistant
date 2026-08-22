@@ -28,4 +28,8 @@ class ValidationTest {
         assertEquals("15", Validation.normalizeTemplate("15"))
         assertNull(Validation.normalizeTemplate("16"))
     }
+
+    @Test fun pastedSingleLineSecretsDropOnlyLineBreaks() {
+        assertEquals(" passwordwith spaces ", Validation.singleLineSecret(" password\r\nwith spaces \n"))
+    }
 }

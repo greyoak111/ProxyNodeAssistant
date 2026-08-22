@@ -11,7 +11,7 @@ android {
         applicationId = "com.proxynodeassistant.android"
         minSdk = 24
         targetSdk = 36
-        versionCode = 901
+        versionCode = 902
         versionName = "0.9.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
