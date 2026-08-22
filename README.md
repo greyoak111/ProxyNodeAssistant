@@ -151,6 +151,8 @@ UpdateHostKeys=no
 
 ## 使用
 
+第一次购买 VPS、域名或使用 Cloudflare 的读者，请先按 [v0.9.0 从零部署教程](ProxyNodeAssistant-v0.9.0-从零部署教程.md) 完成 VPS 选择、Cloudflare Nameserver、灰云 A 记录、端口检查和首次安装。教程包含当前可核实的微信/支付宝/银联服务商表，以及 DNS、ACME、SSH、订阅和面板常见故障。
+
 运行：
 
 ```text

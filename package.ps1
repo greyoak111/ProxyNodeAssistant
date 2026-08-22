@@ -22,17 +22,25 @@ try {
     $workflowPreview = Join-Path $Root "dist\ProxyNodeAssistant-v$Version-workflow-preview.png"
     $toolkit = Join-Path $Root "assets\proxy-runbook-toolkit-v$ToolkitVersion.tar.gz"
     $manual = Join-Path $Root "ProxyNodeAssistant-v$Version-完整使用说明书.md"
+    $beginnerGuide = Join-Path $Root "ProxyNodeAssistant-v$Version-从零部署教程.md"
     $notes = Join-Path $Root "ProxyNodeAssistant-v$Version-更新说明.md"
     $readme = Join-Path $Root "README.md"
+    $androidManual = Join-Path $Root "ANDROID.md"
+    $androidManualName = "ProxyNodeAssistant-v$Version-android-manual-zh-CN.md"
+    $androidApk = Join-Path $Root "android\dist\ProxyNodeAssistant-v$Version-android-universal.apk"
     $iconPng = Join-Path $Root "gui\ProxyNodeAssistant-v$Version-app-icon.png"
     $iconIco = Join-Path $Root "gui\ProxyNodeAssistant-v$Version.ico"
-    foreach ($required in @($executables + @($preview, $workflowPreview, $toolkit, $manual, $notes, $readme, $iconPng, $iconIco))) {
+    foreach ($required in @($executables + @($preview, $workflowPreview, $toolkit, $manual, $beginnerGuide, $notes, $readme, $androidManual, $iconPng, $iconIco))) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required release input is missing: $required"
         }
     }
 
-    Copy-Item -LiteralPath ($executables + @($preview, $workflowPreview, $toolkit, $manual, $notes, $readme, $iconPng, $iconIco)) -Destination $Portable
+    Copy-Item -LiteralPath ($executables + @($preview, $workflowPreview, $toolkit, $manual, $beginnerGuide, $notes, $readme, $iconPng, $iconIco)) -Destination $Portable
+    Copy-Item -LiteralPath $androidManual -Destination (Join-Path $Portable $androidManualName)
+    if (Test-Path -LiteralPath $androidApk -PathType Leaf) {
+        Copy-Item -LiteralPath $androidApk -Destination $Portable
+    }
 
     Get-ChildItem -LiteralPath $Root -File | Where-Object {
         ($_.Extension -in @(".go", ".ps1", ".bat") -or $_.Name -eq "go.mod") -or
@@ -47,6 +55,19 @@ try {
         Copy-Item -LiteralPath (Join-Path $Root "gui\$guiFile") -Destination $sourceGui
     }
     Copy-Item -LiteralPath (Join-Path $Root "scripts") -Destination $Source -Recurse
+    $sourceAndroid = Join-Path $Source "android"
+    $sourceAndroidApp = Join-Path $sourceAndroid "app"
+    New-Item -ItemType Directory -Force -Path $sourceAndroid, $sourceAndroidApp | Out-Null
+    foreach ($androidRootFile in @(
+        "settings.gradle.kts", "gradle.properties", "build.gradle.kts",
+        "build-android.ps1", "build-signed-release.ps1"
+    )) {
+        Copy-Item -LiteralPath (Join-Path $Root "android\$androidRootFile") -Destination $sourceAndroid
+    }
+    foreach ($androidAppFile in @("build.gradle.kts", "proguard-rules.pro")) {
+        Copy-Item -LiteralPath (Join-Path $Root "android\app\$androidAppFile") -Destination $sourceAndroidApp
+    }
+    Copy-Item -LiteralPath (Join-Path $Root "android\app\src") -Destination $sourceAndroidApp -Recurse
     $sourceRunbook = Join-Path $Source "runbook"
     New-Item -ItemType Directory -Force -Path $sourceRunbook | Out-Null
     Copy-Item -LiteralPath (Join-Path $Root "runbook\proxy-runbook-v$ToolkitVersion") -Destination $sourceRunbook -Recurse
@@ -72,13 +93,19 @@ try {
         $true
     )
 
-    Copy-Item -LiteralPath ($executables + @($preview, $workflowPreview, $toolkit, $manual, $notes, $iconPng, $iconIco)) -Destination $Output -Force
+    Copy-Item -LiteralPath ($executables + @($preview, $workflowPreview, $toolkit, $manual, $beginnerGuide, $notes, $iconPng, $iconIco)) -Destination $Output -Force
+    Copy-Item -LiteralPath $androidManual -Destination (Join-Path $Output $androidManualName) -Force
+    if (Test-Path -LiteralPath $androidApk -PathType Leaf) {
+        Copy-Item -LiteralPath $androidApk -Destination $Output -Force
+    }
 
     $releaseNames = @(
         "proxy-runbook-toolkit-v$ToolkitVersion.tar.gz",
         "ProxyNodeAssistant-v$Version-便携包.zip",
         "ProxyNodeAssistant-v$Version-更新说明.md",
+        "ProxyNodeAssistant-v$Version-从零部署教程.md",
         "ProxyNodeAssistant-v$Version-完整使用说明书.md",
+        $androidManualName,
         "ProxyNodeAssistant-v$Version-source.zip",
         "ProxyNodeAssistant-v$Version-win64.exe",
         "ProxyNodeAssistant-v$Version-win32.exe",
@@ -88,6 +115,9 @@ try {
         "ProxyNodeAssistant-v$Version-app-icon.png",
         "ProxyNodeAssistant-v$Version.ico"
     )
+    if (Test-Path -LiteralPath $androidApk -PathType Leaf) {
+        $releaseNames += "ProxyNodeAssistant-v$Version-android-universal.apk"
+    }
     $hashLines = foreach ($name in $releaseNames) {
         $path = Join-Path $Output $name
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -95,7 +125,9 @@ try {
     }
     $sumPath = Join-Path $Output "SHA256SUMS-v$Version.txt"
     [IO.File]::WriteAllText($sumPath, (($hashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
-    $releasePaths = @($releaseNames | ForEach-Object { Join-Path $Output $_ }) + @($sumPath)
+    $githubSumPath = Join-Path $Output "SHA256SUMS-GITHUB-v$Version.txt"
+    [IO.File]::WriteAllText($githubSumPath, (($hashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+    $releasePaths = @($releaseNames | ForEach-Object { Join-Path $Output $_ }) + @($sumPath, $githubSumPath)
     Get-Item -LiteralPath $releasePaths | Select-Object Name, Length
 } finally {
     $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'

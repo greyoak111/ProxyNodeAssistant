@@ -63,6 +63,8 @@ ProxyNodeAssistant 是一个面向 Windows 用户的双语节点部署、维护�
 
 ## 3. 使用前准备
 
+如果尚未购买 VPS/域名，或不熟悉 Cloudflare Nameserver 与灰云 A 记录，请先完整阅读 [ProxyNodeAssistant v0.9.0 从零部署教程](ProxyNodeAssistant-v0.9.0-从零部署教程.md)，再从本章继续。
+
 ### 3.1 Windows 端
 
 建议准备：
