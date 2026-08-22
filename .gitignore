@@ -1,7 +1,18 @@
 # Local build products and downloaded toolchains
 .build-tools/
+.android-tools/
 dist/
 package-stage-*/
+
+# Android local state and build products
+android/.gradle/
+android/local.properties
+android/**/build/
+android/.idea/
+android/*.jks
+android/*.keystore
+android/captures/
+android/dist/
 
 # The versioned toolkit under assets/ is a required go:embed build input.
 # Ignore only ad-hoc or temporary archives, never the official embedded asset.

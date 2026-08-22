@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.ProxyNodeAssistant" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#071016</item>
+        <item name="android:navigationBarColor">#071016</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

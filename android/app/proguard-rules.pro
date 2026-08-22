@@ -1,0 +1,5 @@
+-keep class com.trilead.ssh2.** { *; }
+-dontwarn org.slf4j.**
+-dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
+-dontwarn com.google.errorprone.annotations.Immutable
+-dontwarn javax.annotation.Nullable

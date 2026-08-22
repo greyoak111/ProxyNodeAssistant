@@ -1,5 +1,7 @@
 # ProxyNodeAssistant v0.9.0
 
+> Android 原生完整移植已经加入本仓库：Kotlin + Jetpack Compose 全图形界面，不依赖 Termux，不弹终端，复用同一份 proxy-runbook v0.9.0。安装、认证模式、Host Key、面板隧道、密钥仓、15 套伪装、备份/报告、性能档、流量查询和全量拆除均在应用内完成。构建与使用见 [ANDROID.md](ANDROID.md)。
+
 当前 v0.9.0 构建包含 Nginx reload/ACME 预检竞态热修复：随机 challenge 会在 reload 前创建，随后等待本机和公网均稳定读取成功，失败退出时也会自动删除探针。
 
 当前构建同时修复 24443 图形验货死锁：远端人工确认使用带换行的 Base64 GUI 提示帧，Windows 日志剥离 ANSI；安全停止后重跑会复用已有测试 shadow。递增 build revision 让 `[1]` 能更新同版本旧构建并拒绝同版本降级。
