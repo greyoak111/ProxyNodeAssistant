@@ -4,7 +4,7 @@
 
 Android 版是原生 Kotlin + Jetpack Compose 应用，不是网页壳、Termux 脚本或远程桌面。它在手机内完成 SSH 认证、Host Key 校验、SCP 传输、交互提示、日志、凭据交接和 127.0.0.1 面板隧道，远端施工继续复用与 Windows 正式版完全相同的 `proxy-runbook v0.9.0`。
 
-最低 Android 7.0（API 24），面向 Android 16（target API 36）。APK 是 universal 包，可安装在常见 ARM64、ARMv7 和 x86_64 Android 设备上；SSH 部分为纯 Java/Kotlin，不要求 root。
+最低 Android 7.0（API 24），面向 Android 16（target API 36）。APK 是 universal 包，可安装在常见 ARM64、ARMv7 和 x86_64 Android 设备上；SSH 部分为纯 Java/Kotlin，不要求 root。本次更新仍显示版本 `0.9.0`，内部 `versionCode=901`，可直接覆盖安装先前的 0.9.0 安卓构建。
 
 ## 2. 安装
 
@@ -24,7 +24,7 @@ APK 不要求存储权限。报告、救援包和加密密钥备份通过 Androi
 
 首次遇到一台 VPS，应用会显示服务器公开 Host Key 的 SHA-256 指纹。与厂商控制台核对后输入大写 `TRUST`。以后 Host Key 发生变化时不会自动接受，必须在确认服务器确实重装或换钥后输入不同的 `REPLACE`。只有密码/密钥认证和加密握手都成功后，新的 Host Key 才会保存。
 
-最近目标只记录主机名/IP、SSH 用户、端口、标签和最后使用时间，不记录密码。可在 `NODES` 中单独删除或全部清空。
+最近目标只记录主机名/IP、SSH 用户、端口、标签和最后使用时间，不记录密码。可在“节点”页单独删除或全部清空。
 
 ## 4. 功能矩阵
 
@@ -70,7 +70,7 @@ APK 不要求存储权限。报告、救援包和加密密钥备份通过 Androi
 
 若要防止卸载应用或手机损坏造成丢失：
 
-1. 进入 `KEYS`，点 `EXPORT`。
+1. 进入“密钥”页，点“导出加密备份”。
 2. 输入并确认至少 12 位的独立备份口令。
 3. 用系统文件选择器保存 `.pnakeys`。
 4. 把文件和口令分开保管。
@@ -81,13 +81,26 @@ APK 不要求存储权限。报告、救援包和加密密钥备份通过 Androi
 
 ## 7. KiwiVM 流量
 
-KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要输入网站账户密码。API Key 默认仅用于本次查询；勾选“成功后加密保存”时，只有 API 返回成功后才进入 Android Keystore 加密仓。再次查询同一 VEID 时可留空密钥框使用存档，也可点 `FORGET KEY` 删除。
+KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要输入网站账户密码。API Key 默认仅用于本次查询；勾选“成功后加密保存”时，只有 API 返回成功后才进入 Android Keystore 加密仓。再次查询同一 VEID 时可留空密钥框使用存档，也可点“删除已存密钥”撤销凭据。
+
+每次成功查询都会另外保存一份**不含 API Key**的流量快照。“已保存的节点”会显示上次已用流量、额度、百分比和查询时间：
+
+- “离线查看”：只读取本机非秘密快照，不联网，也不会读取 API Key。
+- “联网刷新”：仅在该 VEID 已保存 API Key 时可用；会请求厂商 API 并更新快照。
+- “填入下方”：把 VEID 带入手动查询区，可临时输入新 Key。
+- “删除记录”：同时删除该 VEID 的非秘密快照和已保存 Key，并要求确认。
+
+旧构建中已经保存过 Key、但没有流量快照的节点也会列出；先点“联网刷新”即可生成可离线查看的快照。
 
 请求使用 HTTPS POST 发往 `https://api.64clouds.com/v1/getServiceInfo`，API Key 不进入 URL、普通日志或错误摘要。流量结果应用厂商返回的 `monthly_data_multiplier`，显示已用/额度、百分比、重置时间、暂停与策略状态。阈值只在本人查询时判断，不做高频后台轮询。
 
-若在本地页启用 10808，本应用的服务商 API 请求走 `127.0.0.1:10808`；先点 `CHECK PORT` 确认真有 HTTP 代理监听。该开关不修改 Android 全局代理，也不会影响 SSH。
+若在“本地”页启用 10808，本应用的服务商 API 请求走 `127.0.0.1:10808`；先点“检查端口”确认真有 HTTP 代理监听。该开关不修改 Android 全局代理，也不会影响 SSH。
 
-## 8. 失败关闭规则
+## 8. 中文界面
+
+应用会随右上角语言开关在中文和英文之间切换。本构建补齐了底部导航、SSH Host Key 确认、密码/密钥认证、远端交互提示、工作流状态、密钥备份、面板隧道、服务商流量和错误摘要的中文文本。`SSH`、`Host Key`、`VEID`、`API Key`、`TRUST`、`REPLACE` 等协议名或必须原样输入的安全确认词仍保留英文，避免误操作。
+
+## 9. 失败关闭规则
 
 - 任一远端命令非零退出：不复制凭据、不打开面板、不继续后续步骤。
 - 交接单没有开始/结束标记、运行标记或有效字段：拒绝。
@@ -96,7 +109,7 @@ KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要�
 - 新 SSH key 未通过独立登录验证：撤销新公钥并恢复旧绑定。
 - 点击停止：关闭当前 SSH/提示等待，不把 EOF 当成空输入反复提交。
 
-## 9. 权限与本地数据
+## 10. 权限与本地数据
 
 - `INTERNET`：SSH、SCP、DNS 与用户主动发起的 KiwiVM HTTPS 查询。
 - `POST_NOTIFICATIONS` / 前台服务：保持面板隧道，并提供显式停止入口。
@@ -104,7 +117,7 @@ KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要�
 - `allowBackup=false`，系统备份不会上传 Host Key、SSH 私钥或服务商 API Key。
 - 报告和救援包先存应用私有目录，只有本人点击 `EXPORT / SHARE` 后才交给选定应用。
 
-## 10. 源码构建
+## 11. 源码构建
 
 在仓库根目录的 PowerShell 中运行：
 
@@ -129,6 +142,6 @@ KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要�
 android\dist\ProxyNodeAssistant-v0.9.0-android-universal.apk
 ```
 
-## 11. 隐私发布检查
+## 12. 隐私发布检查
 
 发布 APK 和源码不得包含真实 VPS IP、域名、邮箱、密码、API Key、Token 或私钥。APK 内资产名固定为 `proxy-runbook-toolkit-v0.9.0.tgz`（上传到远端时恢复标准 `.tar.gz` 名），构建前应校验其 SHA-256 与正式 Windows 包一致，并对源码、解包 APK 和内嵌 tar 做二次扫描。

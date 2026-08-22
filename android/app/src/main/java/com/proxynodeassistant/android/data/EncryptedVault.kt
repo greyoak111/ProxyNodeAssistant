@@ -59,4 +59,5 @@ class EncryptedVault(context: Context) {
 
     fun remove(name: String) = preferences.edit().remove(name).apply()
     fun contains(name: String): Boolean = preferences.contains(name)
+    fun names(prefix: String): List<String> = preferences.all.keys.filter { it.startsWith(prefix) }.sorted()
 }

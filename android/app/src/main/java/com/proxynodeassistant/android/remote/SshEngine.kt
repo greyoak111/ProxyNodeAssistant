@@ -6,6 +6,7 @@ import com.proxynodeassistant.android.data.HostKeyRepository
 import com.proxynodeassistant.android.data.ManagedKeyRepository
 import com.proxynodeassistant.android.model.AuthMode
 import com.proxynodeassistant.android.model.HostKeyRecord
+import com.proxynodeassistant.android.model.Language
 import com.proxynodeassistant.android.model.NodeTarget
 import com.proxynodeassistant.android.model.PromptKind
 import com.proxynodeassistant.android.model.RemoteResult
@@ -37,7 +38,7 @@ class SshEngine(
     private val managedKeys: ManagedKeyRepository,
     private val prompts: PromptBroker,
 ) {
-    suspend fun connect(target: NodeTarget, credential: SessionCredential): SshHandle = withContext(Dispatchers.IO) {
+    suspend fun connect(target: NodeTarget, credential: SessionCredential, language: Language = Language.ZH): SshHandle = withContext(Dispatchers.IO) {
         var candidate: HostKeyRecord? = null
         val connection = Connection(target.host, target.port)
         val verifier = ServerHostKeyVerifier { _, _, algorithm, serverHostKey ->
@@ -50,18 +51,26 @@ class SshEngine(
             } else {
                 val changed = pinned != null
                 val message = buildString {
-                    if (changed) appendLine("DANGER: the pinned host key changed / 危险：已固定的 Host Key 发生变化")
-                    else appendLine("First connection / 首次连接")
-                    appendLine("Target: ${target.id}")
-                    appendLine("Algorithm: $algorithm")
-                    appendLine("Fingerprint: $fingerprint")
-                    pinned?.let { appendLine("Previously pinned: ${it.fingerprint}") }
-                    append(if (changed) "Type REPLACE to trust this replacement." else "Type TRUST after comparing the provider fingerprint.")
+                    if (changed) appendLine(if (language == Language.ZH) "危险：已固定的 SSH 主机公钥发生变化" else "DANGER: the pinned SSH host key changed")
+                    else appendLine(if (language == Language.ZH) "首次连接此节点" else "First connection")
+                    appendLine(if (language == Language.ZH) "目标：${target.id}" else "Target: ${target.id}")
+                    appendLine(if (language == Language.ZH) "算法：$algorithm" else "Algorithm: $algorithm")
+                    appendLine(if (language == Language.ZH) "当前指纹：$fingerprint" else "Fingerprint: $fingerprint")
+                    pinned?.let { appendLine(if (language == Language.ZH) "原固定指纹：${it.fingerprint}" else "Previously pinned: ${it.fingerprint}") }
+                    append(if (changed) {
+                        if (language == Language.ZH) "确认服务商控制台指纹后，输入大写 REPLACE 才能替换。" else "Type REPLACE to trust this replacement."
+                    } else {
+                        if (language == Language.ZH) "与服务商控制台指纹核对后，输入大写 TRUST。" else "Type TRUST after comparing the provider fingerprint."
+                    })
                 }
                 val expected = if (changed) "REPLACE" else "TRUST"
                 val answer = runBlocking {
                     prompts.ask(
-                        title = if (changed) "Host Key changed" else "Verify SSH Host Key",
+                        title = if (changed) {
+                            if (language == Language.ZH) "SSH 主机公钥已变化" else "Host Key changed"
+                        } else {
+                            if (language == Language.ZH) "核对 SSH 主机公钥" else "Verify SSH Host Key"
+                        },
                         message = message,
                         kind = PromptKind.HOST_KEY,
                         placeholder = expected,
@@ -82,13 +91,13 @@ class SshEngine(
             val authenticated = when (credential.mode) {
                 AuthMode.TEMPORARY_PASSWORD -> authenticatePassword(connection, target.user, requireNotNull(credential.password))
                 AuthMode.MANAGED_KEY -> {
-                    val key = managedKeys.get(target.id) ?: error("No bound SSH key for ${target.id}")
+                    val key = managedKeys.get(target.id) ?: error(if (language == Language.ZH) "${target.id} 没有已绑定的 SSH 密钥" else "No bound SSH key for ${target.id}")
                     connection.authenticateWithPublicKey(target.user, key.privateKeyOpenSsh.toCharArray(), null)
                 }
             }
-            check(authenticated) { "SSH authentication failed for ${target.id}" }
+            check(authenticated) { if (language == Language.ZH) "${target.id} 的 SSH 身份认证失败" else "SSH authentication failed for ${target.id}" }
             candidate?.let(hostKeys::put)
-            SshHandle(connection, target, credential.password, prompts)
+            SshHandle(connection, target, credential.password, prompts, language)
         } catch (error: Throwable) {
             connection.close()
             throw error
@@ -110,6 +119,7 @@ class SshHandle internal constructor(
     val target: NodeTarget,
     private val loginPassword: String?,
     private val prompts: PromptBroker,
+    private val language: Language,
 ) : Closeable {
     private val forwards = Collections.synchronizedList(mutableListOf<LocalPortForwarder>())
     private var cachedSudoPassword: String? = loginPassword
@@ -131,8 +141,8 @@ class SshHandle internal constructor(
             session.execCommand(wrapped)
             if (root && target.user != "root") {
                 val password = cachedSudoPassword ?: prompts.ask(
-                    "sudo password",
-                    "Enter the sudo password for ${target.user}@${target.host}. It remains only in this live session.",
+                    if (language == Language.ZH) "sudo 密码" else "sudo password",
+                    if (language == Language.ZH) "请输入 ${target.user}@${target.host} 的 sudo 密码。它只保留在本次实时会话中。" else "Enter the sudo password for ${target.user}@${target.host}. It remains only in this live session.",
                     PromptKind.SECRET,
                 ).also { cachedSudoPassword = it }
                 synchronized(stdinLock) {
@@ -167,7 +177,7 @@ class SshHandle internal constructor(
                 val line = stripAnsi(raw)
                 val prompt = decodePrompt(line)
                 if (prompt != null) {
-                    val answer = prompts.ask("Remote confirmation", prompt.second, prompt.first)
+                    val answer = prompts.ask(if (language == Language.ZH) "远端操作输入" else "Remote confirmation", prompt.second, prompt.first)
                     synchronized(stdinLock) {
                         stdin.write((answer + "\n").toByteArray())
                         stdin.flush()

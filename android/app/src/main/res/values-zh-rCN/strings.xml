@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Proxy Node Assistant</string>
+    <string name="tunnel_channel">3x-ui 面板 SSH 隧道</string>
+    <string name="tunnel_running">3x-ui 面板隧道正在运行</string>
+    <string name="tunnel_stop">关闭隧道</string>
+</resources>

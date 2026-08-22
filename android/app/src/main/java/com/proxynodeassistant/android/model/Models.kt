@@ -90,6 +90,17 @@ data class KiwiUsage(
     val percent: Double get() = fraction * 100.0
 }
 
+data class CachedKiwiUsage(
+    val usage: KiwiUsage,
+    val checkedEpochMs: Long,
+)
+
+data class ProviderProfileSummary(
+    val veid: String,
+    val cached: CachedKiwiUsage? = null,
+    val hasSavedKey: Boolean = false,
+)
+
 enum class ActionGroup { INSTALL, ACCESS, MAINTENANCE, SECURITY, BACKUP, LOCAL }
 
 data class ActionSpec(

@@ -12,6 +12,7 @@ class AppContainer(context: Context) {
     val hostKeys = HostKeyRepository(vault)
     val managedKeys = ManagedKeyRepository(applicationContext, vault)
     val providerCredentials = ProviderCredentialRepository(vault)
+    val providerUsage = ProviderUsageRepository(applicationContext)
     val providerTraffic = ProviderTrafficClient()
     val prompts = PromptBroker()
     val ssh = SshEngine(hostKeys, managedKeys, prompts)
