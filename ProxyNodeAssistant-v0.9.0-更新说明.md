@@ -31,6 +31,8 @@ Windows 图形客户端与远端工具包从本版起统一使用 `0.9.0`。远�
 - 预警固定为 70% `NOTICE`、85% `WARNING`、95% `CRITICAL`；
 - API Key/Token 默认仅本次遮罩输入；只有本人确认后才写入当前 Windows 用户的 Credential Manager；
 - 非秘密资料保存在 `%APPDATA%\ProxyNodeAssistant\traffic-profiles.json`，可删除单项或全部清空。
+- 已保存节点现在可用 `[3]` 直接联网查看/刷新；只有一项时自动选择；`[4]` 可离线查看上次完整流量快照；结果页会停留等待确认。
+- 旧配置没有快照时会明确要求刷新一次，不会把缺失数据错误显示成 0 流量；API Key 仍不提供明文回显。
 
 ## 图形与秘密输入
 

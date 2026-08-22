@@ -89,6 +89,38 @@ func TestProviderEndpointIsHTTPSAndSecretFree(t *testing.T) {
 	}
 }
 
+func TestProviderTrafficSnapshotCanBeCachedAndViewedOffline(t *testing.T) {
+	checked := time.Date(2026, 8, 23, 3, 6, 0, 0, time.UTC)
+	profile := TrafficProfile{ID: "node-a", Provider: "kiwivm", Label: "node-a"}
+	want := TrafficSnapshot{
+		Source:     "KiwiVM API",
+		UsedBytes:  123456,
+		QuotaBytes: 987654321,
+		RXBytes:    111,
+		TXBytes:    222,
+		ResetAt:    checked.Add(24 * time.Hour),
+		Detail:     "cached test",
+	}
+	cacheTrafficSnapshot(&profile, want, checked)
+	got, ok := cachedTrafficSnapshot(profile)
+	if !ok {
+		t.Fatal("cached snapshot was not marked as available")
+	}
+	if got != want {
+		t.Fatalf("cached snapshot = %#v, want %#v", got, want)
+	}
+	if !profile.LastCheckedUTC.Equal(checked) {
+		t.Fatalf("checked time = %s, want %s", profile.LastCheckedUTC, checked)
+	}
+}
+
+func TestOldProviderProfileDoesNotPretendZeroUsageIsCached(t *testing.T) {
+	profile := TrafficProfile{ID: "legacy", Provider: "kiwivm", QuotaBytes: 1024, LastCheckedUTC: time.Now()}
+	if _, ok := cachedTrafficSnapshot(profile); ok {
+		t.Fatal("legacy metadata without hasLastSnapshot must not be shown as a zero-usage cache")
+	}
+}
+
 func TestVersion090WiresTrafficAndPerformanceIntoGUI(t *testing.T) {
 	mainSource, err := os.ReadFile("main.go")
 	if err != nil {

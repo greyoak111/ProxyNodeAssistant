@@ -36,6 +36,14 @@ type TrafficProfile struct {
 	ResetDay         int       `json:"resetDay,omitempty"`
 	CredentialTarget string    `json:"credentialTarget,omitempty"`
 	LastCheckedUTC   time.Time `json:"lastCheckedUtc,omitempty"`
+	HasLastSnapshot  bool      `json:"hasLastSnapshot,omitempty"`
+	LastUsedBytes    uint64    `json:"lastUsedBytes,omitempty"`
+	LastRXBytes      uint64    `json:"lastRxBytes,omitempty"`
+	LastTXBytes      uint64    `json:"lastTxBytes,omitempty"`
+	LastResetAt      time.Time `json:"lastResetAt,omitempty"`
+	LastSource       string    `json:"lastSource,omitempty"`
+	LastEstimated    bool      `json:"lastEstimated,omitempty"`
+	LastDetail       string    `json:"lastDetail,omitempty"`
 }
 
 type TrafficStore struct {
@@ -488,6 +496,35 @@ func (a *App) printTrafficSnapshot(profile TrafficProfile, snapshot TrafficSnaps
 	a.println("================================================")
 }
 
+func cacheTrafficSnapshot(profile *TrafficProfile, snapshot TrafficSnapshot, checked time.Time) {
+	profile.QuotaBytes = snapshot.QuotaBytes
+	profile.LastCheckedUTC = checked.UTC()
+	profile.HasLastSnapshot = true
+	profile.LastUsedBytes = snapshot.UsedBytes
+	profile.LastRXBytes = snapshot.RXBytes
+	profile.LastTXBytes = snapshot.TXBytes
+	profile.LastResetAt = snapshot.ResetAt
+	profile.LastSource = snapshot.Source
+	profile.LastEstimated = snapshot.Estimated
+	profile.LastDetail = snapshot.Detail
+}
+
+func cachedTrafficSnapshot(profile TrafficProfile) (TrafficSnapshot, bool) {
+	if !profile.HasLastSnapshot {
+		return TrafficSnapshot{}, false
+	}
+	return TrafficSnapshot{
+		Source:     profile.LastSource,
+		UsedBytes:  profile.LastUsedBytes,
+		QuotaBytes: profile.QuotaBytes,
+		RXBytes:    profile.LastRXBytes,
+		TXBytes:    profile.LastTXBytes,
+		ResetAt:    profile.LastResetAt,
+		Estimated:  profile.LastEstimated,
+		Detail:     profile.LastDetail,
+	}, true
+}
+
 func parseQuotaGB(value string) (uint64, bool) {
 	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	if err != nil || parsed <= 0 || parsed > 1000000 {
@@ -695,15 +732,23 @@ func (a *App) listProviderProfiles(store TrafficStore) []TrafficProfile {
 		if !profile.LastCheckedUTC.IsZero() {
 			last = profile.LastCheckedUTC.Local().Format("2006-01-02 15:04")
 		}
-		a.println(fmt.Sprintf("[%d] %s provider=%s last=%s", index+1, profile.Label, profile.Provider, last))
+		summary := ""
+		if snapshot, ok := cachedTrafficSnapshot(profile); ok {
+			summary = fmt.Sprintf(" used=%s quota=%s usage=%.2f%% level=%s", formatBytes(snapshot.UsedBytes), formatBytes(snapshot.QuotaBytes), trafficPercent(snapshot), trafficWarning(trafficPercent(snapshot)))
+		}
+		a.println(fmt.Sprintf("[%d] %s provider=%s last=%s%s", index+1, profile.Label, profile.Provider, last, summary))
 	}
 	return profiles
 }
 
-func (a *App) chooseProviderProfile(store TrafficStore) (*TrafficProfile, error) {
+func (a *App) chooseProviderProfile(store TrafficStore, autoSelectSingle bool) (*TrafficProfile, error) {
 	profiles := a.listProviderProfiles(store)
 	if len(profiles) == 0 {
 		return nil, errors.New(a.msg("没有已保存的服务商流量配置。", "No saved provider traffic profiles exist."))
+	}
+	if autoSelectSingle && len(profiles) == 1 {
+		a.println(a.msg("仅有一个已保存节点，已自动选择：", "Only one saved node exists; selected automatically: ") + profiles[0].Label)
+		return &profiles[0], nil
 	}
 	answer := a.prompt(a.msg("输入编号；0 取消", "Enter a number; 0 cancels"))
 	if a.inputClosed {
@@ -759,8 +804,7 @@ func (a *App) configureKiwiVMProvider() error {
 	if err != nil {
 		return err
 	}
-	profile.QuotaBytes = snapshot.QuotaBytes
-	profile.LastCheckedUTC = time.Now().UTC()
+	cacheTrafficSnapshot(&profile, snapshot, time.Now())
 	a.printTrafficSnapshot(profile, snapshot)
 	if !a.yes(a.msg("把此 API Key 保存到 Windows Credential Manager？", "Save this API Key in Windows Credential Manager?"), true) {
 		a.println(a.msg("仅本次使用完毕；API Key 不写入持久存储，也不保存配置。", "One-time use completed; the API Key and profile are not persisted."))
@@ -822,8 +866,7 @@ func (a *App) configureSolusProvider() error {
 	if err != nil {
 		return fmt.Errorf(a.msg("条件式 SolusVM 接口未通过验证；请改用 [17] SSH/vnStat：%w", "The conditional SolusVM endpoint did not validate; use [17] SSH/vnStat instead: %w"), err)
 	}
-	profile.QuotaBytes = snapshot.QuotaBytes
-	profile.LastCheckedUTC = time.Now().UTC()
+	cacheTrafficSnapshot(&profile, snapshot, time.Now())
 	a.printTrafficSnapshot(profile, snapshot)
 	if !a.yes(a.msg("把此 Token 保存到 Windows Credential Manager？", "Save this token in Windows Credential Manager?"), true) {
 		return nil
@@ -860,7 +903,7 @@ func (a *App) refreshProviderProfile() error {
 	if err != nil {
 		return err
 	}
-	profile, err := a.chooseProviderProfile(store)
+	profile, err := a.chooseProviderProfile(store, true)
 	if err != nil || profile == nil {
 		return err
 	}
@@ -873,11 +916,38 @@ func (a *App) refreshProviderProfile() error {
 	if err != nil {
 		return err
 	}
-	profile.LastCheckedUTC = time.Now().UTC()
-	profile.QuotaBytes = snapshot.QuotaBytes
+	cacheTrafficSnapshot(profile, snapshot, time.Now())
 	upsertTrafficProfile(&store, *profile)
-	_ = saveTrafficStore(store)
+	if err := saveTrafficStore(store); err != nil {
+		return err
+	}
 	a.printTrafficSnapshot(*profile, snapshot)
+	return nil
+}
+
+func (a *App) showCachedProviderTraffic() error {
+	store, err := loadTrafficStore()
+	if err != nil {
+		return err
+	}
+	profiles := a.listProviderProfiles(store)
+	if len(profiles) == 0 {
+		return errors.New(a.msg("没有已保存的服务商流量配置。", "No saved provider traffic profiles exist."))
+	}
+	shown := 0
+	for _, profile := range profiles {
+		snapshot, ok := cachedTrafficSnapshot(profile)
+		if !ok {
+			a.println(a.msg("节点 "+profile.Label+" 尚无本地流量快照；请使用 [3] 联网刷新一次。", "Node "+profile.Label+" has no cached traffic snapshot; use [3] to refresh it once."))
+			continue
+		}
+		a.printTrafficSnapshot(profile, snapshot)
+		a.println(a.msg("本地快照时间=", "LOCAL_SNAPSHOT_TIME=") + profile.LastCheckedUTC.Local().Format(time.RFC3339))
+		shown++
+	}
+	if shown == 0 {
+		return errors.New(a.msg("已有配置来自旧版本，但还没有可查看的本地快照；请选择 [3] 联网刷新。", "Saved profiles came from an older version and have no viewable cache yet; choose [3] to refresh online."))
+	}
 	return nil
 }
 
@@ -886,7 +956,7 @@ func (a *App) deleteProviderProfile() error {
 	if err != nil {
 		return err
 	}
-	profile, err := a.chooseProviderProfile(store)
+	profile, err := a.chooseProviderProfile(store, false)
 	if err != nil || profile == nil {
 		return err
 	}
@@ -929,8 +999,8 @@ func (a *App) providerTrafficCenter() error {
 		a.println(a.msg("服务商精确流量中心（本功能不登录 VPS）", "Provider traffic center (no VPS login)"))
 		a.println("[1] KiwiVM API: " + a.msg("配置/验证并选择是否安全保存", "configure/validate and optionally save securely"))
 		a.println("[2] SolusVM/RackNerd: " + a.msg("仅验证服务商提供的只读 HTTPS API", "validate only a provider-issued read-only HTTPS API"))
-		a.println("[3] " + a.msg("刷新一个已保存配置", "refresh a saved profile"))
-		a.println("[4] " + a.msg("列出已保存配置（不读取秘密）", "list saved profiles without reading secrets"))
+		a.println("[3] " + a.msg("联网查看/刷新已保存节点流量（只有一项时自动选择）", "view/refresh saved-node traffic online (auto-selects the only item)"))
+		a.println("[4] " + a.msg("离线查看本地上次流量结果（不读取秘密）", "view the last locally cached traffic result offline (no secret read)"))
 		a.println("[5] " + a.msg("删除一个配置及凭据", "delete one profile and credential"))
 		a.println("[6] " + a.msg("删除全部服务商配置及凭据", "delete all provider profiles and credentials"))
 		a.println("[0] " + a.msg("返回", "return"))
@@ -944,12 +1014,7 @@ func (a *App) providerTrafficCenter() error {
 		case "3":
 			err = a.refreshProviderProfile()
 		case "4":
-			store, loadErr := loadTrafficStore()
-			if loadErr != nil {
-				err = loadErr
-			} else if len(a.listProviderProfiles(store)) == 0 {
-				a.println(a.msg("没有已保存的服务商配置。", "No provider profiles are saved."))
-			}
+			err = a.showCachedProviderTraffic()
 		case "5":
 			err = a.deleteProviderProfile()
 		case "6":
@@ -961,6 +1026,12 @@ func (a *App) providerTrafficCenter() error {
 		}
 		if err != nil {
 			a.println(a.msg("流量中心操作失败：", "Traffic-center action failed: ") + err.Error())
+		}
+		if choice == "1" || choice == "2" || choice == "3" || choice == "4" {
+			a.prompt(a.msg("按 Enter 返回流量中心", "Press Enter to return to the traffic center"))
+			if a.inputClosed {
+				return errInputClosed
+			}
 		}
 	}
 }
