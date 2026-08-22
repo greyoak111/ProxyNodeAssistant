@@ -1,0 +1,24 @@
+Proxy Runbook v0.9.0 - Share Safety Report
+
+RESULT: PASS
+
+Verified:
+- no baked real deployment IPv4/domain/provider marker
+- no embedded real SSH/REALITY private-key block
+- no current-node identity file
+- no generated credential/runtime state in the distributable source
+- cover domain and Let's Encrypt email remain runtime human inputs
+
+Allowed generic/test IPv4 literals:
+  - 0.0.0.0
+  - 1.1.1.1
+  - 127.0.0.1
+  - 192.0.2.10
+
+Runtime state remains outside the distributable:
+- Windows SSH keys: %USERPROFILE%\.ssh\proxy-runbook\...
+- VPS public metadata: /etc/proxy-runbook/public.env
+- VPS root-only credentials: /root/.config/proxy-runbook/HANDOFF-SECRETS.txt
+
+ProxyNodeAssistant v0.9.0 embeds only this share-safe v0.9.0 toolkit archive.
+

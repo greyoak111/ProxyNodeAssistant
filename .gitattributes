@@ -1,0 +1,15 @@
+* text=auto
+
+# Linux runbook scripts must stay LF even after a Windows checkout.
+*.sh text eol=lf
+
+# Native Windows launchers use CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets must never receive newline conversion.
+*.png binary
+*.ico binary
+*.gz binary
+*.zip binary
+*.exe binary

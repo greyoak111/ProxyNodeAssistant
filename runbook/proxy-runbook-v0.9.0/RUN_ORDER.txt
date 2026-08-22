@@ -1,0 +1,56 @@
+Proxy Runbook v0.9.0 — 最短顺序
+
+1. 运行 ProxyNodeAssistant-v0.9.0-win64.exe（或完整解压便携包）；菜单 [1] 是 EXE 唯一安装入口
+2. 在菜单 [1] 的二级菜单明确选：临时密码会话，或节点专属长期 SSH key
+3. 每次手输本次 VPS IP/hostname；不会暗中复用上次 VPS
+4. 手输 SSH user
+5. SSH port 默认 22，可回车
+6. EXE 显示 SSH Host 指纹；核对后在 EXE 自己的 [y/N] 提示输入 y
+7. 临时模式：只向 OpenSSH 输入密码；一次性 key 不显示，操作结束前自动撤销和删除
+8. 长期模式：Windows 生成/复用每节点独立 Ed25519 SSH key，并显示真实 Private/Public Key
+9. 图形版在遮罩密码框中输入 VPS 密码，并通过当前用户专用随机命名管道交给 OpenSSH
+10. 所选模式完成实际 SSH_KEY_OK 验证
+11. 菜单 [1] 先识别版本：同版跳过、旧版升级、远端新版则停止并提示更换 EXE
+12. VPS 自动判断 FRESH / EXISTING
+13. 手输 cover domain（无默认）
+14. 手输 Let's Encrypt email（无默认）
+15. 后续基本 Enter / Y
+16. 菜单 [1] 会先检测内存/vCPU；性能档改动必须经确认，默认使用可回滚自动档
+
+后续性能与流量：
+  [16] 检测 / 自动 / 低配 / 标准 / 高配 / 回滚
+  [17] SSH/vnStat 估算（VPS 口径）
+  [T]  KiwiVM/条件式服务商 API（Windows 本地，不登录 VPS）
+
+v0.8.2 说明：EXE 固定使用同目录的一套完整 Windows OpenSSH，并对 Host Key 执行严格解析和有限重试。OpenSSH 不再弹出它自己的 Host Key yes/no；Host 指纹由 EXE 显示、确认并固定到节点专用 known_hosts。密码仍只交给系统 OpenSSH，不由 EXE 读取或保存。
+
+FRESH:
+  unattended 3x-ui
+  -> random panel credentials + random panel port
+  -> localhost-only panel
+  -> cover/TLS
+  -> WARP MASQUE
+  -> 24443 Reality
+  -> 显示真实 Reality keys + vless link
+  -> 真人验货
+  -> Y
+  -> 443
+  -> HANDOFF
+
+EXISTING:
+  backup
+  -> audit
+  -> healthy = no touch
+  -> drift = Y/n
+  -> live 443 changes only through 24443 shadow test
+  -> HANDOFF
+
+维护：
+  01-MAINTAIN-NODE.cmd
+
+面板：
+  02-OPEN-PANEL-TUNNEL.cmd
+
+卸载远端管理工具：
+  EXE 菜单 [13]，输入大写 UNINSTALL；节点、配置、凭据和灾备保留
+

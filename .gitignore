@@ -1,0 +1,21 @@
+# Local build products and downloaded toolchains
+.build-tools/
+dist/
+assets/*.tar.gz
+package-stage-*/
+
+# Local audits, reports, and runtime data
+audit-*/
+privacy-scan-*/
+release-privacy-check-*/
+ProxyNodeAssistant-Rescue/
+*.log
+*.tmp
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db

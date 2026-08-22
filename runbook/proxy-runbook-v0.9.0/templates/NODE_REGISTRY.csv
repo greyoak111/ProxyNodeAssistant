@@ -1,0 +1,2 @@
+node_id,provider,region,asn,public_ip,role,ssh_user,ssh_port,proxy_port,cover_domain,egress,last_verified,credential_generation,status,notes
+example-node,,,,,PRIMARY,,22,443,,direct+warp-openai,,,,template only - replace with your own values
