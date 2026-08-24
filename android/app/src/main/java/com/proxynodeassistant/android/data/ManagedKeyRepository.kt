@@ -67,6 +67,14 @@ class ManagedKeyRepository(context: Context, private val vault: EncryptedVault) 
         return keys.size
     }
 
+    fun rebind(oldTargetId: String, newTargetId: String): Boolean {
+        if (oldTargetId == newTargetId || get(newTargetId, KeyStatus.BOUND) != null) return false
+        val record = get(oldTargetId, KeyStatus.BOUND) ?: return false
+        put(record.copy(targetId = newTargetId, status = KeyStatus.BOUND, createdEpochMs = System.currentTimeMillis()))
+        archive(oldTargetId)
+        return true
+    }
+
     fun restore(targetId: String, createdEpochMs: Long? = null): Boolean {
         if (get(targetId, KeyStatus.BOUND) != null) return false
         val entry = entries().filter { it.targetId == targetId && it.status == KeyStatus.BACKUP }

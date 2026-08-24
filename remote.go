@@ -22,11 +22,11 @@ import (
 
 const (
 	remoteRoot           = "/opt/proxy-runbook-current"
-	toolkitVersion       = "0.9.0"
-	toolkitBuildID       = "20260822-full-dismantle-v5"
-	toolkitBuildRevision = 5
-	toolkitInstallDir    = "/opt/proxy-runbook-v0.9.0"
-	toolkitArchive       = "proxy-runbook-toolkit-v0.9.0.tar.gz"
+	toolkitVersion       = "0.9.5"
+	toolkitBuildID       = "20260824-v095-phase2-security-device-rebind-v6"
+	toolkitBuildRevision = 6
+	toolkitInstallDir    = "/opt/proxy-runbook-v0.9.5"
+	toolkitArchive       = "proxy-runbook-toolkit-v0.9.5.tar.gz"
 )
 
 var managedToolkitDirs = []string{
@@ -52,6 +52,7 @@ var managedToolkitDirs = []string{
 	"/opt/proxy-runbook-v0.8.2",
 	"/opt/proxy-runbook-v0.8.3",
 	"/opt/proxy-runbook-v0.9.0",
+	"/opt/proxy-runbook-v0.9.5",
 }
 
 var managedToolkitArchives = []string{
@@ -77,6 +78,7 @@ var managedToolkitArchives = []string{
 	"/tmp/proxy-runbook-toolkit-v0.8.2.tar.gz",
 	"/tmp/proxy-runbook-toolkit-v0.8.3.tar.gz",
 	"/tmp/proxy-runbook-toolkit-v0.9.0.tar.gz",
+	"/tmp/proxy-runbook-toolkit-v0.9.5.tar.gz",
 }
 
 var requiredOpenSSHExecutables = []string{
@@ -607,7 +609,7 @@ func (a *App) promptConnection(mode AuthMode) (Connection, error) {
 	}
 	c := Connection{Host: host, User: user, Port: port, AuthMode: mode}
 	if mode == AuthTemporaryPassword {
-		dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.0-session-")
+		dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.5-session-")
 		if err != nil {
 			return Connection{}, err
 		}
@@ -743,7 +745,7 @@ func isolatedSSHHostKeyArgs(c Connection, path string) []string {
 
 func scanHostKeysViaSSH(c Connection) (string, hostKeyScanAttempt) {
 	attempt := hostKeyScanAttempt{Method: "isolated-ssh-fallback", ExitCode: -1}
-	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.0-hostkey-")
+	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.5-hostkey-")
 	if err != nil {
 		attempt.Diagnostic = err.Error()
 		return "", attempt
@@ -979,7 +981,7 @@ func validTemporaryKeyDir(dir string) bool {
 		return false
 	}
 	candidate, err := filepath.Abs(dir)
-	if err != nil || !strings.HasPrefix(filepath.Base(candidate), "ProxyNodeAssistant-v0.9.0-session-") {
+	if err != nil || !strings.HasPrefix(filepath.Base(candidate), "ProxyNodeAssistant-v0.9.5-session-") {
 		return false
 	}
 	relative, err := filepath.Rel(base, candidate)
@@ -1204,7 +1206,7 @@ func (a *App) authenticateActionConnection(c *Connection) error {
 }
 
 func (a *App) promptlessTemporaryConnection(host, user string, port int) (Connection, error) {
-	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.0-session-")
+	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.5-session-")
 	if err != nil {
 		return Connection{}, err
 	}
@@ -1259,11 +1261,18 @@ func revokedKeyRoot() (string, error) {
 const managedKeyInfoFile = "PNA-KEY-INFO.txt"
 
 type managedKeyMetadata struct {
-	Host      string
-	User      string
-	Port      int
-	Status    string
-	UpdatedAt time.Time
+	Host             string
+	User             string
+	Port             int
+	Status           string
+	UpdatedAt        time.Time
+	NodeID           string
+	ServerID         string
+	HostKeySHA256    string
+	MachineIDHash    string
+	FirstKnownPublic string
+	CurrentPublic    string
+	SSHAuthKeyID     string
 }
 
 type managedKeyEntry struct {
@@ -1274,10 +1283,18 @@ type managedKeyEntry struct {
 }
 
 func encodeManagedKeyMetadata(info managedKeyMetadata) []byte {
-	return []byte(fmt.Sprintf("FORMAT=1\nHOST_B64=%s\nUSER_B64=%s\nPORT=%d\nSTATUS=%s\nUPDATED_AT=%s\n",
+	format := "1"
+	extra := ""
+	if info.NodeID != "" || info.ServerID != "" || info.HostKeySHA256 != "" || info.MachineIDHash != "" {
+		format = "2"
+		extra = fmt.Sprintf("NODE_ID=%s\nSERVER_ID=%s\nHOST_KEY_SHA256=%s\nMACHINE_ID_SHA256=%s\nFIRST_KNOWN_PUBLIC_IP=%s\nCURRENT_PUBLIC_IP=%s\nSSH_AUTH_KEY_ID=%s\n",
+			info.NodeID, info.ServerID, info.HostKeySHA256, info.MachineIDHash, info.FirstKnownPublic, info.CurrentPublic, info.SSHAuthKeyID)
+	}
+	return []byte(fmt.Sprintf("FORMAT=%s\nHOST_B64=%s\nUSER_B64=%s\nPORT=%d\nSTATUS=%s\nUPDATED_AT=%s\n%s",
+		format,
 		base64.StdEncoding.EncodeToString([]byte(info.Host)),
 		base64.StdEncoding.EncodeToString([]byte(info.User)), info.Port, info.Status,
-		info.UpdatedAt.UTC().Format(time.RFC3339Nano)))
+		info.UpdatedAt.UTC().Format(time.RFC3339Nano), extra))
 }
 
 func parseManagedKeyMetadata(data []byte) (managedKeyMetadata, error) {
@@ -1292,16 +1309,39 @@ func parseManagedKeyMetadata(data []byte) (managedKeyMetadata, error) {
 	userData, userErr := base64.StdEncoding.DecodeString(values["USER_B64"])
 	port, portErr := strconv.Atoi(values["PORT"])
 	updated, timeErr := time.Parse(time.RFC3339Nano, values["UPDATED_AT"])
-	info := managedKeyMetadata{Host: string(hostData), User: string(userData), Port: port, Status: values["STATUS"], UpdatedAt: updated}
-	if values["FORMAT"] != "1" || hostErr != nil || userErr != nil || portErr != nil || timeErr != nil ||
+	info := managedKeyMetadata{
+		Host: string(hostData), User: string(userData), Port: port, Status: values["STATUS"], UpdatedAt: updated,
+		NodeID: values["NODE_ID"], ServerID: values["SERVER_ID"], HostKeySHA256: values["HOST_KEY_SHA256"],
+		MachineIDHash: values["MACHINE_ID_SHA256"], FirstKnownPublic: values["FIRST_KNOWN_PUBLIC_IP"], CurrentPublic: values["CURRENT_PUBLIC_IP"],
+		SSHAuthKeyID: values["SSH_AUTH_KEY_ID"],
+	}
+	if (values["FORMAT"] != "1" && values["FORMAT"] != "2") || hostErr != nil || userErr != nil || portErr != nil || timeErr != nil ||
 		!validRecentTarget(RecentTarget{Host: info.Host, User: info.User, Port: info.Port}) {
 		return managedKeyMetadata{}, errors.New("invalid managed-key metadata")
+	}
+	if values["FORMAT"] == "2" {
+		_, firstErr := canonicalPublicIPv4(info.FirstKnownPublic)
+		_, currentErr := canonicalPublicIPv4(info.CurrentPublic)
+		if !nodeIDPattern.MatchString(info.NodeID) || !serverIDPattern.MatchString(info.ServerID) ||
+			!sha256FingerprintPattern.MatchString(info.HostKeySHA256) || !sha256HexPattern.MatchString(info.MachineIDHash) ||
+			firstErr != nil || currentErr != nil || (info.SSHAuthKeyID != "" && !sha256FingerprintPattern.MatchString(info.SSHAuthKeyID)) {
+			return managedKeyMetadata{}, errors.New("invalid stable node identity metadata")
+		}
 	}
 	return info, nil
 }
 
 func writeManagedKeyMetadata(dir string, c Connection, status string) error {
 	info := managedKeyMetadata{Host: c.Host, User: c.User, Port: c.Port, Status: status, UpdatedAt: time.Now().UTC()}
+	if existing, err := loadManagedKeyMetadata(dir); err == nil {
+		info.NodeID = existing.NodeID
+		info.ServerID = existing.ServerID
+		info.HostKeySHA256 = existing.HostKeySHA256
+		info.MachineIDHash = existing.MachineIDHash
+		info.FirstKnownPublic = existing.FirstKnownPublic
+		info.CurrentPublic = existing.CurrentPublic
+		info.SSHAuthKeyID = existing.SSHAuthKeyID
+	}
 	if !validRecentTarget(RecentTarget{Host: info.Host, User: info.User, Port: info.Port}) {
 		return errors.New("invalid managed-key metadata target")
 	}
@@ -1875,7 +1915,7 @@ func (a *App) remoteToolkitProbe(c Connection) (ToolkitProbe, error) {
 		"version=''; IFS= read -r version < " + remoteRoot + "/TOOLKIT_VERSION || true; version=${version%$'\\r'}; " +
 		"build=''; if [ -r " + remoteRoot + "/TOOLKIT_BUILD_ID ]; then IFS= read -r build < " + remoteRoot + "/TOOLKIT_BUILD_ID || true; build=${build%$'\\r'}; fi; " +
 		"revision=''; if [ -r " + remoteRoot + "/TOOLKIT_BUILD_REVISION ]; then IFS= read -r revision < " + remoteRoot + "/TOOLKIT_BUILD_REVISION || true; revision=${revision%$'\\r'}; fi; " +
-		"complete=0; test -x " + remoteRoot + "/linux/00-auto-install-or-optimize.sh && test -x " + remoteRoot + "/linux/18-panel-metadata.sh && test -x " + remoteRoot + "/linux/19-prune-backups-current-config.sh && test -x " + remoteRoot + "/linux/20-adaptive-performance.sh && test -x " + remoteRoot + "/linux/21-traffic-status.sh && test -x " + remoteRoot + "/linux/22-dismantle-managed-node.sh && test -s " + remoteRoot + "/templates/cover-sites/MANIFEST.tsv && test -s " + remoteRoot + "/templates/cover-sites/15-signal-runner.html && test -s " + remoteRoot + "/TOOLKIT_BUILD_ID && complete=1; " +
+		"complete=0; test -x " + remoteRoot + "/linux/00-auto-install-or-optimize.sh && test -x " + remoteRoot + "/linux/18-panel-metadata.sh && test -x " + remoteRoot + "/linux/19-prune-backups-current-config.sh && test -x " + remoteRoot + "/linux/20-adaptive-performance.sh && test -x " + remoteRoot + "/linux/21-traffic-status.sh && test -x " + remoteRoot + "/linux/22-dismantle-managed-node.sh && test -x " + remoteRoot + "/linux/23-node-identity.sh && test -x " + remoteRoot + "/linux/24-security-baseline.sh && test -x " + remoteRoot + "/linux/25-security-events.sh && test -x " + remoteRoot + "/linux/26-device-admission.sh && test -x " + remoteRoot + "/linux/27-ip-rebind.sh && test -x " + remoteRoot + "/linux/04f-xhttp-cdn-api.sh && test -x " + remoteRoot + "/linux/05e-cdn-xhttp-nginx.sh && test -x " + remoteRoot + "/linux/05f-cloudflare-origin-lock.sh && test -x " + remoteRoot + "/linux/05g-cdn-xhttp-validate.sh && test -x " + remoteRoot + "/linux/29-copyparty-drive.sh && test -x " + remoteRoot + "/linux/30-copyparty-account.sh && test -x " + remoteRoot + "/linux/31-copyparty-nginx.sh && test -s " + remoteRoot + "/THIRD_PARTY_LOCK.env && test -s " + remoteRoot + "/templates/copyparty/copyparty.conf.in && test -s " + remoteRoot + "/templates/systemd/proxy-node-assistant-copyparty.service && test -s " + remoteRoot + "/templates/nginx/proxy-node-assistant-copyparty.conf.in && test -s " + remoteRoot + "/templates/cover-sites/MANIFEST.tsv && test -s " + remoteRoot + "/templates/cover-sites/15-signal-runner.html && test -s " + remoteRoot + "/TOOLKIT_BUILD_ID && complete=1; " +
 		"printf 'TOOLKIT_PRESENT=1\\nTOOLKIT_VERSION=%s\\nTOOLKIT_BUILD_ID=%s\\nTOOLKIT_BUILD_REVISION=%s\\nTOOLKIT_COMPLETE=%s\\n' \"$version\" \"$build\" \"$revision\" \"$complete\"; " +
 		"else printf 'TOOLKIT_PRESENT=0\\n'; fi; " +
 		"printf '%s\\n' " + shQuote(toolkitEnd)
@@ -1908,6 +1948,9 @@ func (a *App) ensureToolkit(c Connection) error {
 	case ToolkitSameComplete:
 		switch compareToolkitBuild(probe, toolkitBuildID, toolkitBuildRevision) {
 		case 0:
+			if err := a.syncManagedKeyIdentity(c); err != nil {
+				return fmt.Errorf("stable node identity sync failed: %w", err)
+			}
 			return nil
 		case -1:
 			return fmt.Errorf(a.msg("远端同版本构建较旧；请先运行菜单 [1] 更新一次", "The remote same-version build is older; run menu [1] once to update it"))

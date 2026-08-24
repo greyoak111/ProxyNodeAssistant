@@ -143,11 +143,11 @@ func TestVersion090WiresTrafficAndPerformanceIntoGUI(t *testing.T) {
 }
 
 func TestRemote090ScriptsAreRollbackCapableAndBounded(t *testing.T) {
-	performance, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/20-adaptive-performance.sh")
+	performance, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/20-adaptive-performance.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	traffic, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/21-traffic-status.sh")
+	traffic, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/21-traffic-status.sh")
 	if err != nil {
 		t.Fatal(err)
 	}

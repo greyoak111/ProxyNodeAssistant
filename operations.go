@@ -206,6 +206,9 @@ func (a *App) deployOptimize() error {
 			return fmt.Errorf(a.msg("工具包按需安装/升级失败：%w", "On-demand toolkit install/upgrade failed: %w"), err)
 		}
 	}
+	if err := a.syncManagedKeyIdentity(c); err != nil {
+		return fmt.Errorf(a.msg("稳定节点身份同步失败：%w", "Stable node identity synchronization failed: %w"), err)
+	}
 	domain, email, inputErr := a.askDomainEmail()
 	if inputErr != nil {
 		return inputErr
@@ -262,8 +265,14 @@ func (a *App) deployOptimize() error {
 	if handoffErr != nil {
 		a.println(a.msg("施工成功，但交接单未通过完整性校验：", "Convergence succeeded, but the handoff failed integrity checks:") + " " + handoffErr.Error())
 		a.println(a.msg("未复制任何内容；可在确认后使用菜单 [7] 重试。", "Nothing was copied; use menu [7] to retry after checking."))
-	} else if err := a.secretHandoff("CREDENTIAL HANDOFF", handoff); err != nil {
-		a.println(err.Error())
+	} else {
+		completeHandoff, completeErr := a.buildCompleteHandoff(handoff, c)
+		if completeErr != nil {
+			return fmt.Errorf(a.msg("完整交接单追加块生成失败：%w", "complete handoff appendix failed: %w"), completeErr)
+		}
+		if err := a.secretHandoff("CREDENTIAL HANDOFF", completeHandoff); err != nil {
+			a.println(err.Error())
+		}
 	}
 	if a.yes(a.msg(
 		"是否在打开面板前整理远端多余备份，并只保留一份新验证的当前配置备份？",
@@ -291,8 +300,8 @@ func (a *App) uninstallRemoteToolkit() error {
 		"This removes only the remote toolkit program uploaded by ProxyNodeAssistant.",
 	))
 	a.println(a.msg(
-		"会删除：/opt 下已知 v0.5—v0.9.0 工具包、proxy-runbook-current、proxy-node 命令和 /tmp 上传残留。",
-		"It removes: known v0.5-v0.9.0 toolkit directories under /opt, proxy-runbook-current, the proxy-node command, and /tmp upload remnants.",
+		"会删除：/opt 下已知 v0.5—v0.9.5 工具包、proxy-runbook-current、proxy-node 命令和 /tmp 上传残留。",
+		"It removes: known v0.5-v0.9.5 toolkit directories under /opt, proxy-runbook-current, the proxy-node command, and /tmp upload remnants.",
 	))
 	a.println(a.msg(
 		"不会删除：x-ui/Xray、Nginx、WARP、节点配置、凭据、证书或灾备。卸载后只有菜单 [1] 可以重新安装内嵌包。",
@@ -626,7 +635,11 @@ func (a *App) rotateVPSPassword() error {
 	if err != nil {
 		return err
 	}
-	return a.secretHandoff("CREDENTIAL HANDOFF", handoff)
+	complete, err := a.buildCompleteHandoff(handoff, c)
+	if err != nil {
+		return err
+	}
+	return a.secretHandoff("CREDENTIAL HANDOFF", complete)
 }
 
 func (a *App) rotatePanelCredentials() error {
@@ -650,7 +663,11 @@ func (a *App) rotatePanelCredentials() error {
 	if err != nil {
 		return err
 	}
-	return a.secretHandoff("CREDENTIAL HANDOFF", handoff)
+	complete, err := a.buildCompleteHandoff(handoff, c)
+	if err != nil {
+		return err
+	}
+	return a.secretHandoff("CREDENTIAL HANDOFF", complete)
 }
 
 func (a *App) showHandoff() error {
@@ -662,7 +679,11 @@ func (a *App) showHandoff() error {
 	if err != nil {
 		return fmt.Errorf(a.msg("当前没有可验证的交接单：%w", "No validated credential handoff is available: %w"), err)
 	}
-	return a.secretHandoff("CREDENTIAL HANDOFF", handoff)
+	complete, err := a.buildCompleteHandoff(handoff, c)
+	if err != nil {
+		return err
+	}
+	return a.secretHandoff("CREDENTIAL HANDOFF", complete)
 }
 
 func (a *App) runtimePublicEnv(c Connection) (map[string]string, error) {

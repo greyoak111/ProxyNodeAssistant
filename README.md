@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="gui/ProxyNodeAssistant-v0.9.0-app-icon.png" width="112" alt="ProxyNodeAssistant icon">
+  <img src="gui/ProxyNodeAssistant-v0.9.5-app-icon.png" width="112" alt="ProxyNodeAssistant icon">
 </p>
 
-<h1 align="center">ProxyNodeAssistant v0.9.0</h1>
+<h1 align="center">ProxyNodeAssistant v0.9.5</h1>
 
 <p align="center">
   面向 Windows 与 Android 的全图形 VPS 节点部署、维护、排障与恢复工具
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.9.0-16d9e3?style=flat-square" alt="version 0.9.0">
+  <img src="https://img.shields.io/badge/version-0.9.5-16d9e3?style=flat-square" alt="version 0.9.5">
   <img src="https://img.shields.io/badge/Windows-x64%20%7C%20x86%20%7C%20ARM64-16d9e3?style=flat-square" alt="Windows">
   <img src="https://img.shields.io/badge/Android-native%20Compose-16d9e3?style=flat-square" alt="Android">
   <img src="https://img.shields.io/badge/VPS-Ubuntu%20%7C%20Debian-16d9e3?style=flat-square" alt="Ubuntu and Debian">
@@ -17,22 +17,22 @@
 </p>
 
 <p align="center">
-  <a href="ProxyNodeAssistant-v0.9.0-从零部署教程.md">从零部署教程</a>
+  <a href="ProxyNodeAssistant-v0.9.5-从零部署教程.md">从零部署教程</a>
   ·
-  <a href="ProxyNodeAssistant-v0.9.0-完整使用说明书.md">完整使用说明书</a>
+  <a href="ProxyNodeAssistant-v0.9.5-完整使用说明书.md">完整使用说明书</a>
   ·
   <a href="ANDROID.md">Android 手册</a>
   ·
   <a href="BUILD.md">构建说明</a>
   ·
-  <a href="ProxyNodeAssistant-v0.9.0-更新说明.md">更新说明</a>
+  <a href="ProxyNodeAssistant-v0.9.5-更新说明.md">更新说明</a>
 </p>
 
 ---
 
 ProxyNodeAssistant 把原本分散在 SSH、SCP、PowerShell、Linux shell、3x-ui、Xray、Nginx、Certbot 和防火墙中的操作收敛成一个本地图形控制台。
 
-Windows 版是原生 WPF 单 EXE；Android 版是 Kotlin + Jetpack Compose 原生应用。两端复用同一套 proxy-runbook v0.9.0，不依赖 Termux、Electron 或 WebView，也不会弹出一个黑色终端让用户自行猜下一步。
+Windows 版是原生 WPF 单 EXE；Android 版是 Kotlin + Jetpack Compose 原生应用。两端复用同一套 proxy-runbook v0.9.5，不依赖 Termux、Electron 或 WebView，也不会弹出一个黑色终端让用户自行猜下一步。
 
 项目遵循三个原则：
 
@@ -44,9 +44,9 @@ Windows 版是原生 WPF 单 EXE；Android 版是 Kotlin + Jetpack Compose 原�
 
 ## 界面
 
-![ProxyNodeAssistant 全部功能](dist/ProxyNodeAssistant-v0.9.0-gui-preview.png)
+![ProxyNodeAssistant 全部功能](dist/ProxyNodeAssistant-v0.9.5-gui-preview.png)
 
-![ProxyNodeAssistant 图形工作流](dist/ProxyNodeAssistant-v0.9.0-workflow-preview.png)
+![ProxyNodeAssistant 图形工作流](dist/ProxyNodeAssistant-v0.9.5-workflow-preview.png)
 
 所有输入都在当前图形窗口内完成。SSH、sudo 或服务商 API 需要秘密时，界面会切换为遮罩输入；普通文本、Host Key 确认、Y/N、停止、日志和面板隧道生命周期也都有对应的图形控件。
 
@@ -58,7 +58,7 @@ Windows 版是原生 WPF 单 EXE；Android 版是 Kotlin + Jetpack Compose 原�
 - 需要完整备份、轻量配置备份、诊断报告和全量拆除能力的维护者；
 - 希望在 Windows 和 Android 使用同一操作模型的人。
 
-如果你还没有 VPS 或域名，请从 [从零部署教程](ProxyNodeAssistant-v0.9.0-从零部署教程.md) 开始。里面包括 VPS 配置建议、域名商选择、微信/支付宝/银联支付方式核对、Cloudflare Nameserver、DNSSEC、灰云 A 记录和首次上线验收。
+如果你还没有 VPS 或域名，请从 [从零部署教程](ProxyNodeAssistant-v0.9.5-从零部署教程.md) 开始。里面包括 VPS 配置建议、域名商选择、微信/支付宝/银联支付方式核对、Cloudflare Nameserver、DNSSEC、灰云 A 记录和首次上线验收。
 
 ## 支持范围
 
@@ -70,7 +70,9 @@ Windows 版是原生 WPF 单 EXE；Android 版是 Kotlin + Jetpack Compose 原�
 | SSH | 密码临时会话、节点专属长期 Ed25519 key |
 | 面板 | 3x-ui，通过本机 127.0.0.1 SSH 隧道访问 |
 | 节点 | Xray VLESS + REALITY，24443 shadow 真机验货后再提升 |
+| CDN/XHTTP | v0.9.5 Experimental：VLESS + XHTTP `packet-up` 回环入站、Nginx 8443 本地影子；公网切换仍需人工 Cloudflare 阶段 |
 | Web | Nginx、Let’s Encrypt、15 套无第三方依赖的伪装模板 |
+| 私人网盘 | 固定版本与 SHA-256 的 copyparty，非 root、`127.0.0.1:3923`、2/3GiB 有界配额；当前可经 SSH 隧道使用 |
 | 路由 | WARP MASQUE、本地代理与可选持久路由 |
 | 流量 | SSH/vnStat 估算、KiwiVM 和条件式服务商 API |
 
@@ -127,16 +129,16 @@ Resolve-DnsName $CoverDomain -Type A -Server 1.1.1.1
 nslookup $CoverDomain 8.8.8.8
 ~~~
 
-示例域名和地址不能原样使用。完整 Cloudflare 步骤、支付商家表和排障见 [从零部署教程](ProxyNodeAssistant-v0.9.0-从零部署教程.md)。
+示例域名和地址不能原样使用。完整 Cloudflare 步骤、支付商家表和排障见 [从零部署教程](ProxyNodeAssistant-v0.9.5-从零部署教程.md)。
 
 ### 3. 启动客户端
 
 Windows：
 
 ~~~text
-ProxyNodeAssistant-v0.9.0-win64.exe      Windows x64
-ProxyNodeAssistant-v0.9.0-win32.exe      Windows x86
-ProxyNodeAssistant-v0.9.0-win-arm64.exe  Windows ARM64
+ProxyNodeAssistant-v0.9.5-win64.exe      Windows x64
+ProxyNodeAssistant-v0.9.5-win32.exe      Windows x86
+ProxyNodeAssistant-v0.9.5-win-arm64.exe  Windows ARM64
 ~~~
 
 启动时程序会验证同一套 OpenSSH 中的 ssh.exe、scp.exe、ssh-keygen.exe 和 ssh-keyscan.exe。缺失时只尝试一次管理员安装和启动验证；失败会明确退出，不会陷入安装循环。
@@ -203,11 +205,28 @@ Host Key 默认不信任。程序不使用 StrictHostKeyChecking=no，也不会�
 | 16 | 自适应性能档 | 远端 | 按硬件检测并应用可回滚档位 |
 | 17 | SSH / vnStat 流量估算 | 远端 | 服务器视角估算，不冒充厂商计费 |
 | 18 | 拆除所有施工并恢复基线 | 远端 | 先下载救援包，再拆除本工具管理的已知变更 |
+| 19 | 访问与封禁日志 | 远端 | 有界聚合 SSH、Fail2ban、防火墙与入口事件；不记录秘密 URI、UUID 或载荷 |
+| 20 | 设备准入与独立吊销 | 远端 | 本机 Ed25519 身份、十分钟单次邀请、每设备 VLESS、暂停/恢复/吊销与最后控制器保护 |
+| 21 | 私人网盘控制中心 | 远端 | 固定 copyparty 供应链；账密只走 stdin；CRUD 验收；默认拆服务保留文件卷 |
+| 22 | Experimental CDN/XHTTP 本地阶段 | 远端 | 只监听回环；严格生成/解析链接；Cloudflare、源站放行和公网 443 硬阻断 |
+| 23 | 更换公网 IP 后安全重绑定 | 远端 | 复用原 SSH key；Host Key、machine-id、NODE_ID/SERVER_ID 全匹配后才允许改 DNS和提交新地址 |
 | T | 服务商流量中心 | 本地/API | KiwiVM 与条件式服务商查询，70/85/95% 预警 |
 | K | 管理节点 SSH key | 本地/远端 | 查看、归档、恢复、轮换和解绑 |
 | H | 管理 VPS 历史 | 本地 | 只记录地址、用户、端口和标签，不保存密码 |
 
-完整按钮说明、所有二级菜单和失败分支见 [完整使用说明书](ProxyNodeAssistant-v0.9.0-完整使用说明书.md)。
+完整按钮说明、所有二级菜单和失败分支见 [完整使用说明书](ProxyNodeAssistant-v0.9.5-完整使用说明书.md)。
+
+## v0.9.5 CDN/XHTTP 与私人网盘边界
+
+默认生产模式仍是 `direct-reality`。操作 22 只完成不影响现有 Reality 443 的本地预装：Xray 仅监听随机 `127.0.0.1` 端口，Nginx 仅监听 `127.0.0.2:8443`。只有本地 TLS、入站回读、监听范围和链接结构通过后，状态才进入 `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION`。
+
+当前构建不会自动开启橙云、写 Origin Rule、放行 Cloudflare 源站网段或把 Nginx 晋升到公网 443，也不会声称源站已经隐藏。操作 22 可以拉取并校验 Cloudflare 官方 CIDR，但只输出防火墙计划，状态固定为 `CLOUDFLARE_FIREWALL_APPLIED=0`。这些外部步骤需要后续真实浏览、DNS/边缘回读和回滚矩阵通过后才能解除 Experimental 标记。
+
+操作 19 只通过现有 SSH 管理通道读取有界、脱敏的安全事件；受管 Fail2ban jail 必须通过配置校验、reload 与 `status sshd` 回读。操作 20 默认只承诺“每设备凭据、可独立吊销”，不会把可复制的 VLESS 配置冒充硬件设备锁；mTLS 与 WireGuard 档继续保持 Experimental 阻断。
+
+操作 23 专门处理服务商给同一台 VPS 更换公网 IP：选择旧长期 key 记录后，只接受与旧固定 Host Key 相同的新地址，再核对 machine-id、`NODE_ID` 和 `SERVER_ID`。只有公钥被同一服务器拒绝时才允许临时询问密码并重新安装**同一公钥**；Host Key 不同绝不能用密码绕过。直接模式在 DNS only 收敛后提交；CDN、联合换域名或任何橙云路径只停在 `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION`，不会把本地 endpoint 提前改坏。
+
+操作 21 提供可直接使用的本地私人网盘：copyparty 固定 release、SFX 大小和 SHA-256，使用无登录 shell 的独立系统用户，只监听 `127.0.0.1:3923`。Windows/Android 可通过 SSH 隧道打开；账户明文仅由遮罩输入经 stdin 送入哈希器，远端只保存 scrypt 哈希。安装或轮换后必须在无 Cookie 会话完成登录、上传、下载、匿名拒绝、删除与删除后复查，任一失败都不交付新密码。公网橙云 hostname 与 Origin Rule 尚未配置时，界面明确显示 `PENDING`，不会开放公网端口。
 
 ## 15 套伪装站
 
@@ -293,12 +312,12 @@ remote command returned non-zero
 | 订阅延迟 -1 | 443、防火墙、系统时间、REALITY 参数、客户端核心和最新交接单 |
 | 面板白屏 | 保持程序运行，等待隧道加载完整；确认使用程序给出的 127.0.0.1 地址 |
 | 24443 提示卡住 | 在图形输入区回答；安全停止后可重跑并复用已有 shadow |
-| GUI 空输入高速刷屏 | 使用 v0.9.0；关闭输入被当作终止，不再反复提交 EOF |
+| GUI 空输入高速刷屏 | 使用 v0.9.5；关闭输入被当作终止，不再反复提交 EOF |
 
 更完整的命令、截图式判断和恢复顺序见：
 
-- [从零部署教程：DNS、购买、上线和验收](ProxyNodeAssistant-v0.9.0-从零部署教程.md)
-- [完整使用说明书：所有操作和二级菜单](ProxyNodeAssistant-v0.9.0-完整使用说明书.md)
+- [从零部署教程：DNS、购买、上线和验收](ProxyNodeAssistant-v0.9.5-从零部署教程.md)
+- [完整使用说明书：所有操作和二级菜单](ProxyNodeAssistant-v0.9.5-完整使用说明书.md)
 - [问题复现与修复记录](REPRODUCTION-AND-FIX.md)
 
 ## 源码结构
@@ -311,7 +330,7 @@ remote command returned non-zero
 │  WPF 单窗口 GUI、AskPass、图标和资源
 ├─ android/
 │  Kotlin + Jetpack Compose 原生客户端
-├─ runbook/proxy-runbook-v0.9.0/
+├─ runbook/proxy-runbook-v0.9.5/
 │  Linux/PowerShell 远端工具包、15 套伪装模板
 ├─ scripts/
 │  shell、协议、GUI、AskPass 和在线验货测试
@@ -338,12 +357,12 @@ Android 构建入口：
 
 ## 下载与校验
 
-不要从聊天转存、陌生网盘或二次打包站运行 EXE/APK。正式发布物应同时提供 SHA256SUMS-v0.9.0.txt。
+不要从聊天转存、陌生网盘或二次打包站运行 EXE/APK。正式发布物应同时提供 SHA256SUMS-v0.9.5.txt。
 
 Windows 校验示例：
 
 ~~~powershell
-Get-FileHash -Algorithm SHA256 .\ProxyNodeAssistant-v0.9.0-win64.exe
+Get-FileHash -Algorithm SHA256 .\ProxyNodeAssistant-v0.9.5-win64.exe
 ~~~
 
 Android 也应对 APK 计算 SHA-256，并核对发布清单。哈希不一致时不要安装或运行。
@@ -352,13 +371,13 @@ Android 也应对 APK 计算 SHA-256，并核对发布清单。哈希不一致�
 
 | 文档 | 内容 |
 |---|---|
-| [从零部署教程](ProxyNodeAssistant-v0.9.0-从零部署教程.md) | VPS、域名、中文支付、Cloudflare、首次安装、订阅与验收 |
-| [完整使用说明书](ProxyNodeAssistant-v0.9.0-完整使用说明书.md) | 全部功能、登录模式、key 恢复、备份、流量与拆除 |
+| [从零部署教程](ProxyNodeAssistant-v0.9.5-从零部署教程.md) | VPS、域名、中文支付、Cloudflare、首次安装、订阅与验收 |
+| [完整使用说明书](ProxyNodeAssistant-v0.9.5-完整使用说明书.md) | 全部功能、登录模式、key 恢复、备份、流量与拆除 |
 | [Android 手册](ANDROID.md) | Android 构建、安装、权限、密钥仓、隧道和本地化 |
 | [构建说明](BUILD.md) | Windows/Android 构建依赖、命令和验证 |
-| [更新说明](ProxyNodeAssistant-v0.9.0-更新说明.md) | v0.9.0 功能和修复摘要 |
-| [技术依据](runbook/proxy-runbook-v0.9.0/TECHNICAL_BASIS.md) | SSH、Xray、Nginx、WARP 与安全决策依据 |
-| [隐私模型](runbook/proxy-runbook-v0.9.0/PRIVACY_MODEL.md) | 发布包与运行态秘密边界 |
+| [更新说明](ProxyNodeAssistant-v0.9.5-更新说明.md) | v0.9.5 功能和修复摘要 |
+| [技术依据](runbook/proxy-runbook-v0.9.5/TECHNICAL_BASIS.md) | SSH、Xray、Nginx、WARP 与安全决策依据 |
+| [隐私模型](runbook/proxy-runbook-v0.9.5/PRIVACY_MODEL.md) | 发布包与运行态秘密边界 |
 
 ## 贡献与安全报告
 

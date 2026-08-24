@@ -167,7 +167,7 @@ private fun PnaTopBar(page: AppPage, language: Language, workflow: WorkflowUiSta
         title = {
             Column {
                 Text("PNA // NODE OPS", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                Text(if (language == Language.ZH) "ANDROID 0.9.0 / 本地控制 / 失败即停止" else "ANDROID 0.9.0 / LOCAL CONTROL / FAIL-CLOSED", color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                Text(if (language == Language.ZH) "ANDROID 0.9.5 / 本地控制 / 失败即停止" else "ANDROID 0.9.5 / LOCAL CONTROL / FAIL-CLOSED", color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
         },
         navigationIcon = {
@@ -288,9 +288,11 @@ private fun ConnectionDialog(
                     SectionLabel(uiText(language, "登录认证方式", "AUTHENTICATION MODE"))
                     Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                         FilterChip(selected = mode == AuthMode.MANAGED_KEY, onClick = { mode = AuthMode.MANAGED_KEY }, label = { Text(if (language == Language.ZH) "节点长期 KEY" else "MANAGED KEY") }, leadingIcon = { Icon(Icons.Outlined.Key, null, Modifier.size(17.dp)) })
-                        FilterChip(selected = mode == AuthMode.TEMPORARY_PASSWORD, onClick = { mode = AuthMode.TEMPORARY_PASSWORD }, label = { Text(if (language == Language.ZH) "临时密码" else "ONE-TIME PASSWORD") }, leadingIcon = { Icon(Icons.Outlined.Lock, null, Modifier.size(17.dp)) })
+						FilterChip(selected = mode == AuthMode.TEMPORARY_PASSWORD, enabled = action.code != "23", onClick = { mode = AuthMode.TEMPORARY_PASSWORD }, label = { Text(if (language == Language.ZH) "临时密码" else "ONE-TIME PASSWORD") }, leadingIcon = { Icon(Icons.Outlined.Lock, null, Modifier.size(17.dp)) })
                     }
-                    Text(if (language == Language.ZH) "长期 key 按 user@host:port 独立查找；若不存在，会先询问一次密码，再明确询问是否绑定。" else "Managed keys are isolated by user@host:port. If absent, one password is requested before an explicit bind prompt.", color = TextMuted, fontSize = 12.sp)
+					Text(if (action.code == "23") {
+						uiText(language, "这里必须选择旧 endpoint 和原长期 key；新 IP 会在下一步输入。只有原公钥被拒绝时才会临时询问密码。", "Select the old endpoint and original managed key here; the new IP is entered next. A temporary password is requested only if the original public key is rejected.")
+					} else if (language == Language.ZH) "长期 key 按 user@host:port 独立查找；若不存在，会先询问一次密码，再明确询问是否绑定。" else "Managed keys are isolated by user@host:port. If absent, one password is requested before an explicit bind prompt.", color = TextMuted, fontSize = 12.sp)
 
                     if (vpnActive) {
                         OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(2.dp), border = BorderStroke(1.dp, Amber), colors = CardDefaults.outlinedCardColors(containerColor = Panel)) {
@@ -317,7 +319,7 @@ private fun ConnectionDialog(
                             }
                         }
                     }
-                    SectionLabel(uiText(language, "目标 VPS", "TARGET"))
+					SectionLabel(if (action.code == "23") uiText(language, "原节点记录（旧 IP）", "ORIGINAL NODE RECORD (OLD IP)") else uiText(language, "目标 VPS", "TARGET"))
                     OutlinedTextField(host, { host = it }, Modifier.fillMaxWidth(), label = { Text(uiText(language, "VPS IP 或主机名", "VPS IP / HOSTNAME")) }, singleLine = true, isError = host.isNotBlank() && !Validation.validHost(host))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedTextField(user, { user = it }, Modifier.weight(1f), label = { Text(uiText(language, "SSH 用户名", "SSH USER")) }, singleLine = true)
@@ -508,7 +510,7 @@ private fun KeysScreen(language: Language, keys: List<com.proxynodeassistant.and
         onDismiss = { showExportPassphrase = false },
         onConfirm = { passphrase ->
             runCatching { viewModel.exportKeyBackup(passphrase) }
-                .onSuccess { exportPayload = it; showExportPassphrase = false; exportLauncher.launch("ProxyNodeAssistant-keys-v0.9.0.pnakeys") }
+                .onSuccess { exportPayload = it; showExportPassphrase = false; exportLauncher.launch("ProxyNodeAssistant-keys-v0.9.5.pnakeys") }
                 .onFailure { viewModel.showMessage(localizedUiError(it.message, language)) }
         },
     )
@@ -704,7 +706,7 @@ private fun formatDateTime(epochMs: Long, language: Language): String = SimpleDa
 @Composable
 private fun AboutScreen(language: Language) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageHeader("BUILD 0.9.0 / ANDROID", if (language == Language.ZH) "原生 Kotlin + Compose；SSH 基于 ConnectBot 正式 sshlib；远端复用 proxy-runbook v0.9.0。" else "Native Kotlin + Compose; ConnectBot production sshlib; shared proxy-runbook v0.9.0 remote core.")
+        PageHeader("BUILD 0.9.5 / ANDROID", if (language == Language.ZH) "原生 Kotlin + Compose；SSH 基于 ConnectBot 正式 sshlib；远端复用 proxy-runbook v0.9.5。" else "Native Kotlin + Compose; ConnectBot production sshlib; shared proxy-runbook v0.9.5 remote core.")
         LocalBlock(uiText(language, "隐私契约", "PRIVACY CONTRACT"), uiText(language, "不内置任何真实节点", "NO EMBEDDED TARGETS"), uiText(language, "APK 中不编译任何真实 VPS IP、域名、邮箱、密码、API Key、Token 或私钥。", "No real VPS IP, domain, email, password, API key, token, or private key is compiled into the APK."))
         LocalBlock(uiText(language, "SSH 主机公钥", "HOST KEY"), uiText(language, "首次信任 + 指纹固定", "TOFU + PINNING"), uiText(language, "首次连接必须明确确认 TRUST；主机公钥变化时必须输入不同的 REPLACE，并且只在密码学握手成功后保存。", "First-use fingerprints require explicit TRUST. A changed key requires the distinct REPLACE confirmation and is saved only after a successful cryptographic handshake."))
         LocalBlock(uiText(language, "失败即停止", "FAIL CLOSED"), uiText(language, "不串联伪成功", "NO CHAINED SUCCESS"), uiText(language, "远端非零退出码绝不会触发凭据复制或自动打开面板；结构化元数据必须通过标记和字段校验。", "Non-zero remote exit codes never trigger handoff copy or automatic panel opening. Structured metadata must pass marker and field validation."))

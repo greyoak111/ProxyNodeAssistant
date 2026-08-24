@@ -30,6 +30,16 @@ data class ManagedKeyRecord(
     val createdEpochMs: Long = System.currentTimeMillis(),
 )
 
+data class StableNodeIdentity(
+    val targetId: String,
+    val serverId: String,
+    val nodeId: String,
+    val machineIdSha256: String,
+    val hostKeySha256: String,
+    val firstKnownPublicIp: String,
+    val currentPublicIp: String,
+)
+
 enum class KeyStatus { BOUND, BACKUP }
 
 enum class PromptKind { TEXT, SECRET, YES_NO, HOST_KEY, EXACT_CONFIRMATION, CHOICE }
@@ -134,6 +144,11 @@ object ActionCatalog {
         ActionSpec("16", "自适应性能档", "Adaptive performance profile", "检测资源并应用可回滚档位。", "Detect capacity and apply a reversible profile.", ActionGroup.MAINTENANCE),
         ActionSpec("17", "SSH / vnStat 流量估算", "SSH / vnStat traffic estimate", "查看系统网卡累计流量，不等同厂商计费。", "View interface counters; not provider billing.", ActionGroup.MAINTENANCE),
         ActionSpec("18", "拆除所有施工并恢复基线", "Dismantle all managed changes", "先生成救援包，再拆除已知施工。", "Create a rescue archive before removing managed changes.", ActionGroup.MAINTENANCE, destructive = true),
+        ActionSpec("19", "访问与封禁日志", "Access and ban events", "按需读取 SSH、Fail2ban、防火墙和入口的聚合元数据，不新增公网面板。", "Read bounded SSH, Fail2ban, firewall, and ingress metadata on demand without a public panel.", ActionGroup.SECURITY),
+		ActionSpec("20", "设备准入与独立吊销", "Device admission and independent revocation", "每台设备使用独立 VLESS；支持单次邀请、暂停、恢复与吊销；不冒充硬件不可克隆设备锁。", "Per-device VLESS with one-time enrollment, pause, resume, and revoke; it is not presented as an uncloneable hardware lock.", ActionGroup.SECURITY),
+        ActionSpec("21", "私人网盘控制中心", "Private drive control center", "固定 copyparty 版本与哈希；管理本地回源、账户、配额和保留数据拆除。", "Pin copyparty by version and hash; manage the loopback origin, account, quota, and data-preserving removal.", ActionGroup.BACKUP),
+        ActionSpec("22", "实验性 CDN / XHTTP 本地阶段", "Experimental CDN / XHTTP local stage", "只创建回环 XHTTP 与 127.0.0.2:8443 影子；橙云和公网切换保持阻断。", "Create only loopback XHTTP and a 127.0.0.2:8443 shadow; orange-cloud and public cutover remain blocked.", ActionGroup.INSTALL),
+		ActionSpec("23", "更换公网 IP 后安全重绑定", "Safely rebind a changed public IP", "选择旧节点记录，复用原 key，并在 Host Key、machine-id、NODE_ID/SERVER_ID 全部一致后才提交新地址。", "Select the old node record, reuse its key, and commit the new endpoint only after the host key, machine-id, and NODE_ID/SERVER_ID all match.", ActionGroup.ACCESS),
         ActionSpec("T", "服务商流量中心", "Provider traffic center", "KiwiVM 临时 API Key 或经确认加密保存；其他厂商按能力接入。", "Temporary KiwiVM API key or confirmed encrypted storage; other providers by capability.", ActionGroup.LOCAL, remote = false),
         ActionSpec("K", "管理节点 SSH key", "Manage node SSH keys", "查看、备份态、恢复、轮换和解绑。", "Inspect, archive, restore, rotate, and unbind keys.", ActionGroup.SECURITY, remote = false),
         ActionSpec("H", "管理 VPS 历史", "Manage VPS history", "快速选择、编辑或一键删除历史。", "Quickly select, edit, or delete history.", ActionGroup.LOCAL, remote = false),

@@ -25,9 +25,9 @@ using IOPath = System.IO.Path;
 [assembly: AssemblyTitle("ProxyNodeAssistant")]
 [assembly: AssemblyProduct("ProxyNodeAssistant")]
 [assembly: AssemblyDescription("Privacy-first graphical VPS node assistant")]
-[assembly: AssemblyVersion("0.9.0.0")]
-[assembly: AssemblyFileVersion("0.9.0.0")]
-[assembly: AssemblyInformationalVersion("0.9.0")]
+[assembly: AssemblyVersion("0.9.5.0")]
+[assembly: AssemblyFileVersion("0.9.5.0")]
+[assembly: AssemblyInformationalVersion("0.9.5-phase0")]
 
 namespace ProxyNodeAssistant.Gui
 {
@@ -54,7 +54,7 @@ namespace ProxyNodeAssistant.Gui
 
     internal sealed class MainController
     {
-        private const string Version = "0.9.0";
+        private const string Version = "0.9.5";
         private const string CliResourceName = "ProxyNodeAssistant.Cli.exe";
         private const string AskPassResourceName = "ProxyNodeAssistant.AskPass.exe";
         private const string TunnelSessionMarker = "PANEL_TUNNEL_SESSION_ACTIVE";
@@ -769,6 +769,7 @@ namespace ProxyNodeAssistant.Gui
         {
             if (operation == null) return false;
             return operation.Id != "12" && operation.Id != "14" &&
+				   operation.Id != "23" &&
                    !operation.Id.Equals("T", StringComparison.OrdinalIgnoreCase) &&
                    !operation.Id.Equals("K", StringComparison.OrdinalIgnoreCase) &&
                    !operation.Id.Equals("H", StringComparison.OrdinalIgnoreCase);
@@ -1828,6 +1829,11 @@ namespace ProxyNodeAssistant.Gui
                 Op("16", "maintain", "自适应性能档位", "Adaptive performance profiles", "检测硬件后选择低配、标准、高配或自动档；改动前备份，支持一键回滚。", "Detect capacity, then apply low, standard, high, or auto settings with backup and one-step rollback.", "#34D399"),
                 Op("17", "maintain", "SSH / vnStat 流量估算", "SSH / vnStat traffic estimate", "通过 VPS 本地计数估算当期流量，并在 70%、85%、95% 分级预警。", "Estimate period traffic from VPS counters with tiered warnings at 70%, 85%, and 95%.", "#34D399"),
                 Op("18", "security", "全量拆除与恢复基线", "Full dismantle and baseline restore", "高风险双重确认；先把完整救援包下载到 Windows，再拆除受管节点栈并保留 SSH 救援通道。", "High-risk double confirmation; download a full Windows rescue first, then remove the managed node stack while preserving SSH rescue access.", "#FB7185"),
+                Op("19", "security", "访问与封禁日志", "Access and ban events", "按需读取 SSH、Fail2ban、防火墙和入口的聚合元数据；不新增公网面板，不把所有 IP 都叫攻击者。", "Read bounded SSH, Fail2ban, firewall, and ingress metadata on demand; no public panel and no blanket attacker labels.", "#FBBF24"),
+				Op("20", "security", "设备准入与独立吊销", "Device admission and independent revocation", "每台设备使用独立 VLESS；支持单次邀请、暂停、恢复和吊销。当前兼容档不冒充硬件不可克隆设备锁。", "Give each device independent VLESS credentials with one-time enrollment, pause, resume, and revoke. The compatibility tier is not presented as an uncloneable hardware lock.", "#FBBF24"),
+                Op("21", "backup", "私人网盘控制中心", "Private drive control center", "固定 copyparty 版本与哈希；管理回环服务、凭据、配额、SSH 隧道和保留数据拆除。", "Pin copyparty by version and hash; manage the loopback service, credentials, quota, SSH tunnel, and data-preserving removal.", "#A78BFA"),
+                Op("22", "install", "实验性 CDN / XHTTP 本地阶段", "Experimental CDN / XHTTP local stage", "只创建回环 XHTTP 与 127.0.0.2:8443 影子；橙云、源站锁和公网 443 保持硬阻断。", "Create only loopback XHTTP and a 127.0.0.2:8443 shadow; orange-cloud state, origin lock, and public 443 remain hard-blocked.", "#22D3EE"),
+				Op("23", "access", "更换公网 IP 后安全重绑定", "Safely rebind a changed public IP", "按稳定 NODE_ID/SERVER_ID 复用原 SSH key；Host Key、machine-id 或节点身份不符时在 DNS 前停止。", "Reuse the original SSH key by stable NODE_ID/SERVER_ID; stop before DNS when the host key, machine-id, or node identity differs.", "#38BDF8"),
                 Op("T", "local", "服务商流量中心", "Provider traffic center", "KiwiVM 精确 API、兼容 API 与 Windows Credential Manager；不保存服务商网站密码。", "Exact KiwiVM API, compatible APIs, and Windows Credential Manager; provider website passwords are never stored.", "#94A3B8"),
                 Op("K", "access", "管理已绑定节点 key", "Manage bound node keys", "查看、恢复或归档；支持一次清空全部绑定位置且不自动填充。", "Inspect, restore, or archive every bound position without auto-fill.", "#38BDF8"),
                 Op("H", "local", "管理 VPS 登录历史", "Manage VPS login history", "查看、删除单条或清空地址历史；不保存密码和 key。", "View, delete, or clear target history; passwords and keys are never stored.", "#94A3B8")

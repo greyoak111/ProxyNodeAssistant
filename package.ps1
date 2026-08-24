@@ -1,12 +1,16 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Workspace = Split-Path -Parent (Split-Path -Parent $Root)
 $Output = if ($env:PNA_PACKAGE_OUTPUT) { [IO.Path]::GetFullPath($env:PNA_PACKAGE_OUTPUT) } else { Join-Path $Workspace "outputs" }
-$Version = "0.9.0"
-$ToolkitVersion = "0.9.0"
+$Version = "0.9.5"
+$ToolkitVersion = "0.9.5"
+$ManualSuffix = -join ([char[]]@(0x5B8C, 0x6574, 0x4F7F, 0x7528, 0x8BF4, 0x660E, 0x4E66))
+$BeginnerGuideSuffix = -join ([char[]]@(0x4ECE, 0x96F6, 0x90E8, 0x7F72, 0x6559, 0x7A0B))
+$ReleaseNotesSuffix = -join ([char[]]@(0x66F4, 0x65B0, 0x8BF4, 0x660E))
+$PortableSuffix = -join ([char[]]@(0x4FBF, 0x643A, 0x5305))
 $Stage = Join-Path $Root ("package-stage-" + [Guid]::NewGuid().ToString("N"))
 $Portable = Join-Path $Stage "ProxyNodeAssistant-v$Version-portable"
 $Source = Join-Path $Stage "ProxyNodeAssistant-v$Version-source"
@@ -21,9 +25,9 @@ try {
     $preview = Join-Path $Root "dist\ProxyNodeAssistant-v$Version-gui-preview.png"
     $workflowPreview = Join-Path $Root "dist\ProxyNodeAssistant-v$Version-workflow-preview.png"
     $toolkit = Join-Path $Root "assets\proxy-runbook-toolkit-v$ToolkitVersion.tar.gz"
-    $manual = Join-Path $Root "ProxyNodeAssistant-v$Version-完整使用说明书.md"
-    $beginnerGuide = Join-Path $Root "ProxyNodeAssistant-v$Version-从零部署教程.md"
-    $notes = Join-Path $Root "ProxyNodeAssistant-v$Version-更新说明.md"
+    $manual = Join-Path $Root "ProxyNodeAssistant-v$Version-$ManualSuffix.md"
+    $beginnerGuide = Join-Path $Root "ProxyNodeAssistant-v$Version-$BeginnerGuideSuffix.md"
+    $notes = Join-Path $Root "ProxyNodeAssistant-v$Version-$ReleaseNotesSuffix.md"
     $readme = Join-Path $Root "README.md"
     $license = Join-Path $Root "LICENSE"
     $androidManual = Join-Path $Root "ANDROID.md"
@@ -76,7 +80,7 @@ try {
     New-Item -ItemType Directory -Force -Path $sourceAssets, (Join-Path $Source "dist") | Out-Null
     Copy-Item -LiteralPath $toolkit -Destination $sourceAssets
 
-    $portableZip = Join-Path $Output "ProxyNodeAssistant-v$Version-便携包.zip"
+    $portableZip = Join-Path $Output "ProxyNodeAssistant-v$Version-$PortableSuffix.zip"
     $sourceZip = Join-Path $Output "ProxyNodeAssistant-v$Version-source.zip"
     foreach ($zip in @($portableZip, $sourceZip)) {
         if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
@@ -102,10 +106,10 @@ try {
 
     $releaseNames = @(
         "proxy-runbook-toolkit-v$ToolkitVersion.tar.gz",
-        "ProxyNodeAssistant-v$Version-便携包.zip",
-        "ProxyNodeAssistant-v$Version-更新说明.md",
-        "ProxyNodeAssistant-v$Version-从零部署教程.md",
-        "ProxyNodeAssistant-v$Version-完整使用说明书.md",
+        "ProxyNodeAssistant-v$Version-$PortableSuffix.zip",
+        "ProxyNodeAssistant-v$Version-$ReleaseNotesSuffix.md",
+        "ProxyNodeAssistant-v$Version-$BeginnerGuideSuffix.md",
+        "ProxyNodeAssistant-v$Version-$ManualSuffix.md",
         $androidManualName,
         "ProxyNodeAssistant-v$Version-source.zip",
         "ProxyNodeAssistant-v$Version-win64.exe",
@@ -127,10 +131,10 @@ try {
     $sumPath = Join-Path $Output "SHA256SUMS-v$Version.txt"
     [IO.File]::WriteAllText($sumPath, (($hashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
     $githubAssetNames = @{
-        "ProxyNodeAssistant-v$Version-便携包.zip" = "ProxyNodeAssistant-v$Version-portable.zip"
-        "ProxyNodeAssistant-v$Version-更新说明.md" = "ProxyNodeAssistant-v$Version-release-notes-zh-CN.md"
-        "ProxyNodeAssistant-v$Version-从零部署教程.md" = "ProxyNodeAssistant-v$Version-beginner-guide-zh-CN.md"
-        "ProxyNodeAssistant-v$Version-完整使用说明书.md" = "ProxyNodeAssistant-v$Version-manual-zh-CN.md"
+        "ProxyNodeAssistant-v$Version-$PortableSuffix.zip" = "ProxyNodeAssistant-v$Version-portable.zip"
+        "ProxyNodeAssistant-v$Version-$ReleaseNotesSuffix.md" = "ProxyNodeAssistant-v$Version-release-notes-zh-CN.md"
+        "ProxyNodeAssistant-v$Version-$BeginnerGuideSuffix.md" = "ProxyNodeAssistant-v$Version-beginner-guide-zh-CN.md"
+        "ProxyNodeAssistant-v$Version-$ManualSuffix.md" = "ProxyNodeAssistant-v$Version-manual-zh-CN.md"
     }
     $githubHashLines = foreach ($name in $releaseNames) {
         $path = Join-Path $Output $name

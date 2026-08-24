@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -27,6 +28,108 @@ var closedPattern = regexp.MustCompile(`(?i)^Connection to .+ closed\.$`)
 var diagCodePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var toolkitVersionPattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,3}$`)
 var toolkitBuildPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+var uuidPattern = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$`)
+var cdnHostnamePattern = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,63}$`)
+var xhttpPathPattern = regexp.MustCompile(`^/[0-9a-f]{32}/$`)
+
+type CDNXHTTPLink struct {
+	UUID   string
+	Domain string
+	Port   int
+	Path   string
+	Label  string
+}
+
+func validateCDNXHTTPProfile(profile CDNXHTTPLink) error {
+	if !uuidPattern.MatchString(profile.UUID) {
+		return errors.New("CDN XHTTP link has an invalid UUID")
+	}
+	if !cdnHostnamePattern.MatchString(profile.Domain) {
+		return errors.New("CDN XHTTP link has an invalid hostname")
+	}
+	if profile.Port != 443 && profile.Port != 8443 {
+		return errors.New("CDN XHTTP link port must be 443 or 8443")
+	}
+	if !xhttpPathPattern.MatchString(profile.Path) {
+		return errors.New("CDN XHTTP link path must be / plus 32 lowercase hex characters plus /")
+	}
+	expectedLabel := "PNA-CDN-XHTTP"
+	if profile.Port == 8443 {
+		expectedLabel = "PNA-CDN-XHTTP-STAGE"
+	}
+	if profile.Label != expectedLabel {
+		return fmt.Errorf("CDN XHTTP link label must be %s", expectedLabel)
+	}
+	return nil
+}
+
+func buildCDNXHTTPLink(profile CDNXHTTPLink) (string, error) {
+	if err := validateCDNXHTTPProfile(profile); err != nil {
+		return "", err
+	}
+	query := url.Values{}
+	query.Set("encryption", "none")
+	query.Set("security", "tls")
+	query.Set("sni", profile.Domain)
+	query.Set("fp", "chrome")
+	query.Set("type", "xhttp")
+	query.Set("host", profile.Domain)
+	query.Set("path", profile.Path)
+	query.Set("mode", "packet-up")
+	parsed := url.URL{
+		Scheme:   "vless",
+		User:     url.User(profile.UUID),
+		Host:     net.JoinHostPort(profile.Domain, strconv.Itoa(profile.Port)),
+		RawQuery: query.Encode(),
+		Fragment: profile.Label,
+	}
+	return parsed.String(), nil
+}
+
+func parseCDNXHTTPLink(value string) (CDNXHTTPLink, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme != "vless" || parsed.User == nil {
+		return CDNXHTTPLink{}, errors.New("invalid VLESS URL")
+	}
+	if parsed.User.String() == "" || parsed.User.Username() != parsed.User.String() {
+		return CDNXHTTPLink{}, errors.New("VLESS userinfo must contain only the UUID")
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		return CDNXHTTPLink{}, errors.New("VLESS port is missing or invalid")
+	}
+	query := parsed.Query()
+	required := map[string]string{
+		"encryption": "none",
+		"security":   "tls",
+		"sni":        parsed.Hostname(),
+		"fp":         "chrome",
+		"type":       "xhttp",
+		"host":       parsed.Hostname(),
+		"mode":       "packet-up",
+	}
+	for key, expected := range required {
+		values := query[key]
+		if len(values) != 1 || values[0] != expected {
+			return CDNXHTTPLink{}, fmt.Errorf("CDN XHTTP link field %s is missing, duplicated, or invalid", key)
+		}
+	}
+	paths := query["path"]
+	if len(paths) != 1 {
+		return CDNXHTTPLink{}, errors.New("CDN XHTTP link path is missing or duplicated")
+	}
+	profile := CDNXHTTPLink{
+		UUID:   parsed.User.Username(),
+		Domain: parsed.Hostname(),
+		Port:   port,
+		Path:   paths[0],
+		Label:  parsed.Fragment,
+	}
+	if err := validateCDNXHTTPProfile(profile); err != nil {
+		return CDNXHTTPLink{}, err
+	}
+	return profile, nil
+}
 
 type ToolkitProbe struct {
 	Present       bool

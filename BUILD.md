@@ -18,10 +18,10 @@ build-all-pc.bat
 
 构建脚本会依次：
 
-1. 重建内嵌 runbook tar.gz。
-2. 格式化 Go 源码。
-3. 执行 `go test ./...`。
-4. 执行 `go vet ./...`。
+1. 重建 runbook 内部 `SHA256SUMS.txt` 和内嵌 tar.gz。
+2. 执行全部 Shell 语法/协议门禁，包括部署状态机、第三方供应链和私人网盘回环/密码 stdin 静态检查。
+3. 格式化 Go 源码。
+4. 执行 `go test ./...` 与 `go vet ./...`。
 5. 以 `CGO_ENABLED=0`、`GOOS=windows`、目标 `GOARCH` 和 `-trimpath` 构建隐藏工作流核心。
 6. 构建无控制台 AskPass 辅助程序；它只通过当前用户专用随机命名管道接收一次密码请求。
 7. 将工作流核心、AskPass 和 XAML 作为资源封装进单文件 WPF GUI EXE，并写入包含 16—256 像素图层的原生 Windows ICO。
@@ -36,22 +36,24 @@ build-all-pc.bat
 构建结果位于 `dist`：
 
 ```text
-ProxyNodeAssistant-v0.9.0-win64.exe       默认发布的单文件 GUI
-ProxyNodeAssistant-v0.9.0-win32.exe       Windows 10 x86 单文件 GUI
-ProxyNodeAssistant-v0.9.0-win-arm64.exe   Windows 10/11 ARM64 单文件 GUI
-ProxyNodeAssistant-v0.9.0-cli-win*.exe    构建中间件/高级调试核心
-ProxyNodeAssistant-v0.9.0-askpass-win*.exe 构建中间件/受限命名管道辅助程序
-ProxyNodeAssistant-v0.9.0-gui-preview.png 界面渲染验证图
-ProxyNodeAssistant-v0.9.0-workflow-preview.png 操作工作区渲染验证图
+ProxyNodeAssistant-v0.9.5-win64.exe       默认发布的单文件 GUI
+ProxyNodeAssistant-v0.9.5-win32.exe       Windows 10 x86 单文件 GUI
+ProxyNodeAssistant-v0.9.5-win-arm64.exe   Windows 10/11 ARM64 单文件 GUI
+ProxyNodeAssistant-v0.9.5-cli-win*.exe    构建中间件/高级调试核心
+ProxyNodeAssistant-v0.9.5-askpass-win*.exe 构建中间件/受限命名管道辅助程序
+ProxyNodeAssistant-v0.9.5-gui-preview.png 界面渲染验证图
+ProxyNodeAssistant-v0.9.5-workflow-preview.png 操作工作区渲染验证图
 ```
 
-应用图标源文件位于 `gui/ProxyNodeAssistant-v0.9.0-app-icon.png`，Windows 多尺寸资源位于 `gui/ProxyNodeAssistant-v0.9.0.ico`。Windows 应用与内嵌 Linux runbook 均为 v0.9.0；构建会重新生成 runbook 的 `SHA256SUMS.txt`，并把性能/流量脚本与 15 套伪装站模板一并打入归档。
+应用图标源文件位于 `gui/ProxyNodeAssistant-v0.9.5-app-icon.png`，Windows 多尺寸资源位于 `gui/ProxyNodeAssistant-v0.9.5.ico`。Windows 应用与内嵌 Linux runbook 均为 v0.9.5；构建会重新生成 runbook 的 `SHA256SUMS.txt`，并把性能/流量、XHTTP 本地影子、固定 copyparty 私人网盘与 15 套伪装站模板一并打入归档。
 
 Linux Shell 静态语法可在 Git Bash 中执行：
 
 ```bash
-find runbook/proxy-runbook-v0.9.0/linux -name '*.sh' -print0 | xargs -0 -n1 bash -n
+find runbook/proxy-runbook-v0.9.5/linux -name '*.sh' -print0 | xargs -0 -n1 bash -n
 scripts/test-xui-api-context.sh
 scripts/test-warp-route-idempotency.sh
+scripts/test-deployment-state.sh
+scripts/test-private-drive-static.sh
 ```
 

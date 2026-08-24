@@ -15,19 +15,19 @@ $architectureInfo = switch ($Architecture) {
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RunbookRoot = Join-Path $Root "runbook"
-$Archive = Join-Path $Root "assets\proxy-runbook-toolkit-v0.9.0.tar.gz"
+$Archive = Join-Path $Root "assets\proxy-runbook-toolkit-v0.9.5.tar.gz"
 $Dist = Join-Path $Root "dist"
-$CliExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-cli-$($architectureInfo.Suffix).exe"
-$AskPassExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-askpass-$($architectureInfo.Suffix).exe"
-$GuiExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-$($architectureInfo.Suffix).exe"
-$GuiPreview = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-gui-preview.png"
-$OperationPreview = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-workflow-preview.png"
+$CliExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-cli-$($architectureInfo.Suffix).exe"
+$AskPassExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-askpass-$($architectureInfo.Suffix).exe"
+$GuiExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-$($architectureInfo.Suffix).exe"
+$GuiPreview = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-gui-preview.png"
+$OperationPreview = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-workflow-preview.png"
 $GuiSource = Join-Path $Root "gui\ProxyNodeAssistant.Gui.cs"
 $AskPassSource = Join-Path $Root "gui\ProxyNodeAssistant.AskPass.cs"
 $GuiXaml = Join-Path $Root "gui\MainWindow.xaml"
 $GuiManifest = Join-Path $Root "gui\app.manifest"
-$GuiIcon = Join-Path $Root "gui\ProxyNodeAssistant-v0.9.0.ico"
-$GuiIconPng = Join-Path $Root "gui\ProxyNodeAssistant-v0.9.0-app-icon.png"
+$GuiIcon = Join-Path $Root "gui\ProxyNodeAssistant-v0.9.5.ico"
+$GuiIconPng = Join-Path $Root "gui\ProxyNodeAssistant-v0.9.5-app-icon.png"
 
 $Go = if ($env:PNA_GO_EXE) { $env:PNA_GO_EXE } else { "go" }
 $Gofmt = if ($env:PNA_GOFMT_EXE) { $env:PNA_GOFMT_EXE } else { "gofmt" }
@@ -52,7 +52,7 @@ foreach ($requiredVisual in @($GuiIcon, $GuiIconPng)) {
         throw "Required application icon is missing: $requiredVisual"
     }
 }
-$RunbookPackageRoot = Join-Path $RunbookRoot "proxy-runbook-v0.9.0"
+$RunbookPackageRoot = Join-Path $RunbookRoot "proxy-runbook-v0.9.5"
 if (-not $SkipCommonValidation) {
     $RunbookHashManifest = Join-Path $RunbookPackageRoot "SHA256SUMS.txt"
     $runbookHashLines = Get-ChildItem -LiteralPath $RunbookPackageRoot -File -Recurse | Where-Object {
@@ -63,7 +63,7 @@ if (-not $SkipCommonValidation) {
         "$hash  $relative"
     }
     [IO.File]::WriteAllText($RunbookHashManifest, (($runbookHashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
-    & tar -czf $Archive -C $RunbookRoot "proxy-runbook-v0.9.0"
+    & tar -czf $Archive -C $RunbookRoot "proxy-runbook-v0.9.5"
     if ($LASTEXITCODE -ne 0) { throw "tar failed" }
 
     foreach ($shellTest in @(
@@ -71,7 +71,12 @@ if (-not $SkipCommonValidation) {
         "scripts/test-diagnosis-protocol.sh",
         "scripts/test-xui-api-context.sh",
         "scripts/test-warp-route-idempotency.sh",
-        "scripts/test-gui-remote-prompt.sh"
+        "scripts/test-gui-remote-prompt.sh",
+        "scripts/test-deployment-state.sh",
+        "scripts/test-private-drive-static.sh",
+        "scripts/test-security-events-static.sh",
+		"scripts/test-device-admission-static.sh",
+		"scripts/test-ip-rebind-static.sh"
     )) {
         & $Bash $shellTest
         if ($LASTEXITCODE -ne 0) { throw "Shell validation failed: $shellTest" }

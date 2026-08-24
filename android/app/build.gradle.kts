@@ -11,8 +11,8 @@ android {
         applicationId = "com.proxynodeassistant.android"
         minSdk = 24
         targetSdk = 36
-        versionCode = 902
-        versionName = "0.9.0"
+        versionCode = 905
+        versionName = "0.9.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

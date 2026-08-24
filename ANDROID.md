@@ -1,14 +1,14 @@
-# ProxyNodeAssistant v0.9.0 Android 完整使用说明
+# ProxyNodeAssistant v0.9.5 Android 完整使用说明
 
 ## 1. 这是什么
 
-Android 版是原生 Kotlin + Jetpack Compose 应用，不是网页壳、Termux 脚本或远程桌面。它在手机内完成 SSH 认证、Host Key 校验、SCP 传输、交互提示、日志、凭据交接和 127.0.0.1 面板隧道，远端施工继续复用与 Windows 正式版完全相同的 `proxy-runbook v0.9.0`。
+Android 版是原生 Kotlin + Jetpack Compose 应用，不是网页壳、Termux 脚本或远程桌面。它在手机内完成 SSH 认证、Host Key 校验、SCP 传输、交互提示、日志、凭据交接和 127.0.0.1 面板隧道，远端施工继续复用与 Windows 正式版完全相同的 `proxy-runbook v0.9.5`。
 
-最低 Android 7.0（API 24），面向 Android 16（target API 36）。APK 是 universal 包，可安装在常见 ARM64、ARMv7 和 x86_64 Android 设备上；SSH 部分为纯 Java/Kotlin，不要求 root。本次更新仍显示版本 `0.9.0`，内部 `versionCode=902`，可直接覆盖安装先前的 0.9.0 安卓构建。
+最低 Android 7.0（API 24），面向 Android 16（target API 36）。APK 是 universal 包，可安装在常见 ARM64、ARMv7 和 x86_64 Android 设备上；SSH 部分为纯 Java/Kotlin，不要求 root。本次更新仍显示版本 `0.9.5`，内部 `versionCode=902`，可直接覆盖安装先前的 0.9.5 安卓构建。
 
 ## 2. 安装
 
-1. 把 `ProxyNodeAssistant-v0.9.0-android-universal.apk` 传到手机。
+1. 把 `ProxyNodeAssistant-v0.9.5-android-universal.apk` 传到手机。
 2. 在系统设置中仅为当前文件管理器或浏览器临时允许“安装未知应用”。
 3. 安装 APK，启动 `PNA // NODE OPS`。
 4. Android 13 及以上会询问通知权限。允许后，面板 SSH 隧道可通过前台服务稳定保持，并在通知中提供停止按钮；拒绝通知不会给应用读取联系人、短信或相册的权限。
@@ -52,6 +52,11 @@ APK 不要求存储权限。报告、救援包和加密密钥备份通过 Androi
 | 16 | 自适应性能档 | 侦测/自动/低配/标准/高配/回滚，所有变更可回滚。 |
 | 17 | SSH/vnStat 流量 | 安装或读取低开销网卡计数；明确标记为估算，不等同厂商计费。 |
 | 18 | 全量拆除 | 先下载救援包，再按计划移除本工具可识别的施工；旧版本基线不完整时有第二层确认。 |
+| 19 | 访问与封禁日志 | 读取有界脱敏事件；区分成功登录、认证失败、防火墙拒绝与 Fail2ban 封禁。 |
+| 20 | 设备准入 | Android 本地 Ed25519 身份、单次邀请响应、每设备 VLESS、暂停/恢复/吊销和最后控制器保护。 |
+| 21 | 私人网盘控制中心 | 固定 copyparty 版本与哈希；管理回环服务、账户、2/3GiB 配额、SSH 隧道和保留文件拆除。 |
+| 22 | Experimental CDN/XHTTP 本地阶段 | 创建/复用回环 XHTTP 和 `127.0.0.2:8443` Nginx 影子；严格校验影子链接；橙云、公网放行和 443 晋升被阻断。 |
+| 23 | 公网 IP 安全重绑定 | 必须选择旧长期 key；复用同一私钥，并校验旧 Host Key、machine-id、NODE_ID/SERVER_ID 后提交新 endpoint。 |
 | T | 服务商流量中心 | KiwiVM `VEID + API Key` 真实查询、阈值预警；其他无统一 API 的厂商回退到 SSH/vnStat。 |
 | K | 密钥仓 | 查看绑定/多代备份、全部转备份态、恢复指定一代、删除指定备份、加密导出/导入。 |
 | H | 节点历史 | 查看和删除非秘密目标历史。 |
@@ -114,6 +119,9 @@ KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要�
 - 点击停止：关闭当前 SSH/提示等待，不把 EOF 当成空输入反复提交。
 - 新节点绑定 key：先用第二条连接实测新 key；成功后关闭原密码会话，并让后续施工切换到已验证的 key 会话。
 - 活动 SSH 会话每 15 秒发送保活包，降低移动网络 NAT 在等待本人输入时回收连接的概率。
+- IP 重绑定的 `LOCAL_KEY_RECORD_NOT_FOUND`、`PUBLICKEY_REJECTED` 与 `HOST_KEY_MISMATCH` 是三个独立结果；只有第二种会询问密码。
+- IP 重绑定停在 Cloudflare 人工步骤时显示黄色安全停工，而不是绿色执行成功；橙云不得关闭，本地 endpoint 在外部验收前不提交。
+- 所有完整交接单以远端已经校验的旧交接原文开头，再追加 Android 运行态、稳定服务器身份、面板隧道和网盘边界；Cloudflare Token 永不进入交接区。
 
 ## 10. 权限与本地数据
 
@@ -145,9 +153,9 @@ KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要�
 口令用当前 Windows 用户的 DPAPI 保护。以后 APK 更新必须使用同一 keystore；请把这两个文件一并安全备份。输出位于：
 
 ```text
-android\dist\ProxyNodeAssistant-v0.9.0-android-universal.apk
+android\dist\ProxyNodeAssistant-v0.9.5-android-universal.apk
 ```
 
 ## 12. 隐私发布检查
 
-发布 APK 和源码不得包含真实 VPS IP、域名、邮箱、密码、API Key、Token 或私钥。APK 内资产名固定为 `proxy-runbook-toolkit-v0.9.0.tgz`（上传到远端时恢复标准 `.tar.gz` 名），构建前应校验其 SHA-256 与正式 Windows 包一致，并对源码、解包 APK 和内嵌 tar 做二次扫描。
+发布 APK 和源码不得包含真实 VPS IP、域名、邮箱、密码、API Key、Token 或私钥。APK 内资产名固定为 `proxy-runbook-toolkit-v0.9.5.tgz`（上传到远端时恢复标准 `.tar.gz` 名），构建前应校验其 SHA-256 与正式 Windows 包一致，并对源码、解包 APK 和内嵌 tar 做二次扫描。

@@ -91,7 +91,7 @@ func TestDeployCleanupPromptIsBetweenHandoffAndPanel(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	handoff := strings.Index(text, `a.secretHandoff("CREDENTIAL HANDOFF", handoff)`)
+	handoff := strings.Index(text, `a.secretHandoff("CREDENTIAL HANDOFF", completeHandoff)`)
 	cleanup := strings.Index(text, `"是否在打开面板前整理远端多余备份`)
 	panel := strings.Index(text, `"现在无感打开 3x-ui 面板？`)
 	if handoff < 0 || cleanup < 0 || panel < 0 || !(handoff < cleanup && cleanup < panel) {

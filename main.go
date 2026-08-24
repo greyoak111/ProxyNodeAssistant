@@ -15,14 +15,14 @@ import (
 	"sync"
 )
 
-const version = "0.9.0"
+const version = "0.9.5"
 
 var errInputClosed = errors.New("interactive input was closed")
 
 const guiPromptPrefix = "PNA_GUI_PROMPT_B64="
 const guiSecretPromptPrefix = "PNA_GUI_SECRET_B64="
 
-//go:embed assets/proxy-runbook-toolkit-v0.9.0.tar.gz
+//go:embed assets/proxy-runbook-toolkit-v0.9.5.tar.gz
 var embeddedToolkit []byte
 
 type Lang string
@@ -144,6 +144,33 @@ func (a *App) secretPrompt(label string) string {
 	return strings.TrimSpace(value)
 }
 
+// secretPromptExact removes only the line ending added by the prompt protocol.
+// It intentionally preserves all other characters, including leading and
+// trailing spaces, so a custom password is never silently normalized.
+func (a *App) secretPromptExact(label string) string {
+	if a.inputClosed {
+		return ""
+	}
+	var restore func()
+	if os.Getenv("PNA_GUI_MODE") == "1" {
+		fmt.Println(guiSecretPromptFrame(label))
+	} else {
+		fmt.Print(label + ": ")
+		restore = disableConsoleEcho()
+	}
+	value, err := a.reader.ReadString('\n')
+	if restore != nil {
+		restore()
+		fmt.Println()
+	}
+	if err != nil && value == "" {
+		a.inputClosed = true
+	}
+	value = strings.TrimSuffix(value, "\n")
+	value = strings.TrimSuffix(value, "\r")
+	return value
+}
+
 func (a *App) required(label string) (string, error) {
 	for {
 		value := a.prompt(label)
@@ -218,6 +245,11 @@ func (a *App) printMenu() {
 		a.println("[16] 自适应性能档位：检测 / 低配 / 标准 / 高配 / 回滚")
 		a.println("[17] SSH/vnStat 流量估算与 70/85/95% 预警")
 		a.println("[18] 全量拆除本工具施工并恢复原始基线（高风险，先下载救援包）")
+		a.println("[19] 访问与封禁日志（聚合元数据 / 受管 Fail2ban）")
+		a.println("[20] 设备准入：独立 VLESS / 单次邀请 / 暂停与吊销")
+		a.println("[21] 私人网盘：copyparty 本地回源 / 凭据 / 配额 / 拆除")
+		a.println("[22] 实验性 CDN/XHTTP：仅回环影子 / 状态 / Cloudflare 只读计划")
+		a.println("[23] 更换 VPS 公网 IP 后安全重绑定（复用原 key；身份不符即停止）")
 		a.println("[T] 服务商流量中心：KiwiVM 精确 API / 兼容 API / 凭据管理器")
 		a.println("[K] 管理已绑定 key：查看 / 恢复 / 全部转入备份态并清空绑定位置")
 		a.println("[H] 管理 VPS 登录历史：查看 / 删除单条 / 清空全部")
@@ -244,6 +276,11 @@ func (a *App) printMenu() {
 		a.println("[16] Adaptive performance: detect / low / standard / high / rollback")
 		a.println("[17] SSH/vnStat traffic estimate with 70/85/95% warnings")
 		a.println("[18] Fully dismantle managed construction and restore the original baseline (high risk; rescue first)")
+		a.println("[19] Access and ban events (aggregated metadata / managed Fail2ban)")
+		a.println("[20] Device admission: per-device VLESS / one-time invitation / pause and revoke")
+		a.println("[21] Private drive: copyparty loopback origin / credentials / quota / removal")
+		a.println("[22] Experimental CDN/XHTTP: loopback shadow / status / read-only Cloudflare plan")
+		a.println("[23] Safely rebind a changed VPS public IP (reuse the original key; stop on identity mismatch)")
 		a.println("[T] Provider traffic center: exact KiwiVM API / compatible API / Credential Manager")
 		a.println("[K] Manage bound keys: inspect / restore / archive all and empty bound positions")
 		a.println("[H] Manage VPS login history: inspect / delete one / clear all")
@@ -292,11 +329,11 @@ func (a *App) extractEmbeddedTar() (string, error) {
 	if len(embeddedToolkit) < 128 {
 		return "", fmt.Errorf("embedded toolkit is unexpectedly empty")
 	}
-	dir := filepath.Join(os.TempDir(), "ProxyNodeAssistant-v0.9.0")
+	dir := filepath.Join(os.TempDir(), "ProxyNodeAssistant-v0.9.5")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "proxy-runbook-toolkit-v0.9.0.tar.gz")
+	path := filepath.Join(dir, "proxy-runbook-toolkit-v0.9.5.tar.gz")
 	if err := os.WriteFile(path, embeddedToolkit, 0600); err != nil {
 		return "", err
 	}
@@ -341,6 +378,16 @@ func (a *App) executeActionChoice(choice string) (bool, error) {
 		return true, a.runRemoteAction(a.trafficEstimate)
 	case "18":
 		return true, a.runRemoteAction(a.dismantleManagedNode)
+	case "19":
+		return true, a.runRemoteAction(a.manageSecurityEvents)
+	case "20":
+		return true, a.runRemoteAction(a.manageDeviceAdmission)
+	case "21":
+		return true, a.runRemoteAction(a.managePrivateDrive)
+	case "22":
+		return true, a.runRemoteAction(a.manageCDNXHTTPPrototype)
+	case "23":
+		return true, a.rebindPublicIP()
 	case "t":
 		return true, a.providerTrafficCenter()
 	case "k":

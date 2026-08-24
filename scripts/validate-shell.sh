@@ -8,6 +8,6 @@ while IFS= read -r -d '' file; do
   if ! bash -n "$file"; then
     FAILED=1
   fi
-done < <(find "$ROOT/runbook/proxy-runbook-v0.9.0/linux" -type f -name '*.sh' -print0)
+done < <(find "$ROOT/runbook/proxy-runbook-v0.9.5/linux" -type f -name '*.sh' -print0)
 
 exit "$FAILED"

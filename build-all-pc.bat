@@ -6,18 +6,18 @@ set "SOURCE_DIR=%~dp0"
 for %%I in ("%SOURCE_DIR%") do set "SOURCE_DIR=%%~fI"
 set "WORKSPACE_DIR=%SOURCE_DIR%..\.."
 for %%I in ("%WORKSPACE_DIR%") do set "WORKSPACE_DIR=%%~fI"
-set "OUTPUT_DIR=%WORKSPACE_DIR%\outputs\ProxyNodeAssistant-v0.9.0-official"
+set "OUTPUT_DIR=%WORKSPACE_DIR%\outputs\ProxyNodeAssistant-v0.9.5-official"
 
 echo ============================================================
-echo  ProxyNodeAssistant v0.9.0 - Windows 全架构正式打包
+echo  ProxyNodeAssistant v0.9.5 - Windows 全架构正式打包
 echo ============================================================
 echo  源码目录: %SOURCE_DIR%
 echo  输出目录: %OUTPUT_DIR%
 echo.
 echo  将生成:
-echo    1. Windows x64   - ProxyNodeAssistant-v0.9.0-win64.exe
-echo    2. Windows x86   - ProxyNodeAssistant-v0.9.0-win32.exe
-echo    3. Windows ARM64 - ProxyNodeAssistant-v0.9.0-win-arm64.exe
+echo    1. Windows x64   - ProxyNodeAssistant-v0.9.5-win64.exe
+echo    2. Windows x86   - ProxyNodeAssistant-v0.9.5-win32.exe
+echo    3. Windows ARM64 - ProxyNodeAssistant-v0.9.5-win-arm64.exe
 echo.
 
 where powershell.exe >nul 2>nul || goto :missing_powershell
@@ -48,9 +48,9 @@ set "PNA_PACKAGE_OUTPUT=%OUTPUT_DIR%"
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SOURCE_DIR%package.ps1"
 if errorlevel 1 goto :failed
 
-copy /y "%OUTPUT_DIR%\ProxyNodeAssistant-v0.9.0-win64.exe" "%WORKSPACE_DIR%\outputs\ProxyNodeAssistant-v0.9.0-win64.exe" >nul
-copy /y "%OUTPUT_DIR%\ProxyNodeAssistant-v0.9.0-win32.exe" "%WORKSPACE_DIR%\outputs\ProxyNodeAssistant-v0.9.0-win32.exe" >nul
-copy /y "%OUTPUT_DIR%\ProxyNodeAssistant-v0.9.0-win-arm64.exe" "%WORKSPACE_DIR%\outputs\ProxyNodeAssistant-v0.9.0-win-arm64.exe" >nul
+copy /y "%OUTPUT_DIR%\ProxyNodeAssistant-v0.9.5-win64.exe" "%WORKSPACE_DIR%\outputs\ProxyNodeAssistant-v0.9.5-win64.exe" >nul
+copy /y "%OUTPUT_DIR%\ProxyNodeAssistant-v0.9.5-win32.exe" "%WORKSPACE_DIR%\outputs\ProxyNodeAssistant-v0.9.5-win32.exe" >nul
+copy /y "%OUTPUT_DIR%\ProxyNodeAssistant-v0.9.5-win-arm64.exe" "%WORKSPACE_DIR%\outputs\ProxyNodeAssistant-v0.9.5-win-arm64.exe" >nul
 
 echo.
 echo ============================================================

@@ -1,5 +1,5 @@
 param(
-    [string]$OutputFile = (Join-Path $PSScriptRoot "dist\ProxyNodeAssistant-v0.9.0-android-universal.apk"),
+    [string]$OutputFile = (Join-Path $PSScriptRoot "dist\ProxyNodeAssistant-v0.9.5-android-universal.apk"),
     [switch]$Provision
 )
 

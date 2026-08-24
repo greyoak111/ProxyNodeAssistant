@@ -24,4 +24,10 @@ class HostKeyRepository(private val vault: EncryptedVault) {
     }
 
     fun delete(targetId: String) = vault.remove(name(targetId))
+
+    fun commitRebind(oldTargetId: String, record: HostKeyRecord) {
+        put(record)
+		// Keep the old endpoint pin as retired audit evidence. A public-IP change
+		// must add a verified binding; it must not silently erase known_hosts history.
+    }
 }
