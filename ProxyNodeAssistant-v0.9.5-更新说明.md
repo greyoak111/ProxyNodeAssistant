@@ -31,6 +31,8 @@ hotfix4：修复工作流中断后，旧 `reality-shadow.env` 的 `TEST_PORT` �
 
 revision 7 修复 Windows 默认 DNS 解析器超时导致的无限“DNS 还没生效”误判。安装入口现在并行检查 Windows 系统解析器、Cloudflare DNS-over-HTTPS 与 Google DNS-over-HTTPS：系统解析器命中即可通过；系统失败时两个公共解析器必须同时精确命中。远端 runbook 使用相同仲裁规则，并以 `MATCH/MISS` 显示结果，不输出或保存任何 DNS API 凭据。
 
+revision 8 取消残缺凭据交接。Windows 和 Android 的交接区最上方固定显示 `VPS_ACCOUNT`、`VPS_PASSWORD`、`PANEL_ACCOUNT`、`PANEL_PASSWORD`；任何一项缺失或为占位符都会拒绝显示和复制。远端新增权限为 600 的当前登录凭据仓，避免新一轮施工把仍有效的密码清到历史档；面板凭据必须通过 localhost 真实登录验证。若已有节点只剩密码哈希，`[1]` 会明确询问后轮换；拒绝轮换即安全停止，绝不谎报完成。
+
 Windows 图形客户端与远端工具包从本版起统一使用 `0.9.5`。远端旧版只能由菜单 `[1]` 升级；完整同版禁止重复上传，远端版本更高时拒绝降级并提示更换更新的 EXE。
 
 ## 新增：可回滚自适应性能档

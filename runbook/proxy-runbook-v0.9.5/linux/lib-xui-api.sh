@@ -174,6 +174,26 @@ xui_auth_curl() {
   curl -fsS -H @/dev/fd/3 "$@" 3<<<"Authorization: Bearer ${XUI_API_TOKEN}"
 }
 
+xui_password_login_works() {
+  local username="$1" password="$2" xui show port raw_path clean_path base body response
+  [ -n "$username" ] && [ -n "$password" ] || return 1
+  case "$username$password" in *$'\r'*|*$'\n'*) return 1 ;; esac
+  xui="$(xui_find_bin)" || return 1
+  show="$("$xui" setting -show 2>/dev/null || true)"
+  port="$(printf '%s\n' "$show" | sed -nE 's/^[[:space:]]*(port|panelPort):[[:space:]]*([0-9]+).*$/\2/p' | sed -n '1p')"
+  raw_path="$(printf '%s\n' "$show" | sed -nE 's/^[[:space:]]*(webBasePath|web base path):[[:space:]]*(.*)$/\2/p' | sed -n '1p')"
+  [ -n "$port" ] || port="$(xui_env_value "${PNA_XUI_PUBLIC_FILE:-/etc/proxy-runbook/public.env}" PANEL_PORT 2>/dev/null || true)"
+  [ -n "$raw_path" ] || raw_path="$(xui_env_value "${PNA_XUI_PUBLIC_FILE:-/etc/proxy-runbook/public.env}" WEB_BASE_PATH 2>/dev/null || true)"
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 1
+  clean_path="${raw_path#/}"; clean_path="${clean_path%/}"
+  base="http://127.0.0.1:${port}"
+  [ -z "$clean_path" ] || base="${base}/${clean_path}"
+  body="$(printf '%s\n%s' "$username" "$password" | python3 -c 'import sys, urllib.parse; u=sys.stdin.readline().rstrip("\n"); p=sys.stdin.read(); print(urllib.parse.urlencode({"username":u,"password":p}), end="")')" || return 1
+  response="$(printf '%s' "$body" | curl -fsS --max-time 10 -H 'Content-Type: application/x-www-form-urlencoded' --data-binary @- "${base}/login" 2>/dev/null)" || return 1
+  jq -e '(.success == true) or (.success == "true")' >/dev/null 2>&1 <<<"$response"
+}
+
 xui_api_get() {
   local path="$1"
   xui_auth_curl "${XUI_BASE}${path}"

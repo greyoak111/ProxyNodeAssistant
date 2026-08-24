@@ -16,6 +16,8 @@ printf '%s:%s\n' "$LOGIN_USER" "$PASSWORD" | chpasswd
 
 handoff_set "VPS_LOGIN_USER" "$LOGIN_USER"
 handoff_set "VPS_LOGIN_PASSWORD" "$PASSWORD"
+credential_store_set "VPS_LOGIN_USER" "$LOGIN_USER"
+credential_store_set "VPS_LOGIN_PASSWORD" "$PASSWORD"
 
 echo
 echo "================ REAL VPS LOGIN PASSWORD ================"

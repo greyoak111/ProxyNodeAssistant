@@ -36,6 +36,30 @@ const (
 
 var handoffAppendixKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 
+var loginFormKeys = []string{"FORM_VPS_ACCOUNT", "FORM_VPS_PASSWORD", "FORM_PANEL_ACCOUNT", "FORM_PANEL_PASSWORD"}
+
+func loginCredentialFormFields(legacy string) (map[string]string, error) {
+	values := parseKV(legacy)
+	required := map[string]string{
+		"FORM_VPS_ACCOUNT":    values["VPS_LOGIN_USER"],
+		"FORM_VPS_PASSWORD":   values["VPS_LOGIN_PASSWORD"],
+		"FORM_PANEL_ACCOUNT":  values["PANEL_USERNAME"],
+		"FORM_PANEL_PASSWORD": values["PANEL_PASSWORD"],
+	}
+	missing := make([]string, 0, len(required))
+	for _, key := range loginFormKeys {
+		value := strings.TrimSpace(required[key])
+		upper := strings.ToUpper(value)
+		if value == "" || strings.HasPrefix(upper, "UNKNOWN") || strings.HasPrefix(upper, "NOT_RETAINED") || upper == "SSH_KEY_ONLY" {
+			missing = append(missing, strings.TrimPrefix(key, "FORM_"))
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("required login credential form is incomplete: %s", strings.Join(missing, ", "))
+	}
+	return required, nil
+}
+
 func parseDeploymentMode(value string) (DeploymentMode, error) {
 	mode := DeploymentMode(strings.TrimSpace(value))
 	switch mode {
@@ -128,8 +152,29 @@ func appendCompleteHandoff(legacy string, fields map[string]string) (string, err
 	var output strings.Builder
 	output.Grow(len(legacy) + 128 + len(fields)*48)
 	output.WriteString(legacy)
+	formComplete := true
+	for _, key := range loginFormKeys {
+		if strings.TrimSpace(fields[key]) == "" {
+			formComplete = false
+			break
+		}
+	}
+	if formComplete {
+		output.WriteString("\n\n===== 必须保存的登录凭据 / REQUIRED LOGIN CREDENTIALS =====\n")
+		output.WriteString("VPS_ACCOUNT=" + fields["FORM_VPS_ACCOUNT"] + "\n")
+		output.WriteString("VPS_PASSWORD=" + fields["FORM_VPS_PASSWORD"] + "\n")
+		output.WriteString("PANEL_ACCOUNT=" + fields["FORM_PANEL_ACCOUNT"] + "\n")
+		output.WriteString("PANEL_PASSWORD=" + fields["FORM_PANEL_PASSWORD"] + "\n")
+		if localURL := fields["FORM_PANEL_LOCAL_URL"]; localURL != "" {
+			output.WriteString("PANEL_LOCAL_URL=" + localURL + "\n")
+		}
+		output.WriteString("===== END REQUIRED LOGIN CREDENTIALS =====")
+	}
 	output.WriteString("\n\n===== PNA COMPLETE HANDOFF v0.9.5 =====\n")
 	for _, key := range keys {
+		if strings.HasPrefix(key, "FORM_") {
+			continue
+		}
 		output.WriteString(key)
 		output.WriteByte('=')
 		output.WriteString(fields[key])
@@ -140,6 +185,13 @@ func appendCompleteHandoff(legacy string, fields map[string]string) (string, err
 }
 
 func (a *App) buildCompleteHandoff(legacy string, c Connection) (string, error) {
+	loginFields, err := loginCredentialFormFields(legacy)
+	if err != nil {
+		return "", errors.New(a.msg(
+			"登录凭据表不完整，拒绝显示或复制：必须同时具备 VPS 账号/密码和面板账号/密码；请运行 [1] 完成强制交接，或分别运行 [5]、[6] 轮换后重试",
+			"Login credential form is incomplete and will not be displayed or copied: VPS account/password and panel account/password are all required. Run [1] to complete the mandatory handoff, or rotate with [5] and [6], then retry",
+		))
+	}
 	auth := "MANAGED_KEY"
 	if c.AuthMode == AuthTemporaryPassword {
 		auth = "TEMPORARY_PASSWORD_ONE_RUN"
@@ -150,10 +202,12 @@ func (a *App) buildCompleteHandoff(legacy string, c Connection) (string, error) 
 		"SSH_KEY_ONLY":        fmt.Sprintf("%t", c.AuthMode == AuthManagedKey),
 		"VPS_SSH_USER":        c.User,
 		"VPS_SSH_PORT":        fmt.Sprintf("%d", c.Port),
-		"VPS_PASSWORD_STATUS": "NOT_RETAINED_BY_APPLICATION",
+		"VPS_PASSWORD_STATUS": "PRESENT_IN_PROTECTED_HANDOFF",
+	}
+	for key, value := range loginFields {
+		fields[key] = value
 	}
 	if c.AuthMode == AuthManagedKey {
-		fields["VPS_PASSWORD_STATUS"] = "SSH_KEY_ONLY"
 		fields["SSH_PRIVATE_KEY_FILE"] = c.KeyPath
 		if keyID, err := sshAuthenticationKeyID(c.KeyPath); err == nil {
 			fields["SSH_AUTH_KEY_ID"] = keyID
@@ -202,6 +256,7 @@ func (a *App) buildCompleteHandoff(legacy string, c Connection) (string, error) 
 		fields["PANEL_REMOTE_LOOPBACK_PORT"] = fmt.Sprintf("%d", panel.Port)
 		fields["PANEL_LOCAL_URL_TEMPLATE"] = fmt.Sprintf("http://127.0.0.1:<LOCAL_TUNNEL_PORT>%s", panel.Path)
 		fields["PANEL_SSH_TUNNEL_COMMAND"] = fmt.Sprintf("ssh -N -L 127.0.0.1:<LOCAL_TUNNEL_PORT>:127.0.0.1:%d -p %d %s@%s", panel.Port, c.Port, c.User, c.Host)
+		fields["FORM_PANEL_LOCAL_URL"] = fmt.Sprintf("http://127.0.0.1:<LOCAL_TUNNEL_PORT>%s", panel.Path)
 	}
 	driveResult := a.rootCapture(c, "bash "+remoteRoot+"/linux/29-copyparty-drive.sh status 2>/dev/null || true")
 	drive := parseKV(driveResult.Stdout)

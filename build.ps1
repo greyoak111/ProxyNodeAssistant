@@ -77,6 +77,7 @@ if (-not $SkipCommonValidation) {
         "scripts/test-gui-remote-prompt.sh",
         "scripts/test-deployment-state.sh",
         "scripts/test-dns-quorum.sh",
+        "scripts/test-complete-login-handoff.sh",
         "scripts/test-private-drive-static.sh",
         "scripts/test-security-events-static.sh",
 		"scripts/test-device-admission-static.sh",

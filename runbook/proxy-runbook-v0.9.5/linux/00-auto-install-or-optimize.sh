@@ -317,12 +317,24 @@ fi
 # Fresh official credentials are shown in full; existing panel creds are exported where retrievable.
 bash "$ROOT/linux/03d-export-panel-handoff.sh" "$NODE_MODE"
 
-if [ "$NODE_MODE" = "EXISTING" ] && ! grep -q '^PANEL_PASSWORD=' "$HANDOFF_FILE" 2>/dev/null; then
-  if noq "Existing panel password is not safely recoverable. Rotate panel username/password to new random values and show them now? (3x-ui will log out existing sessions; credential reset may disable existing 2FA)"; then
+PANEL_STORED_USER="$(credential_value_from_file "$HANDOFF_FILE" PANEL_USERNAME 2>/dev/null || true)"
+PANEL_STORED_PASSWORD="$(credential_value_from_file "$HANDOFF_FILE" PANEL_PASSWORD 2>/dev/null || true)"
+if [ -n "$PANEL_STORED_USER" ] && [ -n "$PANEL_STORED_PASSWORD" ] && xui_password_login_works "$PANEL_STORED_USER" "$PANEL_STORED_PASSWORD"; then
+  green "PANEL_LOGIN_CREDENTIALS_VERIFIED_AND_RETAINED"
+else
+  credential_store_delete_pair PANEL
+  handoff_delete PANEL_USERNAME
+  handoff_delete PANEL_PASSWORD
+  if human_yesq \
+    "完整交接表必须包含可实际登录的面板账号和密码。当前明文不可验证；是否现在轮换为新的随机账号密码？这会注销旧会话，并可能关闭原有 2FA。" \
+    "A complete handoff must contain a panel account and password that really log in. The current plaintext is unavailable or failed verification. Rotate to new random credentials now? Existing sessions will be logged out and 2FA may be disabled."; then
     bash "$ROOT/linux/03c-rotate-panel-credentials.sh"
     SHOW="$("$XUI" setting -show 2>/dev/null || true)"
     PANEL_PORT="$(printf '%s\n' "$SHOW" | sed -nE 's/^[[:space:]]*(port|panelPort):[[:space:]]*([0-9]+).*$/\2/p' | sed -n '1p')"
     RAW_PATH="$(printf '%s\n' "$SHOW" | sed -nE 's/^[[:space:]]*(webBasePath|web base path):[[:space:]]*(.*)$/\2/p' | sed -n '1p')"
+  else
+    red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: panel credentials were not rotated; refusing a partial handoff."
+    exit 83
   fi
 fi
 
@@ -351,21 +363,25 @@ step "SSH / VPS LOGIN CREDENTIALS"
 # Windows launcher installs and verifies SSH key BEFORE this wizard.
 # Fresh node: rotate provider-supplied password by default.
 # Existing node: do not surprise-rotate on every maintenance run.
-if [ ! -f "$PRIVATE_DIR/vps-password-generated.marker" ]; then
-  if [ "$NODE_MODE" = "EXISTING" ]; then
-    if noq "Rotate VPS login password for '$LOGIN_USER' to a new random value and show it in full?"; then
-      bash "$ROOT/linux/01a-rotate-vps-password.sh" "$LOGIN_USER"
-      touch "$PRIVATE_DIR/vps-password-generated.marker"; chmod 600 "$PRIVATE_DIR/vps-password-generated.marker"
-    fi
-  else
-    if yesq "Replace the provider-supplied VPS password for '$LOGIN_USER' with a new random value now?"; then
-      bash "$ROOT/linux/01a-rotate-vps-password.sh" "$LOGIN_USER"
-      touch "$PRIVATE_DIR/vps-password-generated.marker"; chmod 600 "$PRIVATE_DIR/vps-password-generated.marker"
-    fi
-  fi
+STORED_VPS_USER="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_USER 2>/dev/null || true)"
+STORED_VPS_PASSWORD="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_PASSWORD 2>/dev/null || true)"
+if [ "$STORED_VPS_USER" = "$LOGIN_USER" ] && [ -n "$STORED_VPS_PASSWORD" ]; then
+  printf '%s:%s\n' "$LOGIN_USER" "$STORED_VPS_PASSWORD" | chpasswd
+  handoff_set VPS_LOGIN_USER "$LOGIN_USER"
+  handoff_set VPS_LOGIN_PASSWORD "$STORED_VPS_PASSWORD"
+  green "VPS_LOGIN_CREDENTIALS_REAPPLIED_AND_RETAINED"
 else
-  green "A runbook-generated VPS password already has a local marker; not rotating it again automatically."
+  if human_yesq \
+    "完整交接表必须包含当前 VPS 账号和真实密码。程序没有可复用的已保存密码；是否现在生成并写入新的随机密码？SSH key 已验证，不会因此失联。" \
+    "A complete handoff must contain the current VPS account and real password. No reusable stored password exists. Generate and apply a new random password now? The verified SSH key prevents lockout."; then
+    bash "$ROOT/linux/01a-rotate-vps-password.sh" "$LOGIN_USER"
+    touch "$PRIVATE_DIR/vps-password-generated.marker"; chmod 600 "$PRIVATE_DIR/vps-password-generated.marker"
+  else
+    red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: VPS password was not established; refusing a partial handoff."
+    exit 84
+  fi
 fi
+handoff_login_form_complete || exit 85
 
 echo
 echo "Server SSH host public-key fingerprint:"
@@ -578,6 +594,10 @@ bash "$ROOT/linux/04e-export-reality-handoff.sh" "$PUBLIC_IP" || true
 handoff_set "COVER_DOMAIN" "$DOMAIN"
 handoff_set "PUBLIC_IP_AT_HANDOFF" "$PUBLIC_IP"
 handoff_set "SSH_PORT" "$SSH_PORT"
+handoff_login_form_complete || {
+  red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: refusing to print or copy a partial credential handoff."
+  exit 85
+}
 handoff_show
 
 step "FINAL DOCTOR"

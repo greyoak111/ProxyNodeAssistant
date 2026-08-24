@@ -363,15 +363,20 @@ class WorkflowRunner(
         val command = "printf '%s\\n' '${ProtocolParsers.HANDOFF_BEGIN}'; cat /root/.config/proxy-runbook/HANDOFF-SECRETS.txt 2>/dev/null || true; printf '%s\\n' '${ProtocolParsers.HANDOFF_END}'"
         val result = checked(handle, command, emit = false)
         val legacy = ProtocolParsers.handoff(result.stdout)
+        val login = ProtocolParsers.loginCredentialForm(legacy)
         val fields = linkedMapOf(
             "PNA_VERSION" to VERSION,
             "VPS_SSH_USER" to handle.target.user,
             "VPS_SSH_PORT" to handle.target.port.toString(),
-            "VPS_PASSWORD_STATUS" to if (managedKeys.get(handle.target.id) != null) "SSH_KEY_ONLY" else "NOT_RETAINED_BY_APPLICATION",
+            "VPS_PASSWORD_STATUS" to "PRESENT_IN_PROTECTED_HANDOFF",
             "SSH_AUTH_MODE" to if (managedKeys.get(handle.target.id) != null) "MANAGED_KEY" else "TEMPORARY_PASSWORD_ONE_RUN",
             "SSH_KEY_ONLY" to (managedKeys.get(handle.target.id) != null).toString(),
             "CURRENT_DEVICE_ID" to deviceIdentity.loadOrCreate().deviceId,
             "CURRENT_ORIGIN_CONCEALED" to "false",
+            "FORM_VPS_ACCOUNT" to login.getValue("FORM_VPS_ACCOUNT"),
+            "FORM_VPS_PASSWORD" to login.getValue("FORM_VPS_PASSWORD"),
+            "FORM_PANEL_ACCOUNT" to login.getValue("FORM_PANEL_ACCOUNT"),
+            "FORM_PANEL_PASSWORD" to login.getValue("FORM_PANEL_PASSWORD"),
         )
         managedKeys.get(handle.target.id)?.let { record ->
             fields["SSH_PRIVATE_KEY_STORAGE"] = "ANDROID_KEYSTORE_ENCRYPTED_APP_PRIVATE"
@@ -400,6 +405,7 @@ class WorkflowRunner(
             fields["PANEL_REMOTE_LOOPBACK_PORT"] = panel.port.toString()
             fields["PANEL_LOCAL_URL_TEMPLATE"] = "http://127.0.0.1:<LOCAL_TUNNEL_PORT>${panel.path}"
             fields["PANEL_SSH_TUNNEL_INSTRUCTION"] = "Use Android operation 2; the application creates a localhost SSH tunnel."
+            fields["FORM_PANEL_LOCAL_URL"] = "http://127.0.0.1:<LOCAL_TUNNEL_PORT>${panel.path}"
         }
         runCatching { ProtocolParsers.kv(checked(handle, "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh status 2>/dev/null || true", emit = false).stdout) }.getOrNull()?.let { drive ->
             if (drive["PRIVATE_DRIVE_MODE"] == "copyparty") {
@@ -905,8 +911,8 @@ class WorkflowRunner(
 
     companion object {
         const val VERSION = "0.9.5"
-        const val BUILD_ID = "20260824-v095-dns-quorum-v7"
-        const val BUILD_REVISION = 7
+        const val BUILD_ID = "20260824-v095-complete-login-handoff-v8"
+        const val BUILD_REVISION = 8
         const val REMOTE_ROOT = "/opt/proxy-runbook-current"
         const val INSTALL_ROOT = "/opt/proxy-runbook-v0.9.5"
         const val TOOLKIT_ASSET = "proxy-runbook-toolkit-v0.9.5.tgz"

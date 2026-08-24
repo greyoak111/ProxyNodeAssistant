@@ -142,3 +142,52 @@ func TestCompleteHandoffRejectsLineInjection(t *testing.T) {
 		t.Fatal("newline in value was accepted")
 	}
 }
+
+func TestLoginCredentialFormRequiresAllFourRealValues(t *testing.T) {
+	complete := strings.Join([]string{
+		"HANDOFF_RUN_STARTED=fixture",
+		"VPS_LOGIN_USER=root",
+		"VPS_LOGIN_PASSWORD=vps-secret",
+		"PANEL_USERNAME=panel-admin",
+		"PANEL_PASSWORD=panel-secret",
+	}, "\n")
+	fields, err := loginCredentialFormFields(complete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields["FORM_VPS_ACCOUNT"] != "root" || fields["FORM_PANEL_PASSWORD"] != "panel-secret" {
+		t.Fatalf("unexpected login form fields: %#v", fields)
+	}
+	for _, bad := range []string{
+		strings.Replace(complete, "PANEL_PASSWORD=panel-secret", "", 1),
+		strings.Replace(complete, "VPS_LOGIN_PASSWORD=vps-secret", "VPS_LOGIN_PASSWORD=UNKNOWN_NOT_RECOVERABLE", 1),
+		strings.Replace(complete, "PANEL_PASSWORD=panel-secret", "PANEL_PASSWORD=NOT_RETAINED_BY_APPLICATION", 1),
+	} {
+		if _, err := loginCredentialFormFields(bad); err == nil {
+			t.Fatalf("incomplete or placeholder form was accepted: %q", bad)
+		}
+	}
+}
+
+func TestCompleteHandoffRendersProminentLoginForm(t *testing.T) {
+	legacy := "HANDOFF_RUN_STARTED=fixture\nVPS_LOGIN_USER=root\nVPS_LOGIN_PASSWORD=vps-secret\nPANEL_USERNAME=panel-admin\nPANEL_PASSWORD=panel-secret"
+	form, err := loginCredentialFormFields(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete, err := appendCompleteHandoff(legacy, form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"===== 必须保存的登录凭据 / REQUIRED LOGIN CREDENTIALS =====",
+		"VPS_ACCOUNT=root",
+		"VPS_PASSWORD=vps-secret",
+		"PANEL_ACCOUNT=panel-admin",
+		"PANEL_PASSWORD=panel-secret",
+	} {
+		if !strings.Contains(complete, required) {
+			t.Fatalf("prominent login form is missing %q", required)
+		}
+	}
+}

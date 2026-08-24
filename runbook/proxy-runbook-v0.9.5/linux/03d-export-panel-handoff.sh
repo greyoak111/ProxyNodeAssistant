@@ -22,6 +22,16 @@ if [ "$MODE" = "FRESH" ] && [ -r /etc/x-ui/install-result.env ]; then
   done < /etc/x-ui/install-result.env
 fi
 
+if [ "$MODE" = "FRESH" ]; then
+  FRESH_USERNAME="$(credential_value_from_file "$HANDOFF_FILE" PANEL_USERNAME 2>/dev/null || true)"
+  FRESH_PASSWORD="$(credential_value_from_file "$HANDOFF_FILE" PANEL_PASSWORD 2>/dev/null || true)"
+  if [ -n "$FRESH_USERNAME" ] && [ -n "$FRESH_PASSWORD" ]; then
+    credential_store_set PANEL_USERNAME "$FRESH_USERNAME"
+    credential_store_set PANEL_PASSWORD "$FRESH_PASSWORD"
+  fi
+fi
+handoff_restore_stored_login_credentials
+
 SHOW="$("$XUI" setting -show 2>/dev/null || true)"
 PORT="$(printf '%s\n' "$SHOW" | sed -nE 's/^[[:space:]]*(port|panelPort):[[:space:]]*([0-9]+).*$/\2/p' | sed -n '1p')"
 PATH_RAW="$(printf '%s\n' "$SHOW" | sed -nE 's/^[[:space:]]*(webBasePath|web base path):[[:space:]]*(.*)$/\2/p' | sed -n '1p')"
@@ -44,7 +54,6 @@ echo "================ CURRENT 3X-UI HANDOFF =================="
 grep -E '^PANEL_' "$HANDOFF_FILE" || true
 echo "========================================================="
 if ! grep -q '^PANEL_PASSWORD=' "$HANDOFF_FILE"; then
-  echo "PANEL_PASSWORD=UNKNOWN_NOT_RECOVERABLE"
-  echo "The current hashed panel password cannot be truthfully reconstructed."
-  echo "Choose explicit credential rotation if you want a new real password shown in full."
+  echo "PANEL_CREDENTIAL_FORM_INCOMPLETE=1"
+  echo "The current hashed panel password cannot be reconstructed; a complete handoff requires explicit rotation."
 fi

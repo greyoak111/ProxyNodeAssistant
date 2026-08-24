@@ -541,7 +541,7 @@ Let’s Encrypt 邮箱：你真实可收信的邮箱
 
 ### 9.8 凭据交接、备份和面板
 
-成功后程序显示经过完整性校验的 Credential Handoff，其中可能包含：
+成功后程序显示经过完整性校验的 Credential Handoff。最上方必须明确包含 `VPS_ACCOUNT`、`VPS_PASSWORD`、`PANEL_ACCOUNT`、`PANEL_PASSWORD` 四项；缺少任何一项都不算完成，也不会允许复制。随后还包含：
 
 - 3x-ui 本地隧道访问地址；
 - panel 用户名、密码和 API Token；

@@ -57,10 +57,38 @@ object ProtocolParsers {
         }
         return buildString {
             append(legacy)
+            val formKeys = listOf("FORM_VPS_ACCOUNT", "FORM_VPS_PASSWORD", "FORM_PANEL_ACCOUNT", "FORM_PANEL_PASSWORD")
+            if (formKeys.all { fields[it].orEmpty().isNotBlank() }) {
+                append("\n\n===== 必须保存的登录凭据 / REQUIRED LOGIN CREDENTIALS =====\n")
+                append("VPS_ACCOUNT=${fields.getValue("FORM_VPS_ACCOUNT")}\n")
+                append("VPS_PASSWORD=${fields.getValue("FORM_VPS_PASSWORD")}\n")
+                append("PANEL_ACCOUNT=${fields.getValue("FORM_PANEL_ACCOUNT")}\n")
+                append("PANEL_PASSWORD=${fields.getValue("FORM_PANEL_PASSWORD")}\n")
+                fields["FORM_PANEL_LOCAL_URL"]?.takeIf { it.isNotBlank() }?.let { append("PANEL_LOCAL_URL=$it\n") }
+                append("===== END REQUIRED LOGIN CREDENTIALS =====")
+            }
             append("\n\n===== PNA COMPLETE HANDOFF v0.9.5 =====\n")
-            lines.forEach { append(it).append('\n') }
+            lines.filterNot { it.startsWith("FORM_") }.forEach { append(it).append('\n') }
             append("===== END PNA COMPLETE HANDOFF v0.9.5 =====")
         }
+    }
+
+    fun loginCredentialForm(legacy: String): Map<String, String> {
+        val values = kv(legacy)
+        val form = linkedMapOf(
+            "FORM_VPS_ACCOUNT" to values["VPS_LOGIN_USER"].orEmpty(),
+            "FORM_VPS_PASSWORD" to values["VPS_LOGIN_PASSWORD"].orEmpty(),
+            "FORM_PANEL_ACCOUNT" to values["PANEL_USERNAME"].orEmpty(),
+            "FORM_PANEL_PASSWORD" to values["PANEL_PASSWORD"].orEmpty(),
+        )
+        form.forEach { (key, raw) ->
+            val value = raw.trim()
+            val upper = value.uppercase()
+            require(value.isNotEmpty() && !upper.startsWith("UNKNOWN") && !upper.startsWith("NOT_RETAINED") && upper != "SSH_KEY_ONLY") {
+                "required login credential form is incomplete: ${key.removePrefix("FORM_")}"
+            }
+        }
+        return form
     }
 
     fun cdnXHttpLink(value: String): CdnXHttpLink {

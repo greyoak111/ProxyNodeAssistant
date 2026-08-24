@@ -56,6 +56,19 @@ class ProtocolParsersTest {
         assertTrue(complete.contains("FUTURE_FIELD=keep"))
     }
 
+    @Test fun loginCredentialFormRequiresAndRendersAllFourValues() {
+        val legacy = "HANDOFF_RUN_STARTED=fixture\nVPS_LOGIN_USER=root\nVPS_LOGIN_PASSWORD=vps-secret\nPANEL_USERNAME=panel-admin\nPANEL_PASSWORD=panel-secret"
+        val form = ProtocolParsers.loginCredentialForm(legacy)
+        val complete = ProtocolParsers.completeHandoff(legacy, form)
+        assertTrue(complete.contains("VPS_ACCOUNT=root"))
+        assertTrue(complete.contains("VPS_PASSWORD=vps-secret"))
+        assertTrue(complete.contains("PANEL_ACCOUNT=panel-admin"))
+        assertTrue(complete.contains("PANEL_PASSWORD=panel-secret"))
+        assertThrows(IllegalArgumentException::class.java) {
+            ProtocolParsers.loginCredentialForm(legacy.replace("PANEL_PASSWORD=panel-secret", "PANEL_PASSWORD=UNKNOWN_NOT_RECOVERABLE"))
+        }
+    }
+
     @Test fun cdnXHttpLinkParserIsStrict() {
         val link = "vless://11111111-1111-4111-8111-111111111111@edge.example.com:443?encryption=none&security=tls&sni=edge.example.com&fp=chrome&type=xhttp&host=edge.example.com&path=%2F0123456789abcdef0123456789abcdef%2F&mode=packet-up#PNA-CDN-XHTTP"
         val parsed = ProtocolParsers.cdnXHttpLink(link)
