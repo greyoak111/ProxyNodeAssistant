@@ -263,7 +263,7 @@ v0.8.2 会先定位完整的 Windows OpenSSH，保证 `ssh.exe`、`scp.exe`、`s
 [19] 访问与封禁日志：SSH / Fail2ban / 防火墙 / 入口事件的有界脱敏聚合
 [20] 设备准入与独立吊销：每设备身份、单次邀请、暂停 / 恢复 / 吊销
 [21] 私人网盘：固定 copyparty / 回环服务 / 账密与配额 / SSH 隧道 / 保留数据拆除
-[22] Experimental CDN/XHTTP：回环影子 / 脱敏状态 / 严格链接 / Cloudflare 只读计划
+[22] CDN/XHTTP 双模式：回环预装 / Cloudflare-only 8443 / 橙云验收 / 真机提交 / 回滚
 [23] 更换 VPS 公网 IP 后安全重绑定：复用原 key / 稳定身份核验 / 分阶段 DNS 提交
 [T]  服务商流量中心：KiwiVM 精确 API / 条件式兼容 API / 凭据管理
 [K]  管理已绑定 key：查看 / 恢复 / 全部转入备份态并清空绑定位置
@@ -1263,13 +1263,25 @@ RackNerd 并没有对所有套餐统一保证“客户流量查询 API”。只�
 
 “卸载并保留文件”会停止并删除服务、unit、程序和受管配置，但完整保留 `/srv/proxy-node-assistant/drive-data`。永久清空必须依次输入 `DELETE DRIVE DATA` 与 `PURGE-DATA`。完整灾备包含文件卷；配置型小备份不应被当作用户文件备份。
 
-## 34. 菜单 [22]：Experimental CDN/XHTTP 本地阶段
+## 34. 菜单 [22]：CDN/XHTTP 双模式控制中心
 
-该入口用于在不碰现有 Reality 443 的情况下预装和验证新拓扑。它创建 3x-ui 管理的 VLESS + XHTTP `packet-up` 入站，只监听随机 `127.0.0.1` 端口；Nginx 影子只监听 `127.0.0.2:8443`。脚本会回读完整入站对象、拒绝 public listener，并验证本地 TLS 首页和严格生成的 `vless://` 链接结构。
+该入口在不抢占现有 Reality 443 的前提下并列安装 CDN/XHTTP。Xray 的 VLESS + XHTTP `packet-up` 入站始终只监听随机 `127.0.0.1` 端口；Nginx 首先只监听 `127.0.0.2:8443`。回环阶段会回读完整入站、拒绝 Xray public listener，并验证本地 TLS 首页和严格生成的 `vless://` 链接。此时显示的 8443 影子链接不能从公网使用。
 
-二级菜单包括：脱敏状态、创建/复用回环影子、在受保护交接区显示严格校验的 8443 影子链接、拉取 Cloudflare 官方 CIDR并生成只读防火墙计划、删除影子并恢复 `ACTIVE_DIRECT`。影子链接在当前阶段不能从公网使用；显示它只是为了锁定客户端格式和后续验收输入。
+二级菜单完整流程如下：
 
-本版本明确不会做这些操作：开启/关闭橙云、写 DNS/Origin Rule、把 Cloudflare CIDR 真正写进 UFW、监听 VPS 公网 8443、把 Nginx 晋升到公网 443、宣称源站已隐藏。完成本地阶段后状态是 `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION`，并固定报告 `PRODUCTION_443_PROMOTION=BLOCKED`。只有后续人工 Cloudflare 阶段和 Windows/Android 真机浏览矩阵通过后，才允许生产切换。
+1. **脱敏状态**：显示部署状态、443 所有者、XHTTP/Nginx 范围、UFW 锁源、边缘验证和真机确认；不显示 UUID、随机路径或 Cloudflare 凭据。
+2. **回环影子**：创建/复用 XHTTP，并只在 `127.0.0.2:8443` 验收；不改公网和 Cloudflare。
+3. **复制回环影子链接**：只用于检查客户端格式，不是生产链接。
+4. **CIDR 只读计划**：从 Cloudflare 官方 HTTPS 地址下载 IPv4/IPv6 列表，校验 CIDR/数量/重复项和 SHA-256，只展示即将管理的 8443 规则。
+5. **晋升 Cloudflare-only 8443**：先确保 UFW active 且 incoming 默认 deny；再把 Cloudflare allow 规则插到受管 deny 规则之前，回读数量后才让 Nginx 同时监听“VPS 的明确公网 IPv4:8443 + `127.0.0.2:8443`”。绝不使用会抢占现有 `127.0.0.1:8443` 回环伪装后端的 `0.0.0.0:8443`。该事务只管理 8443，明确保持 SSH 与 Reality 443 原规则。
+6. **验证橙云并复制生产链接**：用户在官方 Dashboard 完成人工设置后，Windows/Android 和 VPS 两侧验证 DNS 结果均属于 Cloudflare 官方 CIDR、没有返回源站 IP、HTTPS 含 `Cf-Ray`、响应来自受管 8443、Origin Rule 已把边缘 443 回源到 8443，并且外部直连源站 8443 失败。全部通过才显示 443 XHTTP 链接。
+7. **真机提交**：导入 443 链接并真实浏览后输入 `REAL BROWSE OK`，状态才从 staged 提交为 `DUAL_INSTALLED_ACTIVE_CDN`。Reality 443 仍保留。
+8. **撤回公网源站**：把 Nginx 恢复为 `127.0.0.2:8443`，删除带 `PNA-CF-XHTTP-V095` ownership marker 的 UFW 规则和边缘状态，保留回环 XHTTP 与 Reality。
+9. **删除全部 CDN/XHTTP**：在完成上述撤回后删除受管 Nginx/XHTTP，验证 Reality 443 仍在，再回到 `ACTIVE_DIRECT`。
+
+Cloudflare 侧程序不自动写入，用户必须亲自完成：施工 hostname 的 A 记录开启橙云；SSL/TLS 设为 `Full (strict)`；Origin Rule 以 hostname 为条件把 Destination Port 重写为 `8443`；整 hostname Cache Bypass；不要在 XHTTP hostname 上挂 Access、Turnstile、质询、重定向或 Worker。程序只打开官方 Dashboard，不索取、不保存、不写日志或剪贴板 Cloudflare Token。
+
+“当前锁源”与“历史暴露”是两个概念。通过外部探针后可报告当前 `8443` 仅 Cloudflare 可达，但已经使用过公网 IP 的服务器仍保留 `ORIGIN_HISTORY=previously-exposed`，不会冒充从未泄露。应用版本永久固定为 `v0.9.5`；后续只增加内部 `TOOLKIT_BUILD_REVISION`。
 
 ## 35. 菜单 [19]：访问与封禁日志
 

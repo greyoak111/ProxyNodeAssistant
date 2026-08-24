@@ -323,11 +323,19 @@ Proxy status = DNS only
 
 虽然 Cloudflare 的普通 HTTPS 代理支持 443，但这不代表它会透明代理任意 443/TCP 协议。Cloudflare 官方也说明，绕过其代理并直接连接源站时应使用 gray-clouded DNS only；任意 TCP/UDP 代理属于 Spectrum 等不同产品。参考：[Cloudflare 支持的网络端口](https://developers.cloudflare.com/fundamentals/reference/network-ports/)。
 
-### 6.3 v0.9.5 的 Experimental CDN/XHTTP 说明
+### 6.3 v0.9.5 的 CDN/XHTTP 双模式说明
 
-上面的灰云要求仍是菜单 `[1]` 默认 REALITY 生产安装的唯一正确选择。v0.9.5 另外提供菜单 `[22]`，用于在不改变现有节点的前提下预装 XHTTP：Xray 仅监听 VPS 回环地址，Nginx 仅监听 `127.0.0.2:8443`。该步骤不修改 Cloudflare、DNS、防火墙或公网 443，也不会让新链接立即可用。
+上面的灰云要求仍是菜单 `[1]` 默认 REALITY 生产安装的正确选择。v0.9.5 另外提供菜单 `[22]`，用独立施工 hostname 并列安装 CDN/XHTTP：Xray 始终只监听 VPS 回环地址，Nginx 先在 `127.0.0.2:8443` 验收。回环步骤不修改 Cloudflare、DNS、防火墙或公网 443，也不会立即释放生产链接。
 
-只有界面明确进入后续人工 Cloudflare 阶段，才会要求把一个独立施工 hostname 改成橙云并进行源站锁定、Full Strict、外部边缘探针和真实客户端验收。当前正式构建把这些动作标为 `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION` / `PRODUCTION_443_PROMOTION=BLOCKED`；不要自行把现有 REALITY hostname 直接切成橙云，也不要把只读防火墙计划当成已应用。
+选择 `[22] → [5]` 后，程序先把 VPS 的 8443 用 Cloudflare 官方 CIDR 锁源，再让 Nginx 监听公网 8443；SSH 和 Reality 443 不变。随后程序会打开 Cloudflare 官方 Dashboard，请依次完成：
+
+1. 为**独立 CDN 施工 hostname** 建 A 记录指向 VPS，并开启橙云 Proxied；不要把仍用于 Reality/ACME 的 hostname直接改橙云。
+2. 在 SSL/TLS 中选择 `Full (strict)`，确认边缘证书生效且源站现有证书覆盖该 hostname。
+3. 新建 Origin Rule：条件为 Hostname 等于施工 hostname，Destination Port 重写为 `8443`。
+4. 新建 Cache Rule：该 hostname 全部 Bypass cache。
+5. 确认该 hostname 没有 Access、Turnstile、Managed Challenge、重定向或 Worker。
+
+回到程序运行 `[22] → [6]`。只有外部设备与 VPS 双端都验证橙云 DNS、`Cf-Ray`、`443 → 8443` 回源和直连源站失败，程序才复制生产 443 XHTTP 链接。导入 v2rayN/v2rayNG，真实浏览成功后运行 `[22] → [7]` 并输入 `REAL BROWSE OK`。失败时用 `[8]` 只撤回公网 8443，或用 `[9]` 删除全部 CDN/XHTTP；Reality 443 始终是兜底。
 
 ### 6.4 验证 A 记录
 

@@ -257,7 +257,9 @@ VPS reboot
 
 ## 9. v0.9.5 CDN/XHTTP 与 copyparty 技术边界
 
-v0.9.5 默认仍由 Xray REALITY 持有公网 443。实验 CDN 路径使用 3x-ui API 创建 VLESS + XHTTP `packet-up`，`listen=127.0.0.1`、无 XHTTP 内层 TLS，由本工具回读完整入站后自行生成链接；不采用面板分享链接。Nginx 阶段只绑定 `127.0.0.2:8443` 并复用现有证书，因此不会与 Reality 443 抢占端口。状态机只有在配置回读、listener 和本地 TLS 都通过后才进入 `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION`。
+v0.9.5 默认仍由 Xray REALITY 持有源站公网 443。CDN 路径使用 3x-ui API 创建 VLESS + XHTTP `packet-up`，`listen=127.0.0.1`、无 XHTTP 内层 TLS，由本工具回读完整入站后自行生成链接；不采用面板分享链接。Nginx 先绑定 `127.0.0.2:8443`，通过本地验收后才可在 UFW 已限制为 Cloudflare 官方 CIDR的前提下绑定“VPS 的明确公网 IPv4:8443 + `127.0.0.2:8443`”。这里有意拒绝 `0.0.0.0:8443`，避免与既有 `127.0.0.1:8443` 伪装后端发生监听冲突。Cloudflare 边缘接收 hostname:443，并由人工 Origin Rule把目标端口覆盖为 8443；所以源站 Reality 443不需要让位。
+
+Cloudflare API状态不由程序修改或读取，用户在官方 Dashboard人工设置橙云、`Full (strict)`、Origin Rule与 Cache Bypass。生产链接门禁同时要求：DNS全部落在官方 Cloudflare CIDR且不含源站 IP，边缘返回 `Cf-Ray` 与受管 8443标记，外部设备无法直连源站 8443，VPS本地入站/证书/listener/UFW回读一致，最后真实客户端浏览并显式确认。撤回会先恢复回环 listener，再只删除带 ownership marker的 UFW规则；Reality 443和SSH策略保持不变。
 
 Cloudflare CIDR 下载使用 HTTPS、数量/地址族/重复项校验和本地 SHA-256 记录，但本构建只生成规则计划，不写入 UFW。没有 `CLOUDFLARE_FIREWALL_APPLIED=1` 时，公网 Nginx staging 路径会拒绝启动。生产 443 候选只能写到 root-only 文件，不能启用。
 

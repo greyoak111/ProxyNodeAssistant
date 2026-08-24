@@ -70,7 +70,7 @@ Windows 版是原生 WPF 单 EXE；Android 版是 Kotlin + Jetpack Compose 原�
 | SSH | 密码临时会话、节点专属长期 Ed25519 key |
 | 面板 | 3x-ui，通过本机 127.0.0.1 SSH 隧道访问 |
 | 节点 | Xray VLESS + REALITY，24443 shadow 真机验货后再提升 |
-| CDN/XHTTP | v0.9.5 Experimental：VLESS + XHTTP `packet-up` 回环入站、Nginx 8443 本地影子；公网切换仍需人工 Cloudflare 阶段 |
+| CDN/XHTTP | v0.9.5 双模式：VLESS + XHTTP `packet-up` 回环入站、Cloudflare-only 源站 8443、人工橙云验收与可回滚热切换；Reality 443 始终保留 |
 | Web | Nginx、Let’s Encrypt、15 套无第三方依赖的伪装模板 |
 | 私人网盘 | 固定版本与 SHA-256 的 copyparty，非 root、`127.0.0.1:3923`、2/3GiB 有界配额；当前可经 SSH 隧道使用 |
 | 路由 | WARP MASQUE、本地代理与可选持久路由 |
@@ -208,7 +208,7 @@ Host Key 默认不信任。程序不使用 StrictHostKeyChecking=no，也不会�
 | 19 | 访问与封禁日志 | 远端 | 有界聚合 SSH、Fail2ban、防火墙与入口事件；不记录秘密 URI、UUID 或载荷 |
 | 20 | 设备准入与独立吊销 | 远端 | 本机 Ed25519 身份、十分钟单次邀请、每设备 VLESS、暂停/恢复/吊销与最后控制器保护 |
 | 21 | 私人网盘控制中心 | 远端 | 固定 copyparty 供应链；账密只走 stdin；CRUD 验收；默认拆服务保留文件卷 |
-| 22 | Experimental CDN/XHTTP 本地阶段 | 远端 | 只监听回环；严格生成/解析链接；Cloudflare、源站放行和公网 443 硬阻断 |
+| 22 | CDN/XHTTP 双模式控制中心 | 远端 | 回环预装；Cloudflare-only 8443；人工橙云/Origin Rule；双端边缘验收；真机浏览确认；可回滚热切换 |
 | 23 | 更换公网 IP 后安全重绑定 | 远端 | 复用原 SSH key；Host Key、machine-id、NODE_ID/SERVER_ID 全匹配后才允许改 DNS和提交新地址 |
 | T | 服务商流量中心 | 本地/API | KiwiVM 与条件式服务商查询，70/85/95% 预警 |
 | K | 管理节点 SSH key | 本地/远端 | 查看、归档、恢复、轮换和解绑 |
@@ -218,9 +218,13 @@ Host Key 默认不信任。程序不使用 StrictHostKeyChecking=no，也不会�
 
 ## v0.9.5 CDN/XHTTP 与私人网盘边界
 
-默认生产模式仍是 `direct-reality`。操作 22 只完成不影响现有 Reality 443 的本地预装：Xray 仅监听随机 `127.0.0.1` 端口，Nginx 仅监听 `127.0.0.2:8443`。只有本地 TLS、入站回读、监听范围和链接结构通过后，状态才进入 `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION`。
+默认生产模式仍是 `direct-reality`。操作 22 先完成不影响现有 Reality 443 的本地预装：Xray 仅监听随机 `127.0.0.1` 端口，Nginx 首先只监听 `127.0.0.2:8443`。只有本地 TLS、入站回读、监听范围和链接结构通过后，状态才进入 `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION`。
 
-当前构建不会自动开启橙云、写 Origin Rule、放行 Cloudflare 源站网段或把 Nginx 晋升到公网 443，也不会声称源站已经隐藏。操作 22 可以拉取并校验 Cloudflare 官方 CIDR，但只输出防火墙计划，状态固定为 `CLOUDFLARE_FIREWALL_APPLIED=0`。这些外部步骤需要后续真实浏览、DNS/边缘回读和回滚矩阵通过后才能解除 Experimental 标记。
+revision 12 可把 Nginx 晋升为公网 `8443`，但先把 UFW 原子锁定为仅允许程序刚从 Cloudflare 官方 HTTPS 端点下载并校验过的 CIDR；兼容 Ubuntu 22.04 所带 UFW 0.36.1 的 IPv4/IPv6 `prepend` 规则排序，并按非空记录而不是换行数核对 Cloudflare 官方文件，正确处理末行无换行符。该事务只管理 8443，不修改 SSH 或 Reality 443。Cloudflare 侧仍坚持人工施工：独立 hostname 开橙云、SSL/TLS 设 `Full (strict)`、Origin Rule 把边缘 443 的目标端口覆盖为 8443、整 hostname 绕过缓存，并且不挂 Access、Turnstile、质询、重定向或 Worker。程序不索取 Token，只做双端回读。
+
+生产 443 XHTTP 链接只有在 Windows/Android 外部 HTTPS 探针、VPS DNS/CIDR 回读、`Cf-Ray`、受管 8443 响应标记和“外部直连源站 8443 失败”全部通过后才进入受保护交接区。用户还必须把链接导入客户端真实浏览，并输入 `REAL BROWSE OK` 才会把状态提交为 `DUAL_INSTALLED_ACTIVE_CDN`；原 Reality 443 全程保留。菜单可单独撤回公网 8443/UFW而保留回环影子，也可删除全部受管 CDN/XHTTP 组件回到 `ACTIVE_DIRECT`。历史上已经暴露过的源站仍诚实标记为 `previously-exposed`。
+
+应用对外版本永久固定为 `v0.9.5`；以后仅递增内部 `TOOLKIT_BUILD_REVISION`。`v1.0.0` 不会由这条实验分支自动发布。
 
 操作 19 只通过现有 SSH 管理通道读取有界、脱敏的安全事件；受管 Fail2ban jail 必须通过配置校验、reload 与 `status sshd` 回读。操作 20 默认只承诺“每设备凭据、可独立吊销”，不会把可复制的 VLESS 配置冒充硬件设备锁；mTLS 与 WireGuard 档继续保持 Experimental 阻断。
 
@@ -304,8 +308,8 @@ remote command returned non-zero
 
 | 症状 | 首先检查 |
 |---|---|
-| DNS 不指向 VPS | Cloudflare 是否 Active；A 记录是否灰云；查看 `DNS_RESOLVER_QUORUM`。revision 7 在 Windows DNS 超时时会由 Cloudflare 与 Google 公共 DNS 双重确认，避免把正确记录困在重试循环 |
-| ACME 预检 403/404 | 是否橙云；80/tcp 是否放行；是否有冲突 Nginx server block |
+| DNS 不指向 VPS | 默认 Reality/菜单 1 使用灰云；菜单 22 的独立 CDN hostname 使用橙云。查看 `DNS_RESOLVER_QUORUM`；若 v2rayN TUN 接管 Windows DNS，先临时关闭 TUN再复测 |
+| ACME 预检 403/404 | 默认 Reality 施工 hostname 是否误开橙云；80/tcp 是否放行；是否有冲突 Nginx server block。CDN hostname 应先复用已覆盖它的有效证书再晋升 |
 | SSH 密码被拒绝 | 用户名 root/ubuntu/debian；密码是否已重置；厂商是否禁用 root 密码登录 |
 | Host Key 改变 | 是否刚重装 VPS；先到厂商 Console 核对，不要盲目接受 |
 | ssh-keyscan 报 sntrup KEX | Windows 端会识别并使用隔离 ssh.exe 回退，仍需人工核对指纹 |

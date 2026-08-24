@@ -55,7 +55,7 @@ APK 不要求存储权限。报告、救援包和加密密钥备份通过 Androi
 | 19 | 访问与封禁日志 | 读取有界脱敏事件；区分成功登录、认证失败、防火墙拒绝与 Fail2ban 封禁。 |
 | 20 | 设备准入 | Android 本地 Ed25519 身份、单次邀请响应、每设备 VLESS、暂停/恢复/吊销和最后控制器保护。 |
 | 21 | 私人网盘控制中心 | 固定 copyparty 版本与哈希；管理回环服务、账户、2/3GiB 配额、SSH 隧道和保留文件拆除。 |
-| 22 | Experimental CDN/XHTTP 本地阶段 | 创建/复用回环 XHTTP 和 `127.0.0.2:8443` Nginx 影子；严格校验影子链接；橙云、公网放行和 443 晋升被阻断。 |
+| 22 | CDN/XHTTP 双模式控制中心 | 回环预装；Cloudflare-only 公网 8443；人工橙云/Origin Rule；Android 与 VPS 双端验收；生产 443 链接；真机提交和回滚。Reality 443 始终保留。 |
 | 23 | 公网 IP 安全重绑定 | 必须选择旧长期 key；复用同一私钥，并校验旧 Host Key、machine-id、NODE_ID/SERVER_ID 后提交新 endpoint。 |
 | T | 服务商流量中心 | KiwiVM `VEID + API Key` 真实查询、阈值预警；其他无统一 API 的厂商回退到 SSH/vnStat。 |
 | K | 密钥仓 | 查看绑定/多代备份、全部转备份态、恢复指定一代、删除指定备份、加密导出/导入。 |
@@ -121,6 +121,8 @@ KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要�
 - 活动 SSH 会话每 15 秒发送保活包，降低移动网络 NAT 在等待本人输入时回收连接的概率。
 - IP 重绑定的 `LOCAL_KEY_RECORD_NOT_FOUND`、`PUBLICKEY_REJECTED` 与 `HOST_KEY_MISMATCH` 是三个独立结果；只有第二种会询问密码。
 - IP 重绑定停在 Cloudflare 人工步骤时显示黄色安全停工，而不是绿色执行成功；橙云不得关闭，本地 endpoint 在外部验收前不提交。
+- CDN/XHTTP 不在 Android 内嵌 Cloudflare 登录页，也不索取 Token。用户在官方 Dashboard 完成橙云、`Full (strict)`、Origin Rule `443 → 8443` 与 hostname 全站 Cache Bypass；Android 随后验证 `Cf-Ray`、受管 8443 响应和外部直连源站失败，才在秘密交接区显示生产链接。
+- 导入生产链接真实浏览后必须输入 `REAL BROWSE OK` 才提交 CDN 活动状态；公网 8443/UFW 可独立撤回，回环影子与 Reality 443 保留。
 - 所有完整交接单以远端已经校验的旧交接原文开头，再追加 Android 运行态、稳定服务器身份、面板隧道和网盘边界；Cloudflare Token 永不进入交接区。
 
 ## 10. 权限与本地数据

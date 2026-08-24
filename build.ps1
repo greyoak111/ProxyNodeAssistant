@@ -82,7 +82,8 @@ if (-not $SkipCommonValidation) {
         "scripts/test-private-drive-static.sh",
         "scripts/test-security-events-static.sh",
 		"scripts/test-device-admission-static.sh",
-		"scripts/test-ip-rebind-static.sh"
+		"scripts/test-ip-rebind-static.sh",
+        "scripts/test-cdn-xhttp-production-static.sh"
     )) {
         & $Bash $shellTest
         if ($LASTEXITCODE -ne 0) { throw "Shell validation failed: $shellTest" }

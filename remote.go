@@ -23,8 +23,8 @@ import (
 const (
 	remoteRoot           = "/opt/proxy-runbook-current"
 	toolkitVersion       = "0.9.5"
-	toolkitBuildID       = "20260824-v095-csrf-login-verification-v9"
-	toolkitBuildRevision = 9
+	toolkitBuildID       = "20260825-v095-cloudflare-manual-promotion-v12"
+	toolkitBuildRevision = 12
 	toolkitInstallDir    = "/opt/proxy-runbook-v0.9.5"
 	toolkitArchive       = "proxy-runbook-toolkit-v0.9.5.tar.gz"
 )

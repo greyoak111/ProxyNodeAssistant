@@ -8,7 +8,9 @@
 - Preserve `direct-reality` as the default production topology while adding explicit `cdn-xhttp-tls` and `dual-hot-switch` state identifiers.
 - Pin 3x-ui v3.6.0, its installer commit, script checksums, and per-architecture release assets; reject moving third-party install URLs.
 - Add a loopback-only VLESS/XHTTP `packet-up` prototype managed through the local 3x-ui API and verified by strict readback/listener checks.
-- Add an Nginx TLS shadow on `127.0.0.2:8443`, a read-only Cloudflare CIDR/firewall plan, and a hard `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION` gate. No orange-cloud mutation or public 443 promotion occurs in this build.
+- Add an Nginx TLS shadow on `127.0.0.2:8443`, then optionally promote origin `8443` behind atomic UFW rules restricted to freshly validated official Cloudflare CIDRs. The transaction never changes SSH or the Reality listener on origin 443.
+- Keep Cloudflare mutations manual and token-free. Validate proxied DNS, `Cf-Ray`, the managed 443-to-8443 Origin Rule response, external direct-origin denial, and a real client browse before committing `DUAL_INSTALLED_ACTIVE_CDN`.
+- Add independent rollback of public 8443/UFW to the loopback shadow, plus full managed CDN/XHTTP removal back to `ACTIVE_DIRECT`.
 - Add strict Windows and Android CDN/XHTTP link builders/parsers. Generated links are derived from verified inbound state rather than panel share output.
 - Add operation 21 with pinned copyparty v1.20.21, non-root systemd execution, loopback-only `127.0.0.1:3923`, bounded 2/3GiB storage, SSH-tunnel access, password-hash-only remote state, stdin secret transport, and credential CRUD verification.
 - Extend disaster backup, diagnosis, safe repair, toolkit completeness, and dismantle handling for the new staged and private-drive components.

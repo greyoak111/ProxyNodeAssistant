@@ -70,19 +70,28 @@ func TestDeploymentStateTransitionsRefuseUnsafeJumps(t *testing.T) {
 	if canTransitionDeploymentState(StateActiveCDN, StateActiveDirect) {
 		t.Fatal("CDN to direct must not skip the 24443 shadow and Cloudflare action")
 	}
+	if !canTransitionDeploymentState(StateDualInstalledActiveDirect, StateActiveDirect) {
+		t.Fatal("verified managed-component removal must be able to return dual/direct to plain direct")
+	}
 }
 
-func TestCDNXHTTPControlSurfaceKeepsCloudflareAndPublicPortsBlocked(t *testing.T) {
+func TestCDNXHTTPControlSurfacePromotesOnlyThroughManualCloudflareGate(t *testing.T) {
 	for path, markers := range map[string][]string{
 		"cdn_xhttp.go": {
-			"CLOUDFLARE_MUTATION=NONE", "PRODUCTION_443_PROMOTION=BLOCKED",
-			"stage-local", "PLAN_ONLY=1", "CLOUDFLARE_FIREWALL_APPLIED=0",
+			"CLOUDFLARE_API_MUTATION=NONE", "verifyExternalOriginLocked",
+			"ORIGIN_RULE_443_TO_8443=PASS", "REAL BROWSE OK", "stage-local",
 		},
 		"runbook/proxy-runbook-v0.9.5/linux/04f-xhttp-cdn-api.sh": {
 			"PNA_XHTTP_ERROR=EXISTING_DOMAIN_MISMATCH", "PNA_XHTTP_ERROR=STATE_DOMAIN_MISMATCH",
 		},
 		"android/app/src/main/java/com/proxynodeassistant/android/remote/WorkflowRunner.kt": {
-			`"22" ->`, "CDN_STAGE_SCOPE=LOCAL_ONLY", "PRODUCTION_443_PROMOTION=BLOCKED",
+			`"22" ->`, "CDN_STAGE_SCOPE=LOCAL_ONLY", "verifyDirectOriginBlocked", "REAL BROWSE OK",
+		},
+		"runbook/proxy-runbook-v0.9.5/linux/05f-cloudflare-origin-lock.sh": {
+			"PNA-CF-XHTTP-V095-ALLOW", "DENY_OTHER_SOURCES_TCP=8443", "REALITY_443_POLICY=UNCHANGED",
+		},
+		"runbook/proxy-runbook-v0.9.5/linux/05g-cdn-xhttp-validate.sh": {
+			"CLOUDFLARE_DNS_PROXY=PASS", "ORIGIN_RULE_443_TO_8443=PASS", "REAL_DEVICE_BROWSE=REQUIRED",
 		},
 	} {
 		body, err := os.ReadFile(path)

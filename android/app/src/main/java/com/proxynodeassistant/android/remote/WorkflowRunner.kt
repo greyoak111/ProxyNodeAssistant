@@ -35,8 +35,13 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.Socket
+import java.net.URL
 import java.security.MessageDigest
 import java.security.SecureRandom
+import javax.net.ssl.HttpsURLConnection
 
 class WorkflowRunner(
     private val context: Context,
@@ -174,7 +179,7 @@ class WorkflowRunner(
         "19" -> { ensureToolkit(handle); securityEvents(handle); false }
 		"20" -> { ensureToolkit(handle); deviceAdmission(handle); false }
         "21" -> { ensureToolkit(handle); privateDrive(handle) }
-        "22" -> { ensureToolkit(handle); cdnXhttpPrototype(handle); false }
+        "22" -> { ensureToolkit(handle); cdnXhttpControl(handle); false }
 		"23" -> error("operation 23 uses the stable-endpoint bootstrap before the ordinary remote runner")
         "T" -> { ensureToolkit(handle); trafficEstimate(handle); log("Provider API profiles are managed from the local Provider screen."); false }
         else -> error(tr("操作 $code 属于本地功能或远端执行器暂不支持", "Action $code is local or unsupported in the remote runner"))
@@ -477,12 +482,47 @@ class WorkflowRunner(
         }
     }
 
-    private suspend fun cdnXhttpPrototype(handle: SshHandle) {
+    private suspend fun cdnPublicIp(handle: SshHandle): String {
+        val result = checked(handle, "ip=\$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true); [ -n \"\$ip\" ] || ip=\$(hostname -I | awk '{print \$1}'); printf '%s\\n' \"\$ip\"", emit = false)
+        return result.stdout.lines().map { it.trim() }.firstOrNull { runCatching { InetAddress.getByName(it) is Inet4Address }.getOrDefault(false) }
+            ?: error(tr("无法确定 VPS 公网 IPv4", "Could not determine the VPS public IPv4"))
+    }
+
+    private fun verifyDirectOriginBlocked(publicIp: String) {
+        val reachable = runCatching {
+            Socket().use { socket -> socket.connect(InetSocketAddress(publicIp, 8443), 5_000) }
+        }.isSuccess
+        check(!reachable) { tr("外部设备仍能直连源站 8443，拒绝宣称已锁源", "This external device can still reach origin 8443; origin lock cannot be claimed") }
+    }
+
+    private fun verifyCloudflareEdge(domain: String) {
+        val connection = URL("https://$domain/").openConnection(Proxy.NO_PROXY) as HttpsURLConnection
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 30_000
+        connection.instanceFollowRedirects = true
+        connection.requestMethod = "GET"
+        try {
+            val status = connection.responseCode
+            check(status in 200..399) { "Cloudflare edge returned HTTP $status" }
+            check(!connection.getHeaderField("Cf-Ray").isNullOrBlank()) { "Cloudflare edge response is missing Cf-Ray" }
+            check(connection.getHeaderField("X-PNA-Managed-Origin") == "cdn-xhttp-v095") { "managed 8443 origin marker is missing" }
+            check(connection.getHeaderField("X-PNA-Origin-Port") == "8443") { "443-to-8443 Origin Rule was not proven" }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private suspend fun rollbackCdnPublic(handle: SshHandle, domain: String, publicIp: String) {
+        val result = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --rollback-public", emit = false)
+        require("CDN_PUBLIC_ORIGIN_ROLLED_BACK=1" in result.stdout)
+    }
+
+    private suspend fun cdnXhttpControl(handle: SshHandle) {
         val choice = prompts.ask(
-            tr("CDN / XHTTP 实验控制中心", "CDN / XHTTP experimental control center"),
+            tr("CDN / XHTTP 双模式控制中心", "CDN / XHTTP dual-mode control center"),
             tr(
-                "橙云、Origin Rule、防火墙放行和公网 443 均被硬阻断。\n[1] 脱敏状态  [2] 创建/复用回环影子  [3] 复制严格校验的影子链接  [4] Cloudflare CIDR 只读计划  [5] 删除影子",
-                "Orange-cloud, Origin Rule, firewall allowlisting, and public 443 are hard-blocked.\n[1] Redacted status  [2] Create/reuse loopback shadow  [3] Copy strictly validated staged link  [4] Read-only Cloudflare CIDR plan  [5] Remove shadow",
+                "[1] 脱敏状态  [2] 回环影子  [3] 复制回环影子链接  [4] Cloudflare CIDR 只读计划\n[5] 晋升 8443 为 Cloudflare-only  [6] 验证橙云并复制生产 443 链接\n[7] 真机浏览后提交  [8] 撤回公网 8443  [9] 删除全部 CDN/XHTTP 组件",
+                "[1] Redacted status  [2] Loopback shadow  [3] Copy loopback staged link  [4] Read-only Cloudflare CIDR plan\n[5] Promote 8443 to Cloudflare-only  [6] Validate orange-cloud and copy production 443 link\n[7] Commit after real browsing  [8] Roll back public 8443  [9] Remove all CDN/XHTTP components",
             ),
             PromptKind.TEXT,
             defaultValue = "1",
@@ -490,24 +530,23 @@ class WorkflowRunner(
         when (choice) {
             "1" -> {
                 val command = ". $REMOTE_ROOT/linux/lib-deployment-state.sh; pna_state_init_direct_if_missing; pna_state_show; " +
-                    "if bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh show >/dev/null 2>&1; then echo XHTTP_COMPONENT=READY_LOOPBACK_ONLY; else echo XHTTP_COMPONENT=NOT_READY; fi; " +
-                    "if grep -qF '# PNA_MANAGED_CDN_XHTTP_V095' /etc/nginx/sites-available/pna-cdn-xhttp-stage 2>/dev/null && ss -H -lntp 2>/dev/null | awk '\$4 == \"127.0.0.2:8443\" {found=1} END{exit found ? 0 : 1}'; then echo CDN_NGINX_STAGE=READY_LOOPBACK_ONLY; else echo CDN_NGINX_STAGE=NOT_READY; fi; " +
-                    "echo CLOUDFLARE_MUTATION=NONE; echo PRODUCTION_443_PROMOTION=BLOCKED"
+                    "if bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh show >/dev/null 2>&1; then echo XHTTP_COMPONENT=READY_LOOPBACK; else echo XHTTP_COMPONENT=NOT_READY; fi; " +
+                    "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status 2>/dev/null || true; " +
+                    "if grep -q '^CDN_EDGE_VALIDATED=1$' /etc/proxy-runbook/cloudflare/edge-state.env 2>/dev/null; then echo CLOUDFLARE_EDGE_VALIDATION=PASS; else echo CLOUDFLARE_EDGE_VALIDATION=NOT_PASSED; fi; " +
+                    "echo CLOUDFLARE_API_MUTATION=NONE; echo REALITY_PUBLIC_443=UNCHANGED"
                 checked(handle, command)
             }
             "2" -> {
                 val domain = required(tr("施工域名", "Deployment hostname"), tr("输入已由当前证书覆盖的域名", "Enter the hostname covered by the current certificate")) { Validation.validDomain(it) }.lowercase()
-                confirmYes(tr("确认只做回环验收，不修改 DNS、橙云、防火墙或公网 443？", "Confirm loopback validation only, without changing DNS, orange-cloud state, the firewall, or public 443?"), false)
-                val ipResult = checked(handle, "ip=\$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true); [ -n \"\$ip\" ] || ip=\$(hostname -I | awk '{print \$1}'); printf '%s\\n' \"\$ip\"", emit = false)
-                val publicIp = ipResult.stdout.lines().map { it.trim() }.firstOrNull { runCatching { InetAddress.getByName(it) is Inet4Address }.getOrDefault(false) }
-                    ?: error(tr("无法确定 VPS 公网 IPv4", "Could not determine the VPS public IPv4"))
+                confirmYes(tr("确认只做回环验收，不修改 DNS、橙云、防火墙或公网端口？", "Confirm loopback validation only, without changing DNS, orange-cloud state, the firewall, or public ports?"), false)
+                val publicIp = cdnPublicIp(handle)
                 val create = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh create ${SshHandle.shellQuote(domain)}", emit = false)
                 require("XHTTP_STATUS=READY" in create.stdout || "PNA_XHTTP_ALREADY_READY" in create.stdout)
                 val stage = checked(handle, "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage-local ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
                 require("CDN_STAGE_SCOPE=LOCAL_ONLY" in stage.stdout)
                 val validate = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --local-only", emit = false)
-                require("CDN_LOCAL_VALIDATION=PASS" in validate.stdout && "PRODUCTION_443_PROMOTION=BLOCKED" in validate.stdout)
-                log(tr("本地 XHTTP/Nginx 影子验收通过；公网与 Cloudflare 未修改。", "The local XHTTP/Nginx shadow passed; public and Cloudflare state were not changed."))
+                require("CDN_LOCAL_VALIDATION=PASS" in validate.stdout && "PUBLIC_ORIGIN_8443=NOT_ENABLED" in validate.stdout)
+                log(tr("回环 XHTTP/Nginx 影子验收通过；公网与 Cloudflare 未修改。", "The loopback XHTTP/Nginx shadow passed; public and Cloudflare state were not changed."))
             }
             "3" -> {
                 val domain = required(tr("施工域名", "Deployment hostname"), tr("输入创建影子时使用的域名", "Enter the hostname used to create the shadow")) { Validation.validDomain(it) }.lowercase()
@@ -515,34 +554,84 @@ class WorkflowRunner(
                 val link = ProtocolParsers.kv(result.stdout)["XHTTP_LINK"].orEmpty()
                 val profile = ProtocolParsers.cdnXHttpLink(link)
                 require(profile.domain == domain && profile.port == 8443)
-                _state.update { current ->
-                    current.copy(secretHandoff = buildString {
-                        appendLine("===== PNA CDN XHTTP LOCAL STAGE v0.9.5 =====")
-                        appendLine("DEPLOYMENT_MODE=cdn-xhttp-tls")
-                        appendLine("ACTIVE_MODE=WAITING_FOR_CLOUDFLARE_MANUAL_ACTION")
-                        appendLine("CDN_XHTTP_STAGE_LINK=$link")
-                        appendLine("CDN_XHTTP_STAGE_REACHABILITY=LOOPBACK_VALIDATED_NOT_PUBLIC")
-                        appendLine("CLOUDFLARE_DNS_PROXY=DEFERRED")
-                        appendLine("CLOUDFLARE_ORIGIN_LOCK=DEFERRED")
-                        append("PRODUCTION_443_PROMOTION=BLOCKED")
-                    })
-                }
-                log(tr("影子链接已严格校验；只在受保护交接区显示。", "The staged link passed strict validation and is visible only in the protected handoff panel."))
+                _state.update { current -> current.copy(secretHandoff = "===== PNA CDN XHTTP LOCAL STAGE v0.9.5 =====\nCDN_XHTTP_STAGE_LINK=$link\nREACHABILITY=LOOPBACK_VALIDATED_NOT_PUBLIC\nPRODUCTION_443_LINK=NOT_RELEASED") }
             }
             "4" -> {
-                checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh fetch")
-                val plan = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh plan ${handle.target.port}")
-                require("PLAN_ONLY=1" in plan.stdout && "CLOUDFLARE_FIREWALL_APPLIED=0" in plan.stdout)
+                val current = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status", emit = false)
+                if (ProtocolParsers.kv(current.stdout)["CLOUDFLARE_FIREWALL_APPLIED"] == "1") {
+                    log(tr("8443 锁源已应用；先用 [8] 撤回再刷新 CIDR。", "The 8443 origin lock is applied; use [8] before refreshing CIDRs."))
+                } else {
+                    checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh fetch")
+                    val plan = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh plan ${handle.target.port}")
+                    require("PLAN_ONLY=1" in plan.stdout && "KEEP_REALITY_PUBLIC_TCP=443" in plan.stdout)
+                }
             }
             "5" -> {
-                val exact = prompts.ask(tr("删除本地影子", "Remove local shadow"), tr("输入大写 REMOVE XHTTP STAGE；原 Reality 443 保持不动", "Type uppercase REMOVE XHTTP STAGE; the original Reality 443 is retained"), PromptKind.EXACT_CONFIRMATION, danger = true)
+                val domain = required(tr("施工域名", "Deployment hostname"), tr("输入现有证书覆盖的域名", "Enter the hostname covered by the existing certificate")) { Validation.validDomain(it) }.lowercase()
+                confirmYes(tr("将公开 Nginx 8443，但 UFW 只允许 Cloudflare 官方 CIDR；SSH 与 Reality 443 不动。继续？", "Nginx 8443 will become public but UFW will allow official Cloudflare CIDRs only; SSH and Reality 443 remain unchanged. Continue?"), false)
+                val publicIp = cdnPublicIp(handle)
+                val create = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh create ${SshHandle.shellQuote(domain)}", emit = false)
+                require("XHTTP_STATUS=READY" in create.stdout || "PNA_XHTTP_ALREADY_READY" in create.stdout)
+                checked(handle, "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage-local ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
+                checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --local-only", emit = false)
+                val lock = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status", emit = false)
+                if (ProtocolParsers.kv(lock.stdout)["CLOUDFLARE_FIREWALL_APPLIED"] != "1") {
+                    checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh fetch", emit = false)
+                    checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh apply", emit = false)
+                }
+                try {
+                    val stage = checked(handle, "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
+                    require("CDN_STAGE_SCOPE=CLOUDFLARE_ONLY" in stage.stdout)
+                    val validate = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --origin-ready", emit = false)
+                    require("CDN_ORIGIN_VALIDATION=PASS" in validate.stdout)
+                    verifyDirectOriginBlocked(publicIp)
+                } catch (error: Throwable) {
+                    runCatching { rollbackCdnPublic(handle, domain, publicIp) }
+                    throw error
+                }
+                log(tr("[GOOD] 8443 已锁定为 Cloudflare-only；Reality 443 与 SSH 未修改。", "[GOOD] 8443 is Cloudflare-only; Reality 443 and SSH were not changed."))
+                log(tr("请在 Cloudflare 官方 Dashboard：开启橙云；SSL/TLS 设 Full (strict)；Origin Rule 把此 hostname 的目标端口改为 8443；整 hostname 绕过缓存；不要加 Access/质询/重定向/Worker。完成后运行 [6]。", "In the official Cloudflare Dashboard: enable orange-cloud; set Full (strict); use an Origin Rule to override this hostname to port 8443; bypass cache for the hostname; do not add Access/challenges/redirects/Workers. Then run [6]."))
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dash.cloudflare.com/?to=%2F%3Aaccount%2F%3Azone%2Frules")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
+            "6" -> {
+                val domain = required(tr("橙云施工域名", "Orange-cloud deployment hostname"), tr("输入已配置 Origin Rule 的域名", "Enter the hostname with its Origin Rule configured")) { Validation.validDomain(it) }.lowercase()
+                confirmYes(tr("确认已完成橙云、Full (strict)、443→8443 Origin Rule、缓存绕过，并且没有 Access/质询/重定向/Worker？", "Confirm orange-cloud, Full (strict), the 443-to-8443 Origin Rule, cache bypass, and no Access/challenge/redirect/Worker?"), false)
+                val publicIp = cdnPublicIp(handle)
+                verifyCloudflareEdge(domain)
+                verifyDirectOriginBlocked(publicIp)
+                val remote = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --edge", emit = false)
+                require("ORIGIN_RULE_443_TO_8443=PASS" in remote.stdout && "REAL_DEVICE_BROWSE=REQUIRED" in remote.stdout)
+                val result = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(domain)} 443", emit = false)
+                val link = ProtocolParsers.kv(result.stdout)["XHTTP_LINK"].orEmpty()
+                val profile = ProtocolParsers.cdnXHttpLink(link)
+                require(profile.domain == domain && profile.port == 443)
+                _state.update { current -> current.copy(secretHandoff = "===== PNA CDN XHTTP PRODUCTION TEST v0.9.5 =====\nCDN_XHTTP_LINK=$link\nCDN_EDGE_443=VALIDATED\nCDN_ORIGIN_8443=CLOUDFLARE_ONLY\nREAL_DEVICE_BROWSE=REQUIRED_BEFORE_COMMIT") }
+            }
+            "7" -> {
+                val domain = required(tr("已测试域名", "Tested hostname"), tr("输入刚才导入客户端并真实浏览的域名", "Enter the hostname imported into the client and used for real browsing")) { Validation.validDomain(it) }.lowercase()
+                val exact = prompts.ask(tr("真机确认", "Real-device confirmation"), tr("真实浏览成功后输入大写 REAL BROWSE OK", "After real browsing succeeds, type uppercase REAL BROWSE OK"), PromptKind.EXACT_CONFIRMATION, danger = true)
+                require(exact == "REAL BROWSE OK") { tr("未提交 CDN 活动状态", "CDN active state was not committed") }
+                val result = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(cdnPublicIp(handle))} --confirm-client", emit = false)
+                require("CDN_REAL_CLIENT_CONFIRMED=1" in result.stdout)
+                log(tr("CDN/XHTTP 已提交为活动客户端路径；Reality 443 仍保留。", "CDN/XHTTP is committed as the active client path; Reality 443 remains installed."))
+            }
+            "8" -> {
+                val domain = required(tr("施工域名", "Deployment hostname"), tr("输入要撤回公网 8443 的域名", "Enter the hostname whose public 8443 origin will be rolled back")) { Validation.validDomain(it) }.lowercase()
+                val exact = prompts.ask(tr("撤回公网源站", "Roll back public origin"), tr("输入大写 ROLLBACK CDN ORIGIN", "Type uppercase ROLLBACK CDN ORIGIN"), PromptKind.EXACT_CONFIRMATION, danger = true)
+                require(exact == "ROLLBACK CDN ORIGIN") { tr("已取消撤回", "Rollback cancelled") }
+                rollbackCdnPublic(handle, domain, cdnPublicIp(handle))
+                log(tr("公网 8443 和本工具 UFW 规则已撤回；回环影子与 Reality 443 保留。", "Public 8443 and managed UFW rules were rolled back; the loopback shadow and Reality 443 remain."))
+            }
+            "9" -> {
+                val domain = required(tr("施工域名", "Deployment hostname"), tr("输入当前 CDN/XHTTP 域名", "Enter the current CDN/XHTTP hostname")) { Validation.validDomain(it) }.lowercase()
+                val exact = prompts.ask(tr("删除 CDN/XHTTP", "Remove CDN/XHTTP"), tr("输入大写 REMOVE XHTTP STAGE", "Type uppercase REMOVE XHTTP STAGE"), PromptKind.EXACT_CONFIRMATION, danger = true)
                 require(exact == "REMOVE XHTTP STAGE") { tr("已取消删除", "Removal cancelled") }
+                rollbackCdnPublic(handle, domain, cdnPublicIp(handle))
                 val command = "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh disable-stage && bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh delete && " +
                     ". $REMOTE_ROOT/linux/lib-deployment-state.sh; current=\$(pna_state_env_value ACTIVE_MODE || true); " +
-                    "if [ \"\$current\" = WAITING_FOR_CLOUDFLARE_MANUAL_ACTION ] || [ \"\$current\" = CDN_STAGED_8443 ]; then " +
-                    "ss -H -lntp 2>/dev/null | grep -E ':[4]43[[:space:]].*[x]ray' >/dev/null || exit 139; pna_state_transition \"\$current\" ACTIVE_DIRECT direct-reality xray-reality previously-exposed; fi; echo PNA_CDN_LOCAL_PROTOTYPE_REMOVED"
+                    "[ \"\$current\" = DUAL_INSTALLED_ACTIVE_DIRECT ] && pna_state_transition DUAL_INSTALLED_ACTIVE_DIRECT ACTIVE_DIRECT direct-reality xray-reality previously-exposed; echo PNA_CDN_MANAGED_COMPONENTS_REMOVED"
                 val result = checked(handle, command)
-                require("PNA_CDN_LOCAL_PROTOTYPE_REMOVED" in result.stdout)
+                require("PNA_CDN_MANAGED_COMPONENTS_REMOVED" in result.stdout)
             }
             else -> error(tr("CDN/XHTTP 选项无效", "Invalid CDN/XHTTP selection"))
         }
@@ -911,8 +1000,8 @@ class WorkflowRunner(
 
     companion object {
         const val VERSION = "0.9.5"
-        const val BUILD_ID = "20260824-v095-csrf-login-verification-v9"
-        const val BUILD_REVISION = 9
+        const val BUILD_ID = "20260825-v095-cloudflare-manual-promotion-v12"
+        const val BUILD_REVISION = 12
         const val REMOTE_ROOT = "/opt/proxy-runbook-current"
         const val INSTALL_ROOT = "/opt/proxy-runbook-v0.9.5"
         const val TOOLKIT_ASSET = "proxy-runbook-toolkit-v0.9.5.tgz"

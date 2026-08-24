@@ -4,7 +4,9 @@
 
 - 新增 `direct-reality`、`cdn-xhttp-tls`、`dual-hot-switch` 三种持久化模式标识与失败关闭状态机；默认生产行为仍保持 `direct-reality`。
 - 3x-ui 安装改为固定 release、commit 和 SHA-256，不再执行浮动 `master/main/latest` 安装入口。
-- 新增操作 `[22]`：只在回环创建 VLESS + XHTTP `packet-up` 入站和 `127.0.0.2:8443` Nginx 影子，完成本机 TLS、配置回读、监听范围和链接结构验收。橙云、Origin Rule、源站防火墙放行和公网 443 晋升仍为硬阻断。
+- 操作 `[22]` 晋升为完整双模式控制中心：先在回环创建 VLESS + XHTTP `packet-up` 与 `127.0.0.2:8443` 影子，再可事务化应用 Cloudflare 官方 CIDR 的 8443 UFW 锁源，并让 Nginx 同时监听“VPS 的明确公网 IPv4:8443 + 127.0.0.2:8443”。不会使用会抢占现有回环后端的 `0.0.0.0:8443`；SSH 与 Reality 443 永不由该事务修改。
+- Cloudflare 侧保持人工：橙云、`Full (strict)`、Origin Rule `443 → 8443`、整 hostname Cache Bypass；程序不收集 Token。Windows/Android 与 VPS 双端验证 DNS 只返回 Cloudflare、`Cf-Ray`、受管源站标记和外部直连 8443 被拒后，才释放生产 443 XHTTP 链接。
+- 真实客户端浏览后必须输入 `REAL BROWSE OK` 才提交 `DUAL_INSTALLED_ACTIVE_CDN`；可以只撤回公网 8443/UFW而保留回环影子，也可以全删 CDN/XHTTP 回到 `ACTIVE_DIRECT`。Reality 443 全程保留。
 - Windows 与 Android 都使用严格 XHTTP 链接解析器，拒绝缺失/重复字段、TLS 降级、错误 hostname/path/port 和非 `packet-up` 模式；不信任 3x-ui 自动分享链接。
 - 新增操作 `[21]`：固定 copyparty v1.20.21 SFX 的 URL、大小和 SHA-256，以非 root systemd 用户运行，只监听 `127.0.0.1:3923`，提供 2/3GiB 有界配额、磁盘保留门、SSH 隧道、凭据轮换和保留文件卷卸载。
 - 网盘明文密码仅通过受保护 stdin 进入远端哈希器；远端配置只保存 scrypt 哈希。新凭据只有在无 Cookie 登录、上传、下载、匿名拒绝、删除和删除后复查全部通过后才进入受保护交接区。
@@ -15,7 +17,7 @@
 - 新增 `[23]` 公网 IP 重绑定：复用原 SSH key，固定旧 Host Key，并核对 machine-id、`NODE_ID` / `SERVER_ID`；缺少记录、公钥被拒和 Host Key 不同为三个独立失败。直接 DNS 成功后才提交新 endpoint；橙云或联合换域名停在人工 Cloudflare 阶段。
 - Windows 与 Android 的 `[1]`、`[5]`、`[6]`、`[7]`、`[23]` 统一使用追加式完整交接渲染器；远端旧交接原文仍是字节级前缀，Cloudflare Token 永不进入交接。
 
-当前状态不是“CDN 已上线”。构建只允许显示 `WAITING_FOR_CLOUDFLARE_MANUAL_ACTION`，并明确 `PRODUCTION_443_PROMOTION=BLOCKED`。真实橙云、源站隐藏、1GB 分块上传和 Windows/Android 公网 XHTTP 客户端矩阵需要后续人工阶段完成。
+revision 12 已具备人工 Cloudflare 配置后的 CDN/XHTTP 生产验收能力，并补齐 Ubuntu 22.04 / UFW 0.36.1 对 IPv6 `insert 1` 不兼容时的 `prepend` 规则排序，以及 Cloudflare 官方 CIDR 文件末行无换行符时的准确回读计数。它不会替用户点击 Cloudflare、不会保存 API Token，也不会在未验证时宣称源站隐藏。历史暴露状态与实时锁源状态分开报告。应用版本永久固定为 `v0.9.5`，后续只递增内部 `TOOLKIT_BUILD_REVISION`；`v1.0.0` 留给未来真正正式版。
 
 revision 5 新增菜单 `[18]`“全量拆除与恢复基线”。执行前显示只读计划并要求高风险确认，随后在 Windows 下载并 SHA-256 校验完整救援包；只有救援包落地后才会拆除受管的 x-ui/Nginx Cover/WARP/vnStat/性能配置、证书、工具包和远端备份。SSH 配置、当前登录 key、22 端口与共享基础包始终保留，防止把 VPS 铲成失联状态。
 

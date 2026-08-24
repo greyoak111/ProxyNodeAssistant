@@ -95,6 +95,7 @@ func canTransitionDeploymentState(from, to DeploymentState) bool {
 			StateDualInstalledActiveCDN:    true,
 		},
 		StateDualInstalledActiveDirect: {
+			StateActiveDirect:          true,
 			StateSwitchToCDNStaged8443: true,
 		},
 		StateSwitchToCDNStaged8443: {

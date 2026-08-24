@@ -50,6 +50,8 @@ server {
 
     root /var/www/cover;
     index index.html;
+    add_header X-PNA-Managed-Origin "cdn-xhttp-v095" always;
+    add_header X-PNA-Origin-Port "8443" always;
 
     location ^~ ${path} {
         proxy_pass http://127.0.0.1:${local_port};
@@ -112,12 +114,19 @@ load_values() {
 }
 
 stage() {
-  local domain="$1" public_ip="$2" local_only="${3:-0}" tmp backup='' listener listen_address
+  local domain="$1" public_ip="$2" local_only="${3:-0}" tmp backup='' listener listen_address listen_lines probe_address current
   load_values "$domain" "$public_ip"
   if [ "$local_only" = 1 ]; then
     listen_address='127.0.0.2'
+    listen_lines='listen 127.0.0.2:8443 ssl http2;'
+    probe_address='127.0.0.2'
   else
+    # Never bind 0.0.0.0 here: the managed cover backend already owns
+    # 127.0.0.1:8443. Bind the concrete origin address and retain the
+    # 127.0.0.2 listener for local TLS validation instead.
     listen_address="$PUBLIC_IP"
+    listen_lines="$(printf 'listen %s:8443 ssl http2;\n    listen 127.0.0.2:8443 ssl http2;' "$PUBLIC_IP")"
+    probe_address='127.0.0.2'
     ufw status 2>/dev/null | grep -q '^Status: active$' || { echo 'PNA_CDN_NGINX_ERROR=UFW_INACTIVE' >&2; return 114; }
     ufw status verbose 2>/dev/null | grep -q '^Default: deny (incoming)' || { echo 'PNA_CDN_NGINX_ERROR=UFW_INCOMING_NOT_DENY' >&2; return 114; }
     grep -q '^CLOUDFLARE_FIREWALL_APPLIED=1$' /etc/proxy-runbook/cloudflare/cidr-state.env 2>/dev/null || {
@@ -130,12 +139,12 @@ stage() {
     return 114
   fi
   if [ -f "$NGINX_AVAILABLE" ]; then
-    backup="${NGINX_AVAILABLE}.before-$(date +%Y%m%d-%H%M%S)"
+    backup="${NGINX_AVAILABLE}.pna-rollback"
     cp -a -- "$NGINX_AVAILABLE" "$backup"
   fi
   ensure_security_logging "$XHTTP_PATH"
   tmp="$(mktemp /etc/nginx/sites-available/.pna-cdn-xhttp-stage.XXXXXX)"
-  render_server "listen ${listen_address}:8443 ssl http2;" "$DOMAIN" "$LOCAL_PORT" "$XHTTP_PATH" > "$tmp"
+  render_server "$listen_lines" "$DOMAIN" "$LOCAL_PORT" "$XHTTP_PATH" > "$tmp"
   chmod 644 "$tmp"
   mv -f -- "$tmp" "$NGINX_AVAILABLE"
   ln -sfn "$NGINX_AVAILABLE" "$NGINX_ENABLED"
@@ -154,7 +163,7 @@ stage() {
   ss -lntp 2>/dev/null | awk -v address="${listen_address}:8443" '$4 == address {found=1} END{exit found ? 0 : 1}' || {
     echo 'PNA_CDN_NGINX_ERROR=STAGE_LISTENER_MISSING' >&2; return 116;
   }
-  curl --fail --silent --show-error --max-time 10 --resolve "${DOMAIN}:8443:${listen_address}" "https://${DOMAIN}:8443/" >/dev/null || {
+  curl --fail --silent --show-error --max-time 10 --resolve "${DOMAIN}:8443:${probe_address}" "https://${DOMAIN}:8443/" >/dev/null || {
     echo 'PNA_CDN_NGINX_ERROR=LOCAL_STAGE_TLS_PROBE_FAILED' >&2; return 117;
   }
   pna_state_init_direct_if_missing
@@ -163,11 +172,11 @@ stage() {
     ACTIVE_DIRECT) pna_state_transition ACTIVE_DIRECT CDN_STAGED_8443 cdn-xhttp-tls xray-reality previously-exposed ;;
     CDN_STAGED_8443) ;;
     DUAL_INSTALLED_ACTIVE_DIRECT) pna_state_transition DUAL_INSTALLED_ACTIVE_DIRECT SWITCH_TO_CDN_STAGED_8443 dual-hot-switch xray-reality previously-exposed ;;
-    SWITCH_TO_CDN_STAGED_8443|WAITING_FOR_CLOUDFLARE_MANUAL_ACTION) ;;
+    SWITCH_TO_CDN_STAGED_8443|WAITING_FOR_CLOUDFLARE_MANUAL_ACTION|DUAL_INSTALLED_ACTIVE_DIRECT|DUAL_INSTALLED_ACTIVE_CDN) ;;
     *) echo "PNA_CDN_NGINX_ERROR=STATE_NOT_STAGEABLE_${current}" >&2; return 118 ;;
   esac
   printf '__PNA_CDN_NGINX_BEGIN__\n'
-  printf 'CDN_NGINX_STATUS=STAGED\nCDN_STAGE_LISTEN=%s:8443\nCDN_STAGE_SCOPE=%s\nCDN_XHTTP_UPSTREAM=127.0.0.1:%s\nCDN_XHTTP_PATH=%s\nCLOUDFLARE_MUTATION=DEFERRED\n' \
+  printf 'CDN_NGINX_STATUS=STAGED\nCDN_STAGE_LISTEN=%s:8443\nCDN_STAGE_SCOPE=%s\nCDN_XHTTP_UPSTREAM=127.0.0.1:%s\nCDN_XHTTP_PATH=%s\nCLOUDFLARE_API_MUTATION=NONE\n' \
     "$listen_address" "$([ "$local_only" = 1 ] && printf LOCAL_ONLY || printf CLOUDFLARE_ONLY)" "$LOCAL_PORT" "$XHTTP_PATH"
   printf '__PNA_CDN_NGINX_END__\n'
 }
@@ -175,12 +184,14 @@ stage() {
 prepare_production() {
   load_values "$1" "$2"
   install -d -m 700 "$CANDIDATE_DIR"
-  render_server "listen ${PUBLIC_IP}:443 ssl http2;" "$DOMAIN" "$LOCAL_PORT" "$XHTTP_PATH" > "$CANDIDATE_DIR/cdn-xhttp-production.conf"
+  render_server "$(printf 'listen %s:8443 ssl http2;\n    listen 127.0.0.2:8443 ssl http2;' "$PUBLIC_IP")" "$DOMAIN" "$LOCAL_PORT" "$XHTTP_PATH" > "$CANDIDATE_DIR/cdn-xhttp-production.conf"
   chmod 600 "$CANDIDATE_DIR/cdn-xhttp-production.conf"
   sha256sum "$CANDIDATE_DIR/cdn-xhttp-production.conf" > "$CANDIDATE_DIR/cdn-xhttp-production.conf.sha256"
   chmod 600 "$CANDIDATE_DIR/cdn-xhttp-production.conf.sha256"
   echo 'PNA_CDN_PRODUCTION_CANDIDATE_READY'
-  echo 'PNA_CDN_PRODUCTION_NOT_ENABLED=WAITING_FOR_CLOUDFLARE'
+  echo 'PNA_CDN_PRODUCTION_ORIGIN_PORT=8443'
+  echo 'PNA_CDN_EDGE_PORT=443'
+  echo 'PNA_CDN_PRODUCTION_NOT_ENABLED=WAITING_FOR_CLOUDFLARE_ORIGIN_RULE'
 }
 
 disable_stage() {
@@ -190,6 +201,7 @@ disable_stage() {
   if grep -Fqx "$SECURITY_LOG_MARKER" "$SECURITY_LOG_CONF" 2>/dev/null; then
     rm -f -- "$SECURITY_LOG_CONF"
   fi
+  rm -f -- /etc/proxy-runbook/cloudflare/edge-state.env
   nginx -t
   systemctl reload nginx
   echo 'PNA_CDN_STAGE_DISABLED'
