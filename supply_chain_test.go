@@ -2,11 +2,26 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"os"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestWindowsAndAndroidEmbedTheSameToolkitArchive(t *testing.T) {
+	windowsArchive, err := os.ReadFile("assets/proxy-runbook-toolkit-v0.9.5.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	androidArchive, err := os.ReadFile("android/app/src/main/assets/proxy-runbook-toolkit-v0.9.5.tgz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(windowsArchive, androidArchive) {
+		t.Fatal("Windows and Android embed different v0.9.5 toolkit archives")
+	}
+}
 
 func readPublicEnvFile(t *testing.T, path string) map[string]string {
 	t.Helper()

@@ -16,6 +16,7 @@ $architectureInfo = switch ($Architecture) {
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RunbookRoot = Join-Path $Root "runbook"
 $Archive = Join-Path $Root "assets\proxy-runbook-toolkit-v0.9.5.tar.gz"
+$AndroidArchive = Join-Path $Root "android\app\src\main\assets\proxy-runbook-toolkit-v0.9.5.tgz"
 $Dist = Join-Path $Root "dist"
 $CliExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-cli-$($architectureInfo.Suffix).exe"
 $AskPassExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-askpass-$($architectureInfo.Suffix).exe"
@@ -65,6 +66,8 @@ if (-not $SkipCommonValidation) {
     [IO.File]::WriteAllText($RunbookHashManifest, (($runbookHashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
     & tar -czf $Archive -C $RunbookRoot "proxy-runbook-v0.9.5"
     if ($LASTEXITCODE -ne 0) { throw "tar failed" }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $AndroidArchive) | Out-Null
+    Copy-Item -LiteralPath $Archive -Destination $AndroidArchive -Force
 
     foreach ($shellTest in @(
         "scripts/validate-shell.sh",
