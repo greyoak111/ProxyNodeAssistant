@@ -175,7 +175,8 @@ xui_auth_curl() {
 }
 
 xui_password_login_works() {
-  local username="$1" password="$2" xui show port raw_path clean_path base body response
+  local username="$1" password="$2" xui show port raw_path clean_path base body
+  local tmp_dir cookie_jar csrf_file response_file csrf_token csrf_code login_code i
   [ -n "$username" ] && [ -n "$password" ] || return 1
   case "$username$password" in *$'\r'*|*$'\n'*) return 1 ;; esac
   xui="$(xui_find_bin)" || return 1
@@ -189,9 +190,40 @@ xui_password_login_works() {
   clean_path="${raw_path#/}"; clean_path="${clean_path%/}"
   base="http://127.0.0.1:${port}"
   [ -z "$clean_path" ] || base="${base}/${clean_path}"
-  body="$(printf '%s\n%s' "$username" "$password" | python3 -c 'import sys, urllib.parse; u=sys.stdin.readline().rstrip("\n"); p=sys.stdin.read(); print(urllib.parse.urlencode({"username":u,"password":p}), end="")')" || return 1
-  response="$(printf '%s' "$body" | curl -fsS --max-time 10 -H 'Content-Type: application/x-www-form-urlencoded' --data-binary @- "${base}/login" 2>/dev/null)" || return 1
-  jq -e '(.success == true) or (.success == "true")' >/dev/null 2>&1 <<<"$response"
+  body="$(printf '%s\n%s' "$username" "$password" | python3 -c 'import sys, urllib.parse; u=sys.stdin.readline().rstrip("\n"); p=sys.stdin.read(); print(urllib.parse.urlencode({"username":u,"password":p,"twoFactorCode":""}), end="")')" || return 1
+  tmp_dir="$(mktemp -d)" || return 1
+  cookie_jar="$tmp_dir/cookies"
+  csrf_file="$tmp_dir/csrf.json"
+  response_file="$tmp_dir/login.json"
+
+  # 3x-ui 3.6+ rejects a bare POST /login with HTTP 403. Mirror the browser:
+  # fetch a CSRF token and session cookie first, then submit the form with both.
+  # Credentials travel in curl's stdin, never in argv or command output.
+  for i in 1 2 3 4 5 6 7 8; do
+    : > "$cookie_jar"
+    csrf_code="$(curl -sS --max-time 10 \
+      -c "$cookie_jar" -b "$cookie_jar" \
+      -H 'X-Requested-With: XMLHttpRequest' \
+      -o "$csrf_file" -w '%{http_code}' \
+      "${base}/csrf-token" 2>/dev/null || true)"
+    csrf_token="$(jq -r 'if .success == true and (.obj | type) == "string" then .obj else empty end' "$csrf_file" 2>/dev/null || true)"
+    if [ "$csrf_code" = "200" ] && [ -n "$csrf_token" ]; then
+      login_code="$(printf '%s' "$body" | curl -sS --max-time 10 \
+        -c "$cookie_jar" -b "$cookie_jar" \
+        -H 'X-Requested-With: XMLHttpRequest' \
+        -H "X-CSRF-Token: ${csrf_token}" \
+        -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8' \
+        --data-binary @- -o "$response_file" -w '%{http_code}' \
+        "${base}/login" 2>/dev/null || true)"
+      if [ "$login_code" = "200" ] && jq -e '(.success == true) or (.success == "true")' "$response_file" >/dev/null 2>&1; then
+        rm -rf -- "$tmp_dir"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  rm -rf -- "$tmp_dir"
+  return 1
 }
 
 xui_api_get() {

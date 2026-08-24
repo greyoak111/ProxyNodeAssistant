@@ -1,5 +1,6 @@
 # v0.9.5
 
+- Revision 9 fixes the complete-login verification path exposed by 3x-ui 3.6.0. The main installer now loads the login helper before first use, and password verification mirrors the browser's CSRF/session-cookie handshake instead of issuing a bare POST that 3x-ui rejects with HTTP 403. A failed probe never rotates credentials by itself.
 - Revision 8 refuses partial credential handoffs. A protected current-login store retains runbook-managed VPS and panel credentials across runs; operation 1 requires explicit rotation when either password is unavailable, verifies the panel password with a real localhost login, and Windows/Android render a prominent four-field VPS/panel login form only when all fields are real.
 - Revision 7 fixes the false DNS retry loop on Windows and the VPS. The Windows client accepts its system resolver immediately, or requires matching Cloudflare and Google DNS-over-HTTPS answers when the local resolver times out; the remote runbook applies the same quorum rule. Prompts expose only MATCH/MISS state.
 - Revision 6 accepts both `status` and `--status` for the public-IP rebind status protocol, and the node status collector uses the canonical spelling. This prevents a read-only health check from failing with `USAGE`.

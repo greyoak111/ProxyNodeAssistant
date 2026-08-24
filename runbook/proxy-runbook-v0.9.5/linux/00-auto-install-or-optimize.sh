@@ -5,6 +5,7 @@ umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/linux/lib-gui-prompt.sh"
 . "$ROOT/linux/lib-third-party.sh"
+. "$ROOT/linux/lib-xui-api.sh"
 PRIVATE_DIR="/root/.config/proxy-runbook"
 PUBLIC_DIR="/etc/proxy-runbook"
 RUN_STATUS_FILE="$PUBLIC_DIR/last-run.env"

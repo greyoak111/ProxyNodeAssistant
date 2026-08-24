@@ -911,8 +911,8 @@ class WorkflowRunner(
 
     companion object {
         const val VERSION = "0.9.5"
-        const val BUILD_ID = "20260824-v095-complete-login-handoff-v8"
-        const val BUILD_REVISION = 8
+        const val BUILD_ID = "20260824-v095-csrf-login-verification-v9"
+        const val BUILD_REVISION = 9
         const val REMOTE_ROOT = "/opt/proxy-runbook-current"
         const val INSTALL_ROOT = "/opt/proxy-runbook-v0.9.5"
         const val TOOLKIT_ASSET = "proxy-runbook-toolkit-v0.9.5.tgz"

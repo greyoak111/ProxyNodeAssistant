@@ -73,6 +73,7 @@ if (-not $SkipCommonValidation) {
         "scripts/validate-shell.sh",
         "scripts/test-diagnosis-protocol.sh",
         "scripts/test-xui-api-context.sh",
+        "scripts/test-xui-password-login.sh",
         "scripts/test-warp-route-idempotency.sh",
         "scripts/test-gui-remote-prompt.sh",
         "scripts/test-deployment-state.sh",
