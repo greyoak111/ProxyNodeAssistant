@@ -1,5 +1,6 @@
 # v0.9.5
 
+- Revision 7 fixes the false DNS retry loop on Windows and the VPS. The Windows client accepts its system resolver immediately, or requires matching Cloudflare and Google DNS-over-HTTPS answers when the local resolver times out; the remote runbook applies the same quorum rule. Prompts expose only MATCH/MISS state.
 - Revision 6 accepts both `status` and `--status` for the public-IP rebind status protocol, and the node status collector uses the canonical spelling. This prevents a read-only health check from failing with `USAGE`.
 
 - Preserve `direct-reality` as the default production topology while adding explicit `cdn-xhttp-tls` and `dual-hot-switch` state identifiers.

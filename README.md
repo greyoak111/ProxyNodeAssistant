@@ -304,7 +304,7 @@ remote command returned non-zero
 
 | 症状 | 首先检查 |
 |---|---|
-| DNS 不指向 VPS | Cloudflare 是否 Active；A 记录是否灰云；1.1.1.1 是否返回正确 IPv4 |
+| DNS 不指向 VPS | Cloudflare 是否 Active；A 记录是否灰云；查看 `DNS_RESOLVER_QUORUM`。revision 7 在 Windows DNS 超时时会由 Cloudflare 与 Google 公共 DNS 双重确认，避免把正确记录困在重试循环 |
 | ACME 预检 403/404 | 是否橙云；80/tcp 是否放行；是否有冲突 Nginx server block |
 | SSH 密码被拒绝 | 用户名 root/ubuntu/debian；密码是否已重置；厂商是否禁用 root 密码登录 |
 | Host Key 改变 | 是否刚重装 VPS；先到厂商 Console 核对，不要盲目接受 |

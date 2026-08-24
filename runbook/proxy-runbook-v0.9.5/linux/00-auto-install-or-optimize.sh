@@ -375,8 +375,10 @@ fi
 echo "Server host PRIVATE keys remain on this VPS and are intentionally never exported."
 
 step "DNS FOR THE HUMAN-TYPED DOMAIN"
+# shellcheck source=lib-dns-quorum.sh
+. "$ROOT/linux/lib-dns-quorum.sh"
 dns_points_here() {
-  getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | grep -x "$PUBLIC_IP" >/dev/null
+  dns_points_to_ipv4_quorum "$DOMAIN" "$PUBLIC_IP"
 }
 if ! dns_points_here; then
   yellow "$DOMAIN does not currently resolve to $PUBLIC_IP."
@@ -391,6 +393,7 @@ if ! dns_points_here; then
     bash "$ROOT/linux/05a-cloudflare-dns-upsert.sh" "$DOMAIN" "$PUBLIC_IP"
   else
     until dns_points_here; do
+      dns_print_quorum_observation "$DOMAIN" "$PUBLIC_IP"
       yesq "Have you manually created/updated the A record? Re-check DNS now?" || {
         yellow "Paused before certificate/REALITY. Nothing will guess your domain."
         exit 2

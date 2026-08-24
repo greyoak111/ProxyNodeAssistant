@@ -123,24 +123,14 @@ func (a *App) remotePublicIP(c Connection) (string, error) {
 	return "", errors.New(a.msg("无法可靠识别 VPS 公网 IPv4；停止 DNS/证书施工。", "Could not reliably determine the VPS public IPv4; stopping before DNS/certificate work."))
 }
 
-func domainPointsTo(domain, publicIP string) bool {
-	addresses, err := net.LookupIP(domain)
-	if err != nil {
-		return false
-	}
-	for _, address := range addresses {
-		if address.To4() != nil && address.String() == publicIP {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *App) waitForDNS(domain, publicIP string) bool {
-	if domainPointsTo(domain, publicIP) {
+	probe := domainDNSProbe(domain, publicIP)
+	if probe.Accepted() {
+		a.println("DNS_RESOLVER_QUORUM " + probe.Summary())
 		a.println(a.msg("DNS 已经指向这台 VPS。", "DNS already points to this VPS."))
 		return true
 	}
+	a.println("DNS_RESOLVER_QUORUM " + probe.Summary())
 	a.println(a.msg("DNS 还没有指向这台 VPS。脚本不会猜域名。", "DNS does not yet point to this VPS. The tool will not guess your domain."))
 	a.println(a.msg("请在 DNS 服务商建立/修改：", "Create/update this record at your DNS provider:"))
 	a.println("  Type: A")
@@ -153,7 +143,9 @@ func (a *App) waitForDNS(domain, publicIP string) bool {
 			return false
 		}
 		a.println(a.msg("正在重新检测 DNS…", "Re-checking DNS..."))
-		if domainPointsTo(domain, publicIP) {
+		probe = domainDNSProbe(domain, publicIP)
+		a.println("DNS_RESOLVER_QUORUM " + probe.Summary())
+		if probe.Accepted() {
 			a.println(a.msg("DNS 已经指向这台 VPS。", "DNS already points to this VPS."))
 			return true
 		}

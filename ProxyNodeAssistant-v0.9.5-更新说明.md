@@ -29,6 +29,8 @@ hotfix4：修复工作流中断后，旧 `reality-shadow.env` 的 `TEST_PORT` �
 
 同版本工具包加入递增 build revision：当前 EXE 会升级同版本旧构建；若远端 revision 更高则拒绝降级并提示更换新 EXE。
 
+revision 7 修复 Windows 默认 DNS 解析器超时导致的无限“DNS 还没生效”误判。安装入口现在并行检查 Windows 系统解析器、Cloudflare DNS-over-HTTPS 与 Google DNS-over-HTTPS：系统解析器命中即可通过；系统失败时两个公共解析器必须同时精确命中。远端 runbook 使用相同仲裁规则，并以 `MATCH/MISS` 显示结果，不输出或保存任何 DNS API 凭据。
+
 Windows 图形客户端与远端工具包从本版起统一使用 `0.9.5`。远端旧版只能由菜单 `[1]` 升级；完整同版禁止重复上传，远端版本更高时拒绝降级并提示更换更新的 EXE。
 
 ## 新增：可回滚自适应性能档

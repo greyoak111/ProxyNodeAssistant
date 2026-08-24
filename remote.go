@@ -23,8 +23,8 @@ import (
 const (
 	remoteRoot           = "/opt/proxy-runbook-current"
 	toolkitVersion       = "0.9.5"
-	toolkitBuildID       = "20260824-v095-phase2-security-device-rebind-v6"
-	toolkitBuildRevision = 6
+	toolkitBuildID       = "20260824-v095-dns-quorum-v7"
+	toolkitBuildRevision = 7
 	toolkitInstallDir    = "/opt/proxy-runbook-v0.9.5"
 	toolkitArchive       = "proxy-runbook-toolkit-v0.9.5.tar.gz"
 )
