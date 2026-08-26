@@ -1,0 +1,31 @@
+[Unit]
+Description=TextNodeAssistant local subscription adapter
+After=network-online.target x-ui.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/text-node-assistant/subscription-rewrite.py
+Environment=TNA_SUBSCRIPTION_BIND=127.0.0.1
+Environment=TNA_SUBSCRIPTION_PORT=2097
+EnvironmentFile=-/etc/text-node-assistant/subscription-proxy.env
+Restart=on-failure
+RestartSec=2s
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+RestrictSUIDSGID=true
+UMask=077
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

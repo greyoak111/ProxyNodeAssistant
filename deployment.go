@@ -171,7 +171,7 @@ func appendCompleteHandoff(legacy string, fields map[string]string) (string, err
 		}
 		output.WriteString("===== END REQUIRED LOGIN CREDENTIALS =====")
 	}
-	output.WriteString("\n\n===== PNA COMPLETE HANDOFF v0.9.5 =====\n")
+	output.WriteString("\n\n===== TNA COMPLETE HANDOFF v0.9.5 =====\n")
 	for _, key := range keys {
 		if strings.HasPrefix(key, "FORM_") {
 			continue
@@ -181,7 +181,7 @@ func appendCompleteHandoff(legacy string, fields map[string]string) (string, err
 		output.WriteString(fields[key])
 		output.WriteByte('\n')
 	}
-	output.WriteString("===== END PNA COMPLETE HANDOFF v0.9.5 =====")
+	output.WriteString("===== END TNA COMPLETE HANDOFF v0.9.5 =====")
 	return output.String(), nil
 }
 
@@ -198,7 +198,7 @@ func (a *App) buildCompleteHandoff(legacy string, c Connection) (string, error) 
 		auth = "TEMPORARY_PASSWORD_ONE_RUN"
 	}
 	fields := map[string]string{
-		"PNA_VERSION":         version,
+		"TNA_VERSION":         version,
 		"SSH_AUTH_MODE":       auth,
 		"SSH_KEY_ONLY":        fmt.Sprintf("%t", c.AuthMode == AuthManagedKey),
 		"VPS_SSH_USER":        c.User,
@@ -222,7 +222,7 @@ func (a *App) buildCompleteHandoff(legacy string, c Connection) (string, error) 
 			fields["CONSTRUCTION_DOMAIN"] = domain
 		}
 	}
-	stateResult := a.rootCapture(c, "cat /etc/proxy-runbook/deployment-state.env 2>/dev/null || true")
+	stateResult := a.rootCapture(c, "if [ -r /etc/text-node-assistant/deployment-state.env ]; then cat /etc/text-node-assistant/deployment-state.env; else cat /etc/proxy-runbook/deployment-state.env 2>/dev/null || true; fi")
 	state := parseKV(stateResult.Stdout)
 	mode := state["DEPLOYMENT_MODE"]
 	active := state["ACTIVE_MODE"]

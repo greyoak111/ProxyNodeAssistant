@@ -172,7 +172,7 @@ class SshHandle internal constructor(
     private val forwards = Collections.synchronizedList(mutableListOf<LocalPortForwarder>())
     private var cachedSudoPassword: String? = loginPassword
     private val keepAlive = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "pna-ssh-keepalive").apply { isDaemon = true }
+        Thread(task, "tna-ssh-keepalive").apply { isDaemon = true }
     }.apply {
         scheduleWithFixedDelay({ runCatching { connection.sendIgnorePacket() } }, 15, 15, TimeUnit.SECONDS)
     }
@@ -251,7 +251,12 @@ class SshHandle internal constructor(
     }
 
     private fun decodePrompt(line: String): Pair<PromptKind, String>? {
-        val variants = listOf("PNA_GUI_PROMPT_B64=" to PromptKind.TEXT, "PNA_GUI_SECRET_B64=" to PromptKind.SECRET)
+        val variants = listOf(
+            "TNA_GUI_PROMPT_B64=" to PromptKind.TEXT,
+            "TNA_GUI_SECRET_B64=" to PromptKind.SECRET,
+            "PNA_GUI_PROMPT_B64=" to PromptKind.TEXT,
+            "PNA_GUI_SECRET_B64=" to PromptKind.SECRET,
+        )
         for ((prefix, kind) in variants) {
             val index = line.indexOf(prefix)
             if (index < 0) continue

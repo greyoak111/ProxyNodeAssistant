@@ -22,18 +22,14 @@ type RecentTarget struct {
 }
 
 func recentTargetsPath() (string, error) {
-	if override := strings.TrimSpace(os.Getenv("PNA_HISTORY_PATH")); override != "" {
+	if override := firstEnvironment("TNA_HISTORY_PATH", "PNA_HISTORY_PATH"); override != "" {
 		return filepath.Clean(override), nil
 	}
-	base := os.Getenv("APPDATA")
-	if base == "" {
-		var err error
-		base, err = os.UserConfigDir()
-		if err != nil {
-			return "", err
-		}
+	base, err := productConfigRoot()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(base, "ProxyNodeAssistant", "recent-targets.tsv"), nil
+	return filepath.Join(base, "recent-targets.tsv"), nil
 }
 
 func recentTargetKey(target RecentTarget) string {
@@ -213,7 +209,7 @@ func (a *App) promptManualConnectionDetails() (string, string, int, error) {
 }
 
 func (a *App) chooseConnectionDetails() (string, string, int, error) {
-	if os.Getenv("PNA_PREFILLED_CONNECTION") == "1" {
+	if os.Getenv("TNA_PREFILLED_CONNECTION") == "1" || os.Getenv("PNA_PREFILLED_CONNECTION") == "1" {
 		return a.promptManualConnectionDetails()
 	}
 	for {

@@ -36,24 +36,36 @@ build-all-pc.bat
 构建结果位于 `dist`：
 
 ```text
-ProxyNodeAssistant-v0.9.5-win64.exe       默认发布的单文件 GUI
-ProxyNodeAssistant-v0.9.5-win32.exe       Windows 10 x86 单文件 GUI
-ProxyNodeAssistant-v0.9.5-win-arm64.exe   Windows 10/11 ARM64 单文件 GUI
-ProxyNodeAssistant-v0.9.5-cli-win*.exe    构建中间件/高级调试核心
-ProxyNodeAssistant-v0.9.5-askpass-win*.exe 构建中间件/受限命名管道辅助程序
-ProxyNodeAssistant-v0.9.5-gui-preview.png 界面渲染验证图
-ProxyNodeAssistant-v0.9.5-workflow-preview.png 操作工作区渲染验证图
+TextNodeAssistant-v0.9.5-win64.exe       默认发布的单文件 GUI
+TextNodeAssistant-v0.9.5-win32.exe       Windows 10 x86 单文件 GUI
+TextNodeAssistant-v0.9.5-win-arm64.exe   Windows 10/11 ARM64 单文件 GUI
+TextNodeAssistant-v0.9.5-cli-win*.exe    构建中间件/高级调试核心
+TextNodeAssistant-v0.9.5-askpass-win*.exe 构建中间件/受限命名管道辅助程序
+TextNodeAssistant-v0.9.5-gui-preview.png 界面渲染验证图
+TextNodeAssistant-v0.9.5-workflow-preview.png 操作工作区渲染验证图
 ```
 
-应用图标源文件位于 `gui/ProxyNodeAssistant-v0.9.5-app-icon.png`，Windows 多尺寸资源位于 `gui/ProxyNodeAssistant-v0.9.5.ico`。Windows 应用与内嵌 Linux runbook 均为 v0.9.5；构建会重新生成 runbook 的 `SHA256SUMS.txt`，并把性能/流量、XHTTP 本地影子、固定 copyparty 私人网盘与 15 套伪装站模板一并打入归档。
+应用图标源文件位于 `gui/TextNodeAssistant-v0.9.5-app-icon.png`，Windows 多尺寸资源位于 `gui/TextNodeAssistant-v0.9.5.ico`。Windows 应用与内嵌 Linux runbook 均为 v0.9.5；构建会重新生成 runbook 的 `SHA256SUMS.txt`，并把性能/流量、XHTTP 本地影子、固定 copyparty 私人网盘与 15 套伪装站模板一并打入归档。
 
 Linux Shell 静态语法可在 Git Bash 中执行：
 
 ```bash
-find runbook/proxy-runbook-v0.9.5/linux -name '*.sh' -print0 | xargs -0 -n1 bash -n
+find runbook/text-node-assistant-v0.9.5/linux -name '*.sh' -print0 | xargs -0 -n1 bash -n
 scripts/test-xui-api-context.sh
 scripts/test-warp-route-idempotency.sh
 scripts/test-deployment-state.sh
 scripts/test-private-drive-static.sh
 ```
+
+Android 测试与正式签名构建：
+
+```powershell
+cd android
+.\build-android.ps1 -Task Test
+.\build-signed-release.ps1
+```
+
+正式 APK 输出到 `android/dist/TextNodeAssistant-v0.9.5-android-universal.apk`。为保持已安装用户可原地升级，应用 ID 与既有受保护签名身份属于兼容边界；签名密钥、密码、`local.properties`、Gradle 缓存和构建目录禁止进入源码包。
+
+全平台构建完成后运行 `package.ps1`。它要求三个 Windows EXE 与正式 Android APK 全部存在，生成便携包、源码包、SHA-256 清单和 `TextNodeAssistant-v0.9.5-sbom.spdx.json`。发布环境应先把真实运行数据的换行列表编码为 Base64 并放入 `TNA_PRIVACY_FORBIDDEN_B64`；打包器会在压缩前扫描便携目录和源码目录，命中时直接失败。最终还应解包 ZIP/TAR/APK 再运行同一隐私扫描。
 

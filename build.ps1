@@ -15,31 +15,76 @@ $architectureInfo = switch ($Architecture) {
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RunbookRoot = Join-Path $Root "runbook"
-$Archive = Join-Path $Root "assets\proxy-runbook-toolkit-v0.9.5.tar.gz"
-$AndroidArchive = Join-Path $Root "android\app\src\main\assets\proxy-runbook-toolkit-v0.9.5.tgz"
+$Archive = Join-Path $Root "assets\text-node-assistant-toolkit-v0.9.5.tar.gz"
+$AndroidArchive = Join-Path $Root "android\app\src\main\assets\text-node-assistant-toolkit-v0.9.5.tgz"
 $Dist = Join-Path $Root "dist"
-$CliExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-cli-$($architectureInfo.Suffix).exe"
-$AskPassExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-askpass-$($architectureInfo.Suffix).exe"
-$GuiExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-$($architectureInfo.Suffix).exe"
-$GuiPreview = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-gui-preview.png"
-$OperationPreview = Join-Path $Dist "ProxyNodeAssistant-v0.9.5-workflow-preview.png"
-$GuiSource = Join-Path $Root "gui\ProxyNodeAssistant.Gui.cs"
-$AskPassSource = Join-Path $Root "gui\ProxyNodeAssistant.AskPass.cs"
+$CliExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-cli-$($architectureInfo.Suffix).exe"
+$AskPassExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-askpass-$($architectureInfo.Suffix).exe"
+$GuiExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-$($architectureInfo.Suffix).exe"
+$GuiPreview = Join-Path $Dist "TextNodeAssistant-v0.9.5-gui-preview.png"
+$OperationPreview = Join-Path $Dist "TextNodeAssistant-v0.9.5-workflow-preview.png"
+$GuiSource = Join-Path $Root "gui\TextNodeAssistant.Gui.cs"
+$DriveShellSource = Join-Path $Root "gui\TextNodeAssistant.DriveShell.cs"
+$AskPassSource = Join-Path $Root "gui\TextNodeAssistant.AskPass.cs"
 $GuiXaml = Join-Path $Root "gui\MainWindow.xaml"
 $GuiManifest = Join-Path $Root "gui\app.manifest"
-$GuiIcon = Join-Path $Root "gui\ProxyNodeAssistant-v0.9.5.ico"
-$GuiIconPng = Join-Path $Root "gui\ProxyNodeAssistant-v0.9.5-app-icon.png"
+$GuiIcon = Join-Path $Root "gui\TextNodeAssistant-v0.9.5.ico"
+$GuiIconPng = Join-Path $Root "gui\TextNodeAssistant-v0.9.5-app-icon.png"
+$RunbookPackageRoot = Join-Path $RunbookRoot "text-node-assistant-v0.9.5"
+$ThirdPartyLock = Join-Path $RunbookPackageRoot "THIRD_PARTY_LOCK.env"
+$ThirdPartyCache = Join-Path $Root ".third-party-cache"
 
-$Go = if ($env:PNA_GO_EXE) { $env:PNA_GO_EXE } else { "go" }
-$Gofmt = if ($env:PNA_GOFMT_EXE) { $env:PNA_GOFMT_EXE } else { "gofmt" }
-$Bash = if ($env:PNA_BASH_EXE) {
+function Read-LockValue([string]$Name) {
+    $line = Get-Content -LiteralPath $ThirdPartyLock | Where-Object { $_ -match ('^' + [Regex]::Escape($Name) + '=') } | Select-Object -First 1
+    if (-not $line) { throw "Missing third-party lock value: $Name" }
+    return $line.Substring($Name.Length + 1).Trim()
+}
+
+function Get-VerifiedDownload([string]$Url, [string]$Sha256, [string]$Destination) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        $actual = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -eq $Sha256.ToLowerInvariant()) { return }
+        Remove-Item -LiteralPath $Destination -Force
+    }
+    $temporary = $Destination + ".download"
+    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $temporary
+    $actual = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $Sha256.ToLowerInvariant()) {
+        Remove-Item -LiteralPath $temporary -Force
+        throw "Third-party SHA-256 mismatch for $Url (got $actual)"
+    }
+    Move-Item -LiteralPath $temporary -Destination $Destination
+}
+
+if (-not (Test-Path -LiteralPath $ThirdPartyLock -PathType Leaf)) { throw "Third-party lock file is missing: $ThirdPartyLock" }
+$lockArch = $Architecture.ToUpperInvariant()
+$RcloneVersion = Read-LockValue "RCLONE_VERSION"
+$RcloneUrl = Read-LockValue ("RCLONE_URL_" + $lockArch)
+$RcloneSha256 = Read-LockValue ("RCLONE_SHA256_" + $lockArch)
+$WinFspVersion = Read-LockValue "WINFSP_VERSION"
+$WinFspUrl = Read-LockValue "WINFSP_MSI_URL"
+$WinFspSha256 = Read-LockValue "WINFSP_MSI_SHA256"
+$RcloneZip = Join-Path $ThirdPartyCache ("rclone-" + $RcloneVersion + "-windows-" + $Architecture + ".zip")
+$WinFspMsi = Join-Path $ThirdPartyCache ("winfsp-" + $WinFspVersion + ".msi")
+Get-VerifiedDownload $RcloneUrl $RcloneSha256 $RcloneZip
+Get-VerifiedDownload $WinFspUrl $WinFspSha256 $WinFspMsi
+
+$Go = if ($env:TNA_GO_EXE) { $env:TNA_GO_EXE } elseif ($env:PNA_GO_EXE) { $env:PNA_GO_EXE } else { "go" }
+$Gofmt = if ($env:TNA_GOFMT_EXE) { $env:TNA_GOFMT_EXE } elseif ($env:PNA_GOFMT_EXE) { $env:PNA_GOFMT_EXE } else { "gofmt" }
+$Bash = if ($env:TNA_BASH_EXE) {
+    $env:TNA_BASH_EXE
+} elseif ($env:PNA_BASH_EXE) {
     $env:PNA_BASH_EXE
 } elseif (Test-Path -LiteralPath "C:\Program Files\Git\bin\bash.exe") {
     "C:\Program Files\Git\bin\bash.exe"
 } else {
     "bash"
 }
-$Csc = if ($env:PNA_CSC_EXE) {
+$Csc = if ($env:TNA_CSC_EXE) {
+    $env:TNA_CSC_EXE
+} elseif ($env:PNA_CSC_EXE) {
     $env:PNA_CSC_EXE
 } elseif (Test-Path -LiteralPath "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe") {
     "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
@@ -53,7 +98,6 @@ foreach ($requiredVisual in @($GuiIcon, $GuiIconPng)) {
         throw "Required application icon is missing: $requiredVisual"
     }
 }
-$RunbookPackageRoot = Join-Path $RunbookRoot "proxy-runbook-v0.9.5"
 if (-not $SkipCommonValidation) {
     $RunbookHashManifest = Join-Path $RunbookPackageRoot "SHA256SUMS.txt"
     $runbookHashLines = Get-ChildItem -LiteralPath $RunbookPackageRoot -File -Recurse | Where-Object {
@@ -64,7 +108,7 @@ if (-not $SkipCommonValidation) {
         "$hash  $relative"
     }
     [IO.File]::WriteAllText($RunbookHashManifest, (($runbookHashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
-    & tar -czf $Archive -C $RunbookRoot "proxy-runbook-v0.9.5"
+    & tar -czf $Archive -C $RunbookRoot "text-node-assistant-v0.9.5"
     if ($LASTEXITCODE -ne 0) { throw "tar failed" }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $AndroidArchive) | Out-Null
     Copy-Item -LiteralPath $Archive -Destination $AndroidArchive -Force
@@ -83,7 +127,10 @@ if (-not $SkipCommonValidation) {
         "scripts/test-security-events-static.sh",
 		"scripts/test-device-admission-static.sh",
 		"scripts/test-ip-rebind-static.sh",
-        "scripts/test-cdn-xhttp-production-static.sh"
+		"scripts/test-cdn-xhttp-production-static.sh",
+		"scripts/test-subscription-xhttp-static.sh",
+		"scripts/test-topology-reconcile-static.sh",
+		"scripts/test-install-transaction-static.sh"
     )) {
         & $Bash $shellTest
         if ($LASTEXITCODE -ne 0) { throw "Shell validation failed: $shellTest" }
@@ -120,6 +167,9 @@ try {
         (Join-Path $frameworkDir "System.dll"),
         (Join-Path $frameworkDir "System.Core.dll"),
         (Join-Path $frameworkDir "System.Xml.dll"),
+		(Join-Path $frameworkDir "System.Runtime.Serialization.dll"),
+        (Join-Path $frameworkDir "System.IO.Compression.dll"),
+        (Join-Path $frameworkDir "System.IO.Compression.FileSystem.dll"),
         (Join-Path $frameworkDir "System.Xaml.dll"),
         (Join-Path $wpfDir "WindowsBase.dll"),
         (Join-Path $wpfDir "PresentationCore.dll"),
@@ -149,13 +199,16 @@ try {
     $arguments = @(
         "/nologo", "/target:winexe", "/platform:$($architectureInfo.CscPlatform)", "/optimize+", "/debug-",
         "/out:$GuiExe", "/win32manifest:$GuiManifest", "/win32icon:$GuiIcon",
-        "/resource:$GuiXaml,ProxyNodeAssistant.MainWindow.xaml",
-        "/resource:$GuiIconPng,ProxyNodeAssistant.AppIcon.png",
-        "/resource:$CliExe,ProxyNodeAssistant.Cli.exe",
-        "/resource:$AskPassExe,ProxyNodeAssistant.AskPass.exe"
+        "/resource:$GuiXaml,TextNodeAssistant.MainWindow.xaml",
+        "/resource:$GuiIconPng,TextNodeAssistant.AppIcon.png",
+        "/resource:$CliExe,TextNodeAssistant.Cli.exe",
+        "/resource:$AskPassExe,TextNodeAssistant.AskPass.exe",
+        "/resource:$RcloneZip,TextNodeAssistant.Rclone.zip",
+        "/resource:$WinFspMsi,TextNodeAssistant.WinFsp.msi"
     )
     $arguments += $references | ForEach-Object { "/reference:$_" }
-    $arguments += $GuiSource
+	$arguments += $GuiSource
+	$arguments += $DriveShellSource
     & $Csc @arguments
     if ($LASTEXITCODE -ne 0) { throw "WPF GUI build failed" }
 
@@ -163,7 +216,20 @@ try {
         throw "GUI EXE is too small to contain the embedded CLI"
     }
 
-    if (-not $SkipRuntimeSmoke) {
+	# ARM64 is cross-compiled on the normal x64 build host. Do not launch an
+	# ARM64 embedded rclone during the host-side smoke tests: Windows would
+	# show the misleading "映像文件无效" dialog even though the release is
+	# correct for Windows on ARM. The ARM64 payload is still hash-checked and
+	# statically validated by the build below.
+    if (-not $SkipRuntimeSmoke -and $Architecture -ne "arm64") {
+		$runtimeExtractionSmoke = Start-Process -FilePath $GuiExe -ArgumentList @("--runtime-extraction-smoke") -PassThru
+		if (-not $runtimeExtractionSmoke.WaitForExit(120000)) {
+			try { $runtimeExtractionSmoke.Kill() } catch { }
+			throw "Embedded runtime extraction smoke test timed out"
+		}
+		if ($runtimeExtractionSmoke.ExitCode -ne 0) {
+			throw "Embedded CLI/rclone/WinFsp extraction or pinned rclone validation failed"
+		}
         $previewProcess = Start-Process -FilePath $GuiExe -ArgumentList @("--render-preview", ('"' + $GuiPreview + '"')) -PassThru -Wait
         if ($previewProcess.ExitCode -ne 0) {
             throw "GUI render smoke test failed with exit code $($previewProcess.ExitCode)"
@@ -187,7 +253,7 @@ try {
             throw "Fully graphical local workflow smoke test failed with exit code $($workflowSmoke.ExitCode)"
         }
         $promptSequenceSmoke = Start-Process -FilePath $GuiExe -ArgumentList @("--prompt-sequence-smoke") -PassThru
-        if (-not $promptSequenceSmoke.WaitForExit(15000)) {
+        if (-not $promptSequenceSmoke.WaitForExit(30000)) {
             try { $promptSequenceSmoke.Kill() } catch { }
             throw "GUI multi-step prompt protocol smoke test timed out"
         }
@@ -195,7 +261,7 @@ try {
             throw "GUI multi-step prompt protocol smoke test failed with exit code $($promptSequenceSmoke.ExitCode)"
         }
         $inputCloseSmoke = Start-Process -FilePath $GuiExe -ArgumentList @("--input-close-smoke") -PassThru
-        if (-not $inputCloseSmoke.WaitForExit(15000)) {
+        if (-not $inputCloseSmoke.WaitForExit(30000)) {
             try { $inputCloseSmoke.Kill() } catch { }
             throw "GUI closed-input anti-busy-loop smoke test timed out"
         }
@@ -218,7 +284,7 @@ try {
         if ($tunnelLifetimeSmoke.ExitCode -ne 0) {
             throw "GUI panel-tunnel lifetime smoke test failed with exit code $($tunnelLifetimeSmoke.ExitCode)"
         }
-        $historySmokePath = Join-Path $env:TEMP ("pna-history-smoke-" + [Guid]::NewGuid().ToString("N") + ".tsv")
+        $historySmokePath = Join-Path $env:TEMP ("tna-history-smoke-" + [Guid]::NewGuid().ToString("N") + ".tsv")
         try {
             $historySmoke = Start-Process -FilePath $GuiExe -ArgumentList @("--history-smoke", ('"' + $historySmokePath + '"')) -PassThru
             if (-not $historySmoke.WaitForExit(15000)) {

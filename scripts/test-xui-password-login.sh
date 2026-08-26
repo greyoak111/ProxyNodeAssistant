@@ -50,7 +50,7 @@ done
 case "$url" in
   */csrf-token)
     printf '{"success":true,"obj":"csrf-test"}\n' > "$out"
-    printf 'csrf\n' >> "$PNA_LOGIN_MARKER"
+    printf 'csrf\n' >> "$TNA_LOGIN_MARKER"
     printf '200'
     ;;
   */login)
@@ -58,7 +58,7 @@ case "$url" in
     body="$(cat)"
     [ "$body" = 'username=test-user&password=test-pass&twoFactorCode=' ]
     printf '{"success":true,"msg":"ok"}\n' > "$out"
-    printf 'login\n' >> "$PNA_LOGIN_MARKER"
+    printf 'login\n' >> "$TNA_LOGIN_MARKER"
     printf '200'
     ;;
   *) exit 92 ;;
@@ -99,16 +99,16 @@ EOF
 
 chmod 700 "$TMP/bin/fake-xui" "$TMP/bin/curl" "$TMP/bin/jq" "$TMP/bin/python3"
 export PATH="$TMP/bin:$PATH"
-export PNA_XUI_BIN="$TMP/bin/fake-xui"
-export PNA_XUI_PUBLIC_FILE="$TMP/public.env"
-export PNA_LOGIN_MARKER="$TMP/login.calls"
+export TNA_XUI_BIN="$TMP/bin/fake-xui"
+export TNA_XUI_PUBLIC_FILE="$TMP/public.env"
+export TNA_LOGIN_MARKER="$TMP/login.calls"
 
-# shellcheck source=../runbook/proxy-runbook-v0.9.5/linux/lib-xui-api.sh
-. "$ROOT/runbook/proxy-runbook-v0.9.5/linux/lib-xui-api.sh"
+# shellcheck source=../runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh
+. "$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh"
 
 xui_password_login_works test-user test-pass
-[ "$(sed -n '1p' "$PNA_LOGIN_MARKER")" = csrf ]
-[ "$(sed -n '2p' "$PNA_LOGIN_MARKER")" = login ]
-[ "$(wc -l < "$PNA_LOGIN_MARKER")" -eq 2 ]
+[ "$(sed -n '1p' "$TNA_LOGIN_MARKER")" = csrf ]
+[ "$(sed -n '2p' "$TNA_LOGIN_MARKER")" = login ]
+[ "$(wc -l < "$TNA_LOGIN_MARKER")" -eq 2 ]
 
 echo XUI_PASSWORD_LOGIN_TEST_OK

@@ -86,6 +86,8 @@ func parseBoundedInt(value, label string, minValue, maxValue int) (int, error) {
 
 func parseSecurityReport(stdout string) (SecurityReport, error) {
 	var report SecurityReport
+	stdout = strings.ReplaceAll(stdout, "__TNA_SECURITY_V1_BEGIN__", "__PNA_SECURITY_V1_BEGIN__")
+	stdout = strings.ReplaceAll(stdout, "__TNA_SECURITY_V1_END__", "__PNA_SECURITY_V1_END__")
 	normalized := strings.ReplaceAll(stdout, "\r\n", "\n")
 	lines := strings.Split(normalized, "\n")
 	begin, end := -1, -1
@@ -272,14 +274,14 @@ func (a *App) manageSecurityEvents() error {
 				continue
 			}
 			result := a.rootCapture(c, "bash "+remoteRoot+"/linux/24-security-baseline.sh --apply 7")
-			if !result.OK() || !strings.Contains(result.Stdout, "PNA_SECURITY_BASELINE_APPLIED") {
+			if !result.OK() || !strings.Contains(result.Stdout, "TNA_SECURITY_BASELINE_APPLIED") {
 				return fmt.Errorf("security baseline apply failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 			}
 			a.println(strings.TrimSpace(result.Stdout))
 			continue
 		case "4":
 			result := a.rootCapture(c, "bash "+remoteRoot+"/linux/24-security-baseline.sh --status")
-			if !result.OK() || !strings.Contains(result.Stdout, "PNA_SECURITY_BASELINE_STATUS_END") {
+			if !result.OK() || !strings.Contains(result.Stdout, "TNA_SECURITY_BASELINE_STATUS_END") {
 				return fmt.Errorf("security baseline status failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 			}
 			a.println(strings.TrimSpace(result.Stdout))

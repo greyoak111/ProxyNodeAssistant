@@ -5,14 +5,18 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Base64
 import com.proxynodeassistant.android.core.PromptBroker
+import com.proxynodeassistant.android.core.Product
 import com.proxynodeassistant.android.core.Validation
 import com.proxynodeassistant.android.data.ManagedKeyRepository
 import com.proxynodeassistant.android.data.HostKeyRepository
 import com.proxynodeassistant.android.data.StableNodeIdentityRepository
 import com.proxynodeassistant.android.data.DeviceIdentityRepository
+import com.proxynodeassistant.android.data.DriveAdminCapability
+import com.proxynodeassistant.android.data.DriveAdminCapabilityRepository
 import com.proxynodeassistant.android.data.TargetRepository
 import com.proxynodeassistant.android.model.ActionSpec
 import com.proxynodeassistant.android.model.AuthMode
+import com.proxynodeassistant.android.model.HostKeyRecord
 import com.proxynodeassistant.android.model.KeyStatus
 import com.proxynodeassistant.android.model.Language
 import com.proxynodeassistant.android.model.NodeTarget
@@ -41,6 +45,7 @@ import java.net.Socket
 import java.net.URL
 import java.security.MessageDigest
 import java.security.SecureRandom
+import com.trilead.ssh2.crypto.fingerprint.KeyFingerprint
 import javax.net.ssl.HttpsURLConnection
 
 class WorkflowRunner(
@@ -50,6 +55,7 @@ class WorkflowRunner(
 	private val hostKeys: HostKeyRepository,
 	private val stableNodes: StableNodeIdentityRepository,
 	private val deviceIdentity: DeviceIdentityRepository,
+	private val driveAdminCapabilities: DriveAdminCapabilityRepository,
     private val targets: TargetRepository,
     private val prompts: PromptBroker,
 ) {
@@ -71,7 +77,7 @@ class WorkflowRunner(
             var tunnelTransferred = false
             try {
                 targets.remember(target)
-                log("PNA_ANDROID_WORKFLOW action=${action.code} target=${target.id}")
+                log("TNA_ANDROID_WORKFLOW action=${action.code} target=${target.id}")
 				if (action.code == "23") {
 					check(authMode == AuthMode.MANAGED_KEY) { tr("IP 重绑定必须选择旧节点的长期 key；不会生成替代 key", "IP rebind requires the old node's managed key; no replacement key is generated") }
 					handle = rebindPublicIp(target)
@@ -95,6 +101,27 @@ class WorkflowRunner(
                 prompts.cancel()
                 activeHandle = null
                 if (!tunnelTransferred) runCatching { handle?.close() }
+            }
+        }
+    }
+
+    fun runLocalDeviceJoin(action: ActionSpec, language: Language = Language.ZH) {
+        check(action.code.equals("J", true))
+        check(job?.isActive != true) { "A workflow is already running" }
+        this.language = language
+        _state.value = WorkflowUiState(RunStatus.RUNNING, action, startedAtEpochMs = System.currentTimeMillis())
+        job = scope.launch {
+            try {
+                joinDeviceWithInvitation()
+                _state.update { it.copy(status = RunStatus.SUCCEEDED) }
+            } catch (_: CancellationException) {
+                _state.update { it.copy(status = RunStatus.CANCELLED, error = tr("操作已安全取消", "Operation cancelled safely")) }
+            } catch (error: Throwable) {
+                log("FAIL_CLOSED: ${safeError(error)}")
+                _state.update { it.copy(status = RunStatus.FAILED, error = safeError(error)) }
+            } finally {
+                prompts.cancel()
+                activeHandle = null
             }
         }
     }
@@ -191,15 +218,16 @@ class WorkflowRunner(
         when {
             !probe.installed -> { log("TOOLKIT_MISSING; installing v$VERSION"); uploadToolkit(handle) }
             comparison > 0 -> error(tr("远端工具包 v${probe.version} 更新，请改用同版或更新的 Android 客户端", "Remote toolkit v${probe.version} is newer; use a matching or newer Android client"))
-            comparison == 0 && !probe.complete -> error(tr("远端 v$VERSION 工具包不完整，请先执行 [13] 卸载，再重新安装", "Remote v$VERSION is incomplete. Explicitly uninstall with action 13 before reinstalling"))
+            comparison == 0 && !probe.complete -> { log("TOOLKIT_SAME_VERSION_INCOMPLETE; repairing in place"); uploadToolkit(handle) }
             comparison == 0 && (probe.buildRevision > BUILD_REVISION || (probe.buildRevision == BUILD_REVISION && probe.buildId != BUILD_ID)) -> error(tr("远端 v$VERSION 构建更新或不同，已拒绝降级", "Remote v$VERSION build is newer or different; downgrade refused"))
             comparison == 0 && probe.buildRevision == BUILD_REVISION && probe.buildId == BUILD_ID -> log("TOOLKIT_SAME_BUILD; upload and bootstrap skipped")
             else -> { log("TOOLKIT_UPGRADE ${probe.version.ifBlank { "missing" }} -> $VERSION"); uploadToolkit(handle) }
         }
-		syncStableNodeIdentity(handle)
-
-        val domain = required(tr("伪装站域名", "Cover domain"), tr("请本人输入域名；没有默认值，也不会读取历史秘密", "Type the cover domain yourself (no default)")) { Validation.validDomain(it) }.lowercase()
-        val email = required(tr("Let's Encrypt 邮箱", "Let's Encrypt email"), tr("请本人输入证书邮箱；没有默认值", "Type the certificate email yourself (no default)")) { Validation.validEmail(it) }
+		recoverInterruptedInstallTransaction(handle)
+        captureOriginalBaseline(handle)
+		ensureInstallNodeIdentity(handle, probe)
+        val topology = chooseTopology(handle)
+        val (domain, email) = topology.baseDomainEmail()
         val templates = checked(handle, "bash $REMOTE_ROOT/linux/05b-cover-site-polished.sh --list", emit = false)
         log(templates.stdout.trim())
         val template = required(tr("伪装站模板", "Cover template"), tr("R=随机，A=按域名稳定选择，或输入 1—15 指定模板", "R=random, A=stable per domain, or 1-15"), "R") { Validation.normalizeTemplate(it) != null }
@@ -207,27 +235,411 @@ class WorkflowRunner(
         val publicIpResult = checked(handle, "ip=\$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true); [ -n \"\$ip\" ] || ip=\$(hostname -I | awk '{print \$1}'); printf '%s\\n' \"\$ip\"", emit = false)
         val publicIp = publicIpResult.stdout.lines().map { it.trim() }.firstOrNull { runCatching { InetAddress.getByName(it) is Inet4Address }.getOrDefault(false) }
             ?: error(tr("无法确定 VPS 公网 IPv4", "Could not determine the VPS public IPv4"))
-        waitForDns(domain, publicIp)
+        if (topology.mode == TopologyMode.ORANGE) waitForOrangeDns(domain) else waitForDns(domain, publicIp)
+        if (topology.mode == TopologyMode.DUAL) waitForOrangeDns(topology.orangeDomain)
+        if (topology.mode != TopologyMode.GRAY) guideCloudflareCertificatePrerequisites(topology.orangeDomain)
 
         val autoInput = "DOMAIN_B64=${Base64.encodeToString(domain.toByteArray(), Base64.NO_WRAP)}\n" +
             "EMAIL_B64=${Base64.encodeToString(email.toByteArray(), Base64.NO_WRAP)}\nLANG=zh\n"
-        handle.upload(autoInput.toByteArray(), "proxy-runbook-auto-input", "/tmp", "0600")
-        val command = "PROXY_RUNBOOK_LOGIN_USER=${SshHandle.shellQuote(handle.target.user)} PROXY_RUNBOOK_SSH_KEY_INSTALLED=1 PROXY_RUNBOOK_ASSUME_DEFAULTS=1 PROXY_RUNBOOK_GUI_MODE=1 PROXY_RUNBOOK_LANG=zh PROXY_RUNBOOK_COVER_TEMPLATE=${SshHandle.shellQuote(normalizedTemplate)} PROXY_RUNBOOK_AUTO_INPUT=/tmp/proxy-runbook-auto-input bash $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh"
-        val result = checked(handle, command, interactive = true)
-        check(result.ok) { "remote convergence returned ${result.exitCode}" }
-        showHandoff(handle)
+        handle.upload(autoInput.toByteArray(), "text-node-assistant-auto-input", "/tmp", "0600")
+        val transactionId = beginInstallTransaction(handle)
+        var transactionActive = true
+        try {
+            var driveHandoff = prepareMandatoryDrive(handle)
+            val command = "TNA_LOGIN_USER=${SshHandle.shellQuote(handle.target.user)} TNA_SSH_KEY_INSTALLED=1 TNA_ASSUME_DEFAULTS=1 TNA_GUI_MODE=1 TNA_LANG=zh " +
+                "TNA_TOPOLOGY_MODE=${SshHandle.shellQuote(topology.mode.value)} TNA_COVER_TEMPLATE=${SshHandle.shellQuote(normalizedTemplate)} " +
+                "TNA_AUTO_INPUT=/tmp/text-node-assistant-auto-input bash $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh"
+            val result = checked(handle, command, interactive = true)
+            check(result.ok) { "remote convergence returned ${result.exitCode}" }
+            if (topology.mode != TopologyMode.GRAY) {
+                promoteCdnPublicOrigin(handle, topology)
+                guideCloudflareOrangeSetup(topology.orangeDomain)
+                validateCdnEdge(handle, topology)
+                confirmCdnRealClient(handle, topology)
+            }
+            reconcileTopology(handle, topology)
+            finalizeMandatoryDrive(handle, topology.lifecycle())
+            ensureCurrentControllerAfterInstall(handle)
+            driveHandoff = ensureLocalDriveAdminCapability(handle, driveHandoff)
+            showHandoff(handle, driveHandoff)
+            commitInstallTransaction(handle, transactionId)
+            transactionActive = false
+        } finally {
+            if (transactionActive) {
+                runCatching { rollbackInstallTransaction(handle, transactionId) }
+                    .onFailure { log("INSTALL_TRANSACTION_ROLLBACK_FAILED: ${safeError(it)}") }
+            }
+        }
         if (confirmYes(tr("打开面板前是否整理冗余备份，并只保留一份已验证的当前配置备份？", "Prune redundant remote backups and retain one verified current-config backup before opening the panel?"), false, allowNo = true)) {
             pruneBackups(handle, exactConfirmation = false)
         }
         return if (confirmYes(tr("现在通过本机 SSH 隧道打开 3x-ui 面板？", "Open the 3x-ui panel through a localhost SSH tunnel now?"), true, allowNo = true)) openPanel(handle) else false
     }
 
+    private enum class TopologyMode(val value: String) { GRAY("gray"), ORANGE("orange"), DUAL("dual") }
+    private data class TopologyPlan(
+        val mode: TopologyMode,
+        val grayDomain: String = "",
+        val grayEmail: String = "",
+        val orangeDomain: String = "",
+        val orangeEmail: String = "",
+    ) {
+        fun baseDomainEmail() = if (mode == TopologyMode.ORANGE) orangeDomain to orangeEmail else grayDomain to grayEmail
+        fun lifecycle() = when (mode) {
+            TopologyMode.GRAY -> "MANAGED_GRAY_WITH_DRIVE"
+            TopologyMode.ORANGE -> "MANAGED_ORANGE_WITH_DRIVE"
+            TopologyMode.DUAL -> "MANAGED_DUAL_WITH_DRIVE"
+        }
+    }
+
+    private suspend fun chooseTopology(handle: SshHandle): TopologyPlan {
+        val installed = checked(
+            handle,
+            "if test -x /usr/local/x-ui/x-ui && test -s /etc/text-node-assistant/deployment-state.env; then echo INSTALLED=1; else echo INSTALLED=0; fi",
+            emit = false,
+        ).stdout.contains("INSTALLED=1")
+        val description = buildString {
+            appendLine(tr("必须明确选择线路拓扑，不能直接回车：", "Choose a topology explicitly; blank input is not accepted:"))
+            appendLine(tr("[1] 仅灰云：路径短、延迟低；客户端可看到源站 IP。", "[1] Gray only: shorter path and lower latency; clients can see the origin IP."))
+            appendLine(tr("[2] 仅橙云：Cloudflare/XHTTP；使用 Cloudflare 免费支持的 8443 端口，需 Full (strict) 和缓存绕过。", "[2] Orange only: Cloudflare/XHTTP; uses Cloudflare's free-plan 8443 edge port, with Full (strict) and cache bypass."))
+            appendLine(tr("[3] 双路：两个不同子域名，同时保留直连和 CDN。", "[3] Dual: two distinct hostnames, retaining both direct and CDN routes."))
+            if (installed) append(tr("[0] 保持已安装拓扑", "[0] Keep the installed topology"))
+        }
+        val valid = if (installed) setOf("0", "1", "2", "3") else setOf("1", "2", "3")
+        val choice = required(tr("代理线路拓扑", "Proxy topology"), description) { it in valid }
+        if (choice == "0") return loadExistingTopology(handle)
+        suspend fun domainEmail(label: String): Pair<String, String> {
+            val domain = required(label, tr("必须本人输入完整子域名，没有默认值", "Type the full hostname yourself; there is no default")) { Validation.validDomain(it) }.lowercase()
+            val email = required(tr("证书通知邮箱", "Certificate email"), tr("必须本人输入有效邮箱，没有默认值", "Type a valid email yourself; there is no default")) { Validation.validEmail(it) }
+            return domain to email
+        }
+        return when (choice) {
+            "1" -> domainEmail(tr("Step 1：灰云 / DNS-only 子域名", "Step 1: gray / DNS-only hostname")).let { TopologyPlan(TopologyMode.GRAY, it.first, it.second) }
+            "2" -> domainEmail(tr("Step 1：橙云 / Proxied 子域名", "Step 1: orange-cloud / Proxied hostname")).let { TopologyPlan(TopologyMode.ORANGE, orangeDomain = it.first, orangeEmail = it.second) }
+            else -> {
+                val gray = domainEmail(tr("Step 1：灰云 / DNS-only 子域名", "Step 1: gray / DNS-only hostname"))
+                val orange = domainEmail(tr("Step 2：橙云 / Proxied 子域名", "Step 2: orange-cloud / Proxied hostname"))
+                require(gray.first != orange.first) { tr("双路必须使用两个不同子域名", "Dual mode requires two different hostnames") }
+                TopologyPlan(TopologyMode.DUAL, gray.first, gray.second, orange.first, orange.second)
+            }
+        }
+    }
+
+    private suspend fun loadExistingTopology(handle: SshHandle): TopologyPlan {
+        val result = checked(handle, "cat /root/.config/text-node-assistant/topology.env", emit = false)
+        val values = ProtocolParsers.kv(result.stdout)
+        val mode = when (values["TOPOLOGY_MODE"]) {
+            "gray" -> TopologyMode.GRAY
+            "orange" -> TopologyMode.ORANGE
+            "dual" -> TopologyMode.DUAL
+            else -> error(tr("既有节点没有可验证的拓扑记录，请明确选择 1—3", "The existing node has no verifiable topology record; choose 1-3"))
+        }
+        val plan = TopologyPlan(mode, values["GRAY_DOMAIN"].orEmpty(), values["GRAY_EMAIL"].orEmpty(), values["ORANGE_DOMAIN"].orEmpty(), values["ORANGE_EMAIL"].orEmpty())
+        if (mode != TopologyMode.ORANGE) require(Validation.validDomain(plan.grayDomain) && Validation.validEmail(plan.grayEmail))
+        if (mode != TopologyMode.GRAY) require(Validation.validDomain(plan.orangeDomain) && Validation.validEmail(plan.orangeEmail))
+        require(mode != TopologyMode.DUAL || plan.grayDomain != plan.orangeDomain)
+        return plan
+    }
+
+    private suspend fun recoverInterruptedInstallTransaction(handle: SshHandle) {
+        val status = ProtocolParsers.kv(checked(handle, "bash $REMOTE_ROOT/linux/28a-install-transaction.sh status", emit = false).stdout)
+        when (status["TRANSACTION_STATUS"]) {
+            "NONE" -> return
+            "PREPARING", "ACTIVE", "ROLLING_BACK", "ROLLBACK_FAILED" -> {
+                log(tr("检测到上次未提交施工，先恢复事务快照，禁止在半成品上叠加。", "A prior install was not committed; its snapshot will be restored before any new work."))
+                val rollback = checked(handle, "bash $REMOTE_ROOT/linux/28a-install-transaction.sh rollback", emit = false)
+                require(
+                    "TNA_INSTALL_TRANSACTION_ROLLED_BACK=1" in rollback.stdout ||
+                        "TNA_INSTALL_TRANSACTION_ROLLBACK=PREPARE_ABORTED" in rollback.stdout ||
+                        "TNA_INSTALL_TRANSACTION_ROLLBACK=NOT_NEEDED" in rollback.stdout,
+                ) { "Interrupted install rollback did not return complete evidence" }
+            }
+            else -> error("Unsupported install transaction state: ${status["TRANSACTION_STATUS"]}")
+        }
+    }
+
+    private suspend fun captureOriginalBaseline(handle: SshHandle) {
+        val result = checked(handle, "bash $REMOTE_ROOT/linux/22-dismantle-managed-node.sh --capture-baseline", emit = false)
+        require(
+            listOf("ORIGINAL_BASELINE_CAPTURED_EXACT", "ORIGINAL_BASELINE_ALREADY_CAPTURED", "ORIGINAL_BASELINE_LEGACY_UNCERTAIN").any { it in result.stdout },
+        ) { "Pre-construction baseline capture returned no accepted evidence" }
+        log(tr("[GOOD] 原生基线已在网盘、代理、证书和节点身份改动前捕获或复核。", "[GOOD] The native baseline was captured or verified before drive, proxy, certificate, or node-identity changes."))
+    }
+
+    private suspend fun beginInstallTransaction(handle: SshHandle): String {
+        val result = checked(handle, "bash $REMOTE_ROOT/linux/28a-install-transaction.sh begin standalone 0", emit = false)
+        require("TNA_INSTALL_TRANSACTION_BEGAN=1" in result.stdout)
+        return ProtocolParsers.kv(result.stdout)["TRANSACTION_ID"].orEmpty().also {
+            require(Regex("^tna-install-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$").matches(it))
+        }
+    }
+
+    private suspend fun rollbackInstallTransaction(handle: SshHandle, transactionId: String) {
+        val status = ProtocolParsers.kv(checked(handle, "bash $REMOTE_ROOT/linux/28a-install-transaction.sh status", emit = false).stdout)
+        if (status["TRANSACTION_STATUS"] == "NONE") return
+        require(status["TRANSACTION_ID"] == transactionId) { "Refusing to roll back another install transaction" }
+        val result = checked(handle, "bash $REMOTE_ROOT/linux/28a-install-transaction.sh rollback", emit = false)
+        require("TNA_INSTALL_TRANSACTION_ROLLED_BACK=1" in result.stdout)
+        log(tr("[GOOD] 未提交施工已恢复到事务前状态。", "[GOOD] Uncommitted construction was restored to its pre-transaction state."))
+    }
+
+    private suspend fun commitInstallTransaction(handle: SshHandle, transactionId: String) {
+        val status = ProtocolParsers.kv(checked(handle, "bash $REMOTE_ROOT/linux/28a-install-transaction.sh status", emit = false).stdout)
+        require(status["TRANSACTION_STATUS"] == "ACTIVE" && status["TRANSACTION_ID"] == transactionId)
+        val result = checked(handle, "bash $REMOTE_ROOT/linux/28a-install-transaction.sh commit", emit = false)
+        require("TNA_INSTALL_TRANSACTION_COMMITTED=1" in result.stdout)
+        log(tr("[GOOD] 菜单 [1] 的全部远端阶段已原子提交。", "[GOOD] Every remote stage of action 1 was committed atomically."))
+    }
+
+    private suspend fun waitForOrangeDns(domain: String) {
+        while (true) {
+            val resolved = runCatching {
+                val cloudflare = URL("https://cloudflare-dns.com/dns-query?name=$domain&type=A").openConnection(Proxy.NO_PROXY) as HttpsURLConnection
+                cloudflare.setRequestProperty("Accept", "application/dns-json")
+                cloudflare.connectTimeout = 10_000
+                cloudflare.readTimeout = 10_000
+                val first = cloudflare.inputStream.bufferedReader().use { it.readText() }
+                cloudflare.disconnect()
+                val google = URL("https://dns.google/resolve?name=$domain&type=A").openConnection(Proxy.NO_PROXY) as HttpsURLConnection
+                google.connectTimeout = 10_000
+                google.readTimeout = 10_000
+                val second = google.inputStream.bufferedReader().use { it.readText() }
+                google.disconnect()
+                Regex("\\\"type\\\"\\s*:\\s*1").containsMatchIn(first) && Regex("\\\"type\\\"\\s*:\\s*1").containsMatchIn(second)
+            }.getOrDefault(false)
+            if (resolved) return
+            val answer = prompts.ask(
+                tr("等待橙云 DNS", "Waiting for orange-cloud DNS"),
+                tr("为 $domain 创建指向本 VPS 的 A 记录并开启 Proxied。若 Android VPN/TUN 拦截 DNS，请暂停后重试。按 Enter 重检，输入 q 取消。", "Create a Proxied A record for $domain pointing at this VPS. Pause any Android VPN/TUN that intercepts DNS. Press Enter to retry or q to cancel."),
+                PromptKind.TEXT,
+            )
+            if (answer.equals("q", true)) throw CancellationException("ORANGE_DNS_CANCELLED")
+        }
+    }
+
+    private suspend fun guideCloudflareCertificatePrerequisites(domain: String) {
+        val steps = listOf(
+            tr("已确认 $domain 的 A 记录指向当前 VPS 并开启橙云 Proxied", "Confirm $domain points to this VPS and is Proxied"),
+            tr("该域名没有 Access、Turnstile、质询、Worker 或重定向拦截 /.well-known/acme-challenge/", "No Access, Turnstile, challenge, Worker, or redirect intercepts /.well-known/acme-challenge/"),
+            tr("已理解 Universal SSL 只覆盖客户端到边缘；程序仍会用手填邮箱给 VPS 签源站证书，不索取 Cloudflare Token", "Understand Universal SSL covers client-to-edge only; the app still issues the VPS origin certificate with the typed email and never requests a Cloudflare token"),
+        )
+        steps.forEachIndexed { index, step ->
+            val answer = prompts.ask(tr("橙云源站前置 ${index + 1}/${steps.size}", "Orange-origin gate ${index + 1}/${steps.size}"), "$step\n${tr("确认后按 Enter；输入 q 取消", "Press Enter to confirm; type q to cancel")}", PromptKind.TEXT)
+            if (answer.equals("q", true)) throw CancellationException("CLOUDFLARE_PREREQUISITE_CANCELLED")
+        }
+    }
+
+    private suspend fun guideCloudflareOrangeSetup(domain: String) {
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(CLOUDFLARE_DNS_DASHBOARD)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        val steps = listOf(
+            tr("确认 $domain 的 A 记录为 Proxied 橙云", "Confirm $domain is Proxied"),
+            tr("SSL/TLS 已设 Full (strict)，Universal SSL 已激活", "SSL/TLS is Full (strict) and Universal SSL is active"),
+            tr("端口：客户端使用 ${domain}:8443（Cloudflare 免费支持，无需 Origin Rule）", "Port: clients use ${domain}:8443 (supported by Cloudflare without an Origin Rule)"),
+            tr("Cache Rule：该 hostname 全站 Bypass；没有 Access、质询、重定向或 Worker", "Cache Rule: bypass the hostname; no Access, challenge, redirect, or Worker"),
+        )
+        steps.forEachIndexed { index, step ->
+            val answer = prompts.ask(tr("Cloudflare 设置 ${index + 1}/${steps.size}", "Cloudflare setup ${index + 1}/${steps.size}"), "$step\n${tr("确认后按 Enter；输入 q 取消", "Press Enter to confirm; type q to cancel")}", PromptKind.TEXT)
+            if (answer.equals("q", true)) throw CancellationException("CLOUDFLARE_SETUP_CANCELLED")
+        }
+    }
+
+    private fun randomDrivePassword(): String = ByteArray(30).also(SecureRandom()::nextBytes).let {
+        Base64.encodeToString(it, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    private fun randomDriveAdminUsername(): String = ByteArray(6).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }.let { "tna-admin-$it" }
+
+    private suspend fun driveStatus(handle: SshHandle): Map<String, String> =
+        ProtocolParsers.kv(checked(handle, "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh status", emit = false).stdout)
+
+    private suspend fun prepareMandatoryDrive(handle: SshHandle): String {
+        val status = runCatching { driveStatus(handle) }.getOrNull()
+        if (status?.get("PRIVATE_DRIVE_STATUS") == "READY" && status["COPYPARTY_SERVICE"] == "active" && status["COPYPARTY_LOOPBACK_LISTENER"] == "1" && Regex("^tna-admin-[0-9a-f]{12}$").matches(status["DRIVE_ADMIN_USERNAME"].orEmpty())) {
+            log(tr("强制网盘已就绪；保留现有 admin 身份和用户文件。", "The mandatory drive is ready; its admin identity and user files are preserved."))
+            return ""
+        }
+        val username = randomDriveAdminUsername()
+        val password = randomDrivePassword()
+        val quota = required(tr("网盘容量", "Drive quota"), tr("推荐 auto；也可输入 1—50 GiB", "Recommended: auto; or enter 1-50 GiB"), "auto") {
+            it == "auto" || it.toIntOrNull()?.let { number -> number in 1..50 } == true
+        }
+        val result = handle.exec(
+            "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh install-admin ${SshHandle.shellQuote(username)} ${SshHandle.shellQuote(quota)}",
+            root = true,
+            stdinBytes = "$password\n".toByteArray(),
+            log = ::log,
+        )
+        check(result.ok && "__TNA_DRIVE_RESULT_END__" in result.stdout) { "Mandatory drive installation failed (${result.exitCode})" }
+        return "===== TNA MANDATORY DRIVE ADMIN v0.9.5 =====\nDRIVE_ADMIN_USERNAME=$username\nDRIVE_ADMIN_PASSWORD=$password\nDRIVE_ADMIN_STORAGE=ANDROID_KEYSTORE_ENCRYPTED_APP_VAULT\n================================================="
+    }
+
+    private suspend fun finalizeMandatoryDrive(handle: SshHandle, lifecycle: String) {
+        val result = checked(handle, "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh finalize-install ${SshHandle.shellQuote(lifecycle)}", emit = false)
+        require("TNA_DRIVE_FINALIZED=1" in result.stdout && "DRIVE_REGISTRATION_READY=1" in result.stdout)
+    }
+
+    private suspend fun ensureCurrentControllerAfterInstall(handle: SshHandle) {
+        val identity = deviceIdentity.loadOrCreate()
+        val status = DeviceAdmissionProtocol.parseStatus(checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh status", emit = false).stdout)
+        status.devices.firstOrNull { it.deviceId == identity.deviceId }?.let { existing ->
+            require(existing.role == "controller" && existing.status == "active") {
+                tr("当前设备已登记为 ${existing.role}/${existing.status}，菜单 [1] 不会静默提权", "This device is registered as ${existing.role}/${existing.status}; action 1 will not silently elevate it")
+            }
+            return
+        }
+        require(status.activeControllers == 0) {
+            tr("节点已有 controller；请先用首页 [J] 响应一次性邀请，菜单 [1] 不会绕过批准", "The node already has a controller. Use home action J with a single-use invitation; action 1 will not bypass approval")
+        }
+        val label = required(tr("首个 controller 设备名称", "First-controller device label"), tr("1—64 位安全字符", "1-64 safe characters"), "Android Phone") { Regex("^[A-Za-z0-9._ -]{1,64}$").matches(it) }
+        val prior = managedKeys.get(handle.target.id)
+        val key = prior ?: managedKeys.generate(handle.target.id)
+        val input = "\n${identity.publicValue}\n$label\ncontroller\n${identity.encryptionPublic}\n${handle.target.user}\n${normalizeSshPublic(key.publicKeyOpenSsh)}\n\n"
+        val result = handle.exec("bash $REMOTE_ROOT/linux/26-device-admission.sh bootstrap-controller", root = true, stdinBytes = input.toByteArray(), log = ::log)
+        check(result.ok && "__TNA_DEVICE_BOOTSTRAP_V1_END__" in result.stdout) { "First-controller bootstrap failed (${result.exitCode})" }
+        if (prior == null) managedKeys.put(key)
+        try {
+            verifyManagedDeviceKey(handle.target)
+        } catch (error: Throwable) {
+            if (prior == null) managedKeys.delete(handle.target.id, KeyStatus.BOUND)
+            throw error
+        }
+        val readback = DeviceAdmissionProtocol.parseStatus(checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh status", emit = false).stdout)
+        require(readback.devices.any { it.deviceId == identity.deviceId && it.role == "controller" && it.status == "active" })
+        log(tr("当前 Android 已作为首个 controller 完成真实登记。", "This Android device is now the first verified active controller."))
+    }
+
+    private suspend fun verifyDriveAdmin(handle: SshHandle, username: String, password: String) {
+        val result = handle.exec(
+            "bash $REMOTE_ROOT/linux/30-copyparty-account.sh verify ${SshHandle.shellQuote(username)}",
+            root = true,
+            stdinBytes = "$password\n".toByteArray(),
+            log = ::log,
+        )
+        check(result.ok && "TNA_DRIVE_ACCOUNT_LOGIN_OK" in result.stdout) { "Drive admin credential failed a real login readback" }
+    }
+
+    private suspend fun ensureLocalDriveAdminCapability(handle: SshHandle, handoff: String): String {
+        val status = DeviceAdmissionProtocol.parseStatus(checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh status", emit = false).stdout)
+        val identity = deviceIdentity.loadOrCreate()
+        require(status.devices.any { it.deviceId == identity.deviceId && it.role == "controller" && it.status == "active" })
+        if (handoff.isNotBlank()) {
+            val values = ProtocolParsers.kv(handoff)
+            val capability = DriveAdminCapability(status.nodeId, values["DRIVE_ADMIN_USERNAME"].orEmpty(), values["DRIVE_ADMIN_PASSWORD"].orEmpty())
+            verifyDriveAdmin(handle, capability.username, capability.password)
+            driveAdminCapabilities.put(capability)
+            return handoff
+        }
+        val remote = driveStatus(handle)
+        driveAdminCapabilities.get(status.nodeId)?.takeIf { it.username == remote["DRIVE_ADMIN_USERNAME"] }?.let { stored ->
+            runCatching { verifyDriveAdmin(handle, stored.username, stored.password) }.getOrNull()?.let { return "" }
+        }
+        val username = randomDriveAdminUsername()
+        val password = randomDrivePassword()
+        val quota = remote["PRIVATE_DRIVE_QUOTA_GIB"].orEmpty().takeIf { it.toIntOrNull() != null } ?: "auto"
+        val result = handle.exec(
+            "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh rotate-admin ${SshHandle.shellQuote(username)} ${SshHandle.shellQuote(quota)}",
+            root = true,
+            stdinBytes = "$password\n".toByteArray(),
+            log = ::log,
+        )
+        check(result.ok && "__TNA_DRIVE_RESULT_END__" in result.stdout) { "Drive admin rotation failed (${result.exitCode})" }
+        verifyDriveAdmin(handle, username, password)
+        driveAdminCapabilities.put(DriveAdminCapability(status.nodeId, username, password))
+        return "===== TNA MANDATORY DRIVE ADMIN v0.9.5 =====\nDRIVE_ADMIN_USERNAME=$username\nDRIVE_ADMIN_PASSWORD=$password\nDRIVE_ADMIN_STORAGE=ANDROID_KEYSTORE_ENCRYPTED_APP_VAULT\n================================================="
+    }
+
+    private fun topologyEnv(topology: TopologyPlan) = "TNA_TARGET_TOPOLOGY=${topology.mode.value} "
+
+    private suspend fun promoteCdnPublicOrigin(handle: SshHandle, topology: TopologyPlan) {
+        val domain = topology.orangeDomain
+        val email = topology.orangeEmail
+        val publicIp = cdnPublicIp(handle)
+        val certificate = checked(handle, "bash $REMOTE_ROOT/linux/05h-ensure-cdn-certificate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(email)}", emit = false)
+        require("TNA_CDN_CERTIFICATE_READY=1" in certificate.stdout || "TNA_CDN_CERTIFICATE_ALREADY_VALID=1" in certificate.stdout)
+        val create = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh create ${SshHandle.shellQuote(domain)}", emit = false)
+        require(listOf("XHTTP_STATUS=READY", "TNA_XHTTP_ALREADY_READY", "TNA_XHTTP_RETARGETED=1").any { it in create.stdout })
+        val env = topologyEnv(topology)
+        val local = checked(handle, "${env}bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage-local ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
+        require("CDN_STAGE_SCOPE=LOCAL_ONLY" in local.stdout)
+        val localCheck = checked(handle, "${env}bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --local-only", emit = false)
+        require("CDN_LOCAL_VALIDATION=PASS" in localCheck.stdout && "PUBLIC_ORIGIN_8443=NOT_ENABLED" in localCheck.stdout)
+        val lock = ProtocolParsers.kv(checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status", emit = false).stdout)
+        if (lock["CLOUDFLARE_FIREWALL_APPLIED"] != "1") {
+            checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh fetch", emit = false)
+            val plan = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh plan ${handle.target.port}", emit = false)
+            require("KEEP_PUBLIC_TCP_443_UNCHANGED=1" in plan.stdout && "DENY_OTHER_SOURCES_TCP=8443" in plan.stdout)
+            val apply = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh apply", emit = false)
+            require("CLOUDFLARE_FIREWALL_APPLIED=1" in apply.stdout && "PUBLIC_TCP_443_POLICY=UNCHANGED" in apply.stdout)
+        }
+        try {
+            val stage = checked(handle, "${env}bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
+            require("CDN_STAGE_SCOPE=CLOUDFLARE_ONLY" in stage.stdout)
+            val origin = checked(handle, "${env}bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --origin-ready", emit = false)
+            require("CDN_ORIGIN_VALIDATION=PASS" in origin.stdout)
+            verifyDirectOriginBlocked(publicIp)
+        } catch (error: Throwable) {
+            runCatching { rollbackCdnPublic(handle, domain, publicIp, topology) }
+            throw error
+        }
+    }
+
+    private suspend fun validateCdnEdge(handle: SshHandle, topology: TopologyPlan) {
+        val domain = topology.orangeDomain
+        val publicIp = cdnPublicIp(handle)
+        verifyCloudflareEdge(domain)
+        verifyDirectOriginBlocked(publicIp)
+        val remote = checked(handle, "${topologyEnv(topology)}bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --edge", emit = false)
+        require("ORIGIN_RULE_443_TO_8443=NOT_REQUIRED_CLOUDFLARE_STANDARD_PORT" in remote.stdout && "REAL_DEVICE_BROWSE=REQUIRED" in remote.stdout)
+        val linkResult = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(domain)} 8443", emit = false)
+        val link = ProtocolParsers.kv(linkResult.stdout)["XHTTP_LINK"].orEmpty()
+        val profile = ProtocolParsers.cdnXHttpLink(link)
+        require(profile.domain == domain && profile.port == 8443)
+        _state.update { it.copy(secretHandoff = "===== TNA CDN XHTTP PRODUCTION TEST v0.9.5 =====\nCDN_XHTTP_LINK=$link\nREAL_DEVICE_BROWSE=REQUIRED_BEFORE_COMMIT") }
+    }
+
+    private suspend fun confirmCdnRealClient(handle: SshHandle, topology: TopologyPlan) {
+        val exact = prompts.ask(
+            tr("真机浏览验收", "Real-device browsing gate"),
+            tr("把刚显示的 8443 XHTTP 链接导入客户端并真实浏览；成功后输入大写 REAL BROWSE OK。其他输入将回滚整次施工。", "Import the shown 8443 XHTTP link and actually browse through it. Then type uppercase REAL BROWSE OK. Any other input rolls back this installation."),
+            PromptKind.EXACT_CONFIRMATION,
+            danger = true,
+        )
+        require(exact == "REAL BROWSE OK") { tr("真机浏览未确认，拒绝提交橙云拓扑", "Real browsing was not confirmed; the orange topology will not be committed") }
+        val result = checked(handle, "${topologyEnv(topology)}bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(topology.orangeDomain)} ${SshHandle.shellQuote(cdnPublicIp(handle))} --confirm-client", emit = false)
+        require("CDN_REAL_CLIENT_CONFIRMED=1" in result.stdout)
+    }
+
+    private suspend fun rollbackCdnPublic(handle: SshHandle, domain: String, publicIp: String, topology: TopologyPlan) {
+        val result = checked(handle, "${topologyEnv(topology)}bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --rollback-public", emit = false)
+        require("CDN_PUBLIC_ORIGIN_ROLLED_BACK=1" in result.stdout)
+    }
+
+    private suspend fun reconcileTopology(handle: SshHandle, topology: TopologyPlan) {
+        val body = listOf(
+            "TOPOLOGY_STATE_VERSION=1",
+            "TOPOLOGY_MODE=${topology.mode.value}",
+            "GRAY_DOMAIN=${topology.grayDomain}",
+            "GRAY_EMAIL=${topology.grayEmail}",
+            "ORANGE_DOMAIN=${topology.orangeDomain}",
+            "ORANGE_EMAIL=${topology.orangeEmail}",
+        ).joinToString("\n", postfix = "\n")
+        val result = handle.exec(
+            "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh ${topology.mode.value} --commit-state",
+            root = true,
+            stdinBytes = body.toByteArray(),
+            log = ::log,
+        )
+        check(result.ok && "TNA_TOPOLOGY_RECONCILED=1" in result.stdout) { "Topology convergence failed (${result.exitCode})" }
+    }
+
     private suspend fun uploadToolkit(handle: SshHandle) {
-        log("Uploading embedded proxy-runbook v$VERSION...")
+        log("Uploading embedded TextNodeAssistant toolkit v$VERSION...")
         val bytes = context.assets.open(TOOLKIT_ASSET).use { it.readBytes() }
         require(bytes.size > 128) { tr("APK 内嵌工具包为空", "embedded toolkit is empty") }
         handle.upload(bytes, TOOLKIT_ARCHIVE, "/tmp", "0600")
-        val bootstrap = "mkdir -p /opt; rm -rf ${SshHandle.shellQuote(INSTALL_ROOT)}; tar -xzf ${SshHandle.shellQuote("/tmp/$TOOLKIT_ARCHIVE")} -C /opt; PROXY_RUNBOOK_LOGIN_USER=${SshHandle.shellQuote(handle.target.user)} PROXY_RUNBOOK_SSH_KEY_INSTALLED=1 bash $INSTALL_ROOT/linux/00-bootstrap-toolkit.sh"
+        val bootstrap = "mkdir -p /opt; rm -rf ${SshHandle.shellQuote(INSTALL_ROOT)}; tar -xzf ${SshHandle.shellQuote("/tmp/$TOOLKIT_ARCHIVE")} -C /opt; TNA_LOGIN_USER=${SshHandle.shellQuote(handle.target.user)} TNA_SSH_KEY_INSTALLED=1 bash $INSTALL_ROOT/linux/00-bootstrap-toolkit.sh"
         checked(handle, bootstrap, interactive = true)
         val verified = probe(handle)
         check(verified.installed && verified.complete && verified.version == VERSION && verified.buildId == BUILD_ID && verified.buildRevision == BUILD_REVISION) {
@@ -239,13 +651,17 @@ class WorkflowRunner(
     private suspend fun probe(handle: SshHandle): ToolkitProbe {
         val command = """
             printf '%s\n' '${ProtocolParsers.TOOLKIT_BEGIN}'
-            if [ -r $REMOTE_ROOT/TOOLKIT_VERSION ]; then
-              version=${'$'}(head -n1 $REMOTE_ROOT/TOOLKIT_VERSION | tr -d '\r')
-              build=${'$'}(head -n1 $REMOTE_ROOT/TOOLKIT_BUILD_ID 2>/dev/null | tr -d '\r' || true)
-              revision=${'$'}(head -n1 $REMOTE_ROOT/TOOLKIT_BUILD_REVISION 2>/dev/null | tr -d '\r' || true)
+            root=''; brand=''
+            if [ -r $REMOTE_ROOT/TOOLKIT_VERSION ]; then root=$REMOTE_ROOT; brand=TNA
+            elif [ -r $LEGACY_REMOTE_ROOT/TOOLKIT_VERSION ]; then root=$LEGACY_REMOTE_ROOT; brand=PNA_LEGACY
+            fi
+            if [ -n "${'$'}root" ]; then
+              version=${'$'}(head -n1 "${'$'}root/TOOLKIT_VERSION" | tr -d '\r')
+              build=${'$'}(head -n1 "${'$'}root/TOOLKIT_BUILD_ID" 2>/dev/null | tr -d '\r' || true)
+              revision=${'$'}(head -n1 "${'$'}root/TOOLKIT_BUILD_REVISION" 2>/dev/null | tr -d '\r' || true)
               complete=0
-              test -x $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh && test -x $REMOTE_ROOT/linux/18-panel-metadata.sh && test -x $REMOTE_ROOT/linux/22-dismantle-managed-node.sh && test -x $REMOTE_ROOT/linux/23-node-identity.sh && test -x $REMOTE_ROOT/linux/24-security-baseline.sh && test -x $REMOTE_ROOT/linux/25-security-events.sh && test -x $REMOTE_ROOT/linux/26-device-admission.sh && test -x $REMOTE_ROOT/linux/27-ip-rebind.sh && test -x $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh && test -x $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh && test -x $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh && test -x $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh && test -x $REMOTE_ROOT/linux/29-copyparty-drive.sh && test -x $REMOTE_ROOT/linux/30-copyparty-account.sh && test -x $REMOTE_ROOT/linux/31-copyparty-nginx.sh && test -s $REMOTE_ROOT/THIRD_PARTY_LOCK.env && test -s $REMOTE_ROOT/templates/copyparty/copyparty.conf.in && test -s $REMOTE_ROOT/templates/systemd/proxy-node-assistant-copyparty.service && test -s $REMOTE_ROOT/templates/nginx/proxy-node-assistant-copyparty.conf.in && test -s $REMOTE_ROOT/templates/cover-sites/MANIFEST.tsv && complete=1
-              printf 'TOOLKIT_PRESENT=1\nTOOLKIT_VERSION=%s\nTOOLKIT_BUILD_ID=%s\nTOOLKIT_BUILD_REVISION=%s\nTOOLKIT_COMPLETE=%s\n' "${'$'}version" "${'$'}build" "${'$'}revision" "${'$'}complete"
+              test -x "${'$'}root/linux/00-auto-install-or-optimize.sh" && test -x "${'$'}root/linux/18-panel-metadata.sh" && test -x "${'$'}root/linux/22-dismantle-managed-node.sh" && test -x "${'$'}root/linux/23-node-identity.sh" && test -x "${'$'}root/linux/24-security-baseline.sh" && test -x "${'$'}root/linux/25-security-events.sh" && test -x "${'$'}root/linux/26-device-admission.sh" && test -x "${'$'}root/linux/27-ip-rebind.sh" && test -x "${'$'}root/linux/04f-xhttp-cdn-api.sh" && test -x "${'$'}root/linux/05e-cdn-xhttp-nginx.sh" && test -x "${'$'}root/linux/05f-cloudflare-origin-lock.sh" && test -x "${'$'}root/linux/05g-cdn-xhttp-validate.sh" && test -x "${'$'}root/linux/28-topology-reconcile.sh" && test -x "${'$'}root/linux/28a-install-transaction.sh" && test -x "${'$'}root/linux/29-copyparty-drive.sh" && test -x "${'$'}root/linux/30-copyparty-account.sh" && test -x "${'$'}root/linux/31-copyparty-nginx.sh" && test -s "${'$'}root/THIRD_PARTY_LOCK.env" && test -s "${'$'}root/templates/copyparty/copyparty.conf.in" && test -s "${'$'}root/templates/systemd/text-node-assistant-copyparty.service" && test -s "${'$'}root/templates/nginx/text-node-assistant-copyparty.conf.in" && test -s "${'$'}root/templates/cover-sites/MANIFEST.tsv" && complete=1
+              printf 'TOOLKIT_PRESENT=1\nTOOLKIT_BRAND=%s\nTOOLKIT_ROOT=%s\nTOOLKIT_VERSION=%s\nTOOLKIT_BUILD_ID=%s\nTOOLKIT_BUILD_REVISION=%s\nTOOLKIT_COMPLETE=%s\n' "${'$'}brand" "${'$'}root" "${'$'}version" "${'$'}build" "${'$'}revision" "${'$'}complete"
             else
               printf 'TOOLKIT_PRESENT=0\n'
             fi
@@ -269,8 +685,47 @@ class WorkflowRunner(
 		return ProtocolParsers.stableNodeIdentity(result.stdout, handle.target.id)
 	}
 
-	private suspend fun syncStableNodeIdentity(handle: SshHandle) {
+    private suspend fun syncStableNodeIdentity(handle: SshHandle) {
 		stableNodes.put(readStableNodeIdentity(handle))
+	}
+
+	private suspend fun ensureInstallNodeIdentity(handle: SshHandle, original: ToolkitProbe) {
+		runCatching { readStableNodeIdentity(handle) }.getOrNull()?.let {
+			stableNodes.put(it)
+			return
+		}
+		val sameVersion = original.installed && runCatching { ProtocolParsers.compareVersions(original.version, VERSION) == 0 }.getOrDefault(false)
+		var legacyBootstrap = false
+		if (sameVersion) {
+			val legacyProbe = original.brand == "PNA_LEGACY" && original.root == LEGACY_REMOTE_ROOT && !original.complete
+			val interruptedMigration = original.brand == "TNA" && original.root == REMOTE_ROOT
+			check(legacyProbe || interruptedMigration) { tr("同版本节点缺失稳定身份；拒绝用新身份掩盖漂移", "Same-version node is missing stable identity; refusing to hide drift with a new identity") }
+			val evidence = checked(handle, """
+				set -eu
+				journal=/var/lib/text-node-assistant/migrations/pna-to-tna-v1.env
+				state=/var/lib/text-node-assistant/migrations/legacy-identity-bootstrap-v1.env
+				[ -f "${'$'}journal" ] && [ ! -L "${'$'}journal" ]
+				grep -Fqx MIGRATION_STATUS=COMMITTED "${'$'}journal"
+				grep -Eq '^MIGRATION_COPIED=(ETC_STATE|ROOT_STATE)${'$'}' "${'$'}journal"
+				legacy=${'$'}(readlink -f $LEGACY_REMOTE_ROOT)
+				[ -n "${'$'}legacy" ] && [ "${'$'}legacy" != $REMOTE_ROOT ]
+				[ -s "${'$'}legacy/TOOLKIT_VERSION" ] && [ ! -x "${'$'}legacy/linux/23-node-identity.sh" ]
+				[ ! -L "${'$'}state" ]
+				! grep -Fqx IDENTITY_BOOTSTRAP_STATUS=COMMITTED "${'$'}state" 2>/dev/null
+				if [ ! -s "${'$'}state" ]; then printf 'SCHEMA_VERSION=1\nIDENTITY_BOOTSTRAP_STATUS=IN_PROGRESS\n' > "${'$'}state.tmp.${'$'}${'$'}"; chmod 600 "${'$'}state.tmp.${'$'}${'$'}"; mv -f "${'$'}state.tmp.${'$'}${'$'}" "${'$'}state"; fi
+				grep -Fqx IDENTITY_BOOTSTRAP_STATUS=IN_PROGRESS "${'$'}state"
+				printf 'TNA_LEGACY_IDENTITY_BOOTSTRAP_EVIDENCE_OK\n'
+			""".trimIndent(), emit = false)
+			check("TNA_LEGACY_IDENTITY_BOOTSTRAP_EVIDENCE_OK" in evidence.stdout) { "legacy identity evidence marker missing" }
+			legacyBootstrap = true
+		}
+		val initialized = checked(handle, "bash $REMOTE_ROOT/linux/23-node-identity.sh --init", emit = false)
+		val identity = ProtocolParsers.stableNodeIdentity(initialized.stdout, handle.target.id)
+		if (legacyBootstrap) {
+			val committed = checked(handle, "set -eu; state=/var/lib/text-node-assistant/migrations/legacy-identity-bootstrap-v1.env; grep -Fqx IDENTITY_BOOTSTRAP_STATUS=IN_PROGRESS \"${'$'}state\"; sed 's/^IDENTITY_BOOTSTRAP_STATUS=.*/IDENTITY_BOOTSTRAP_STATUS=COMMITTED/' \"${'$'}state\" > \"${'$'}state.tmp.${'$'}${'$'}\"; chmod 600 \"${'$'}state.tmp.${'$'}${'$'}\"; mv -f \"${'$'}state.tmp.${'$'}${'$'}\" \"${'$'}state\"; printf 'TNA_LEGACY_IDENTITY_BOOTSTRAP_COMMITTED\\n'", emit = false)
+			check("TNA_LEGACY_IDENTITY_BOOTSTRAP_COMMITTED" in committed.stdout)
+		}
+		stableNodes.put(identity)
 	}
 
 	private fun sameStableNode(expected: StableNodeIdentity, actual: StableNodeIdentity): Boolean =
@@ -317,13 +772,13 @@ class WorkflowRunner(
 			check(sameStableNode(expected, actual) && actual.currentPublicIp == expected.currentPublicIp) { "IP_REBIND_BLOCKED_PRE_DNS: NODE_ID/SERVER_ID/machine-id/host-key mismatch" }
 			val exactProbe = probe(handle)
 			check(exactProbe.installed && exactProbe.complete && exactProbe.version == VERSION && exactProbe.buildId == BUILD_ID && exactProbe.buildRevision == BUILD_REVISION) { "IP_REBIND_BLOCKED_PRE_DNS: toolkit build mismatch" }
-			val publicEnv = ProtocolParsers.kv(checked(handle, "cat /etc/proxy-runbook/public.env", emit = false).stdout)
+			val publicEnv = ProtocolParsers.kv(checked(handle, "if [ -r /etc/text-node-assistant/public.env ]; then cat /etc/text-node-assistant/public.env; else cat /etc/proxy-runbook/public.env; fi", emit = false).stdout)
 			val oldDomain = publicEnv["COVER_DOMAIN"].orEmpty().lowercase()
 			check(Validation.validDomain(oldDomain)) { "IP_REBIND_BLOCKED_PRE_DNS: invalid managed construction domain" }
 			val newDomain = required(tr("新施工域名", "New construction domain"), tr("直接确认表示保留原域名；更换域名会停在 Cloudflare 人工阶段", "Keep the default to retain the domain; a changed domain stops at the Cloudflare manual phase"), oldDomain) { Validation.validDomain(it) }.lowercase()
 			val arguments = listOf(expected.currentPublicIp, newIp, oldDomain, newDomain).joinToString(" ") { SshHandle.shellQuote(it) }
 			val preflight = checked(handle, "bash $REMOTE_ROOT/linux/27-ip-rebind.sh preflight $arguments", emit = false)
-			val values = ProtocolParsers.kv(ProtocolParsers.markedBlock(preflight.stdout, "__PNA_IP_REBIND_PREFLIGHT_V1_BEGIN__", "__PNA_IP_REBIND_PREFLIGHT_V1_END__"))
+			val values = ProtocolParsers.kv(markedCurrentOrLegacy(preflight.stdout, "__TNA_IP_REBIND_PREFLIGHT_V1_BEGIN__", "__TNA_IP_REBIND_PREFLIGHT_V1_END__", "__PNA_IP_REBIND_PREFLIGHT_V1_BEGIN__", "__PNA_IP_REBIND_PREFLIGHT_V1_END__"))
 			check(values["IP_REBIND_STATUS"] == "IP_REBIND_PREPARED" && values["SERVER_ID_MATCH"] == "1" && values["NODE_ID_UNCHANGED"] == "1" && values["MACHINE_ID_MATCH"] == "1" && values["REMOTE_PUBLIC_IP_MATCH"] == "1" && values["DNS_MUTATED"] == "0" && values["CLOUDFLARE_MUTATION"] == "NONE") { "IP_REBIND_BLOCKED_PRE_DNS: invalid preflight protocol" }
 			log(preflight.stdout.trim())
 			val direct = (values["DEPLOYMENT_MODE"] == "direct-reality" && values["ACTIVE_MODE"] == "ACTIVE_DIRECT") ||
@@ -364,13 +819,13 @@ class WorkflowRunner(
 		}
 	}
 
-    private suspend fun showHandoff(handle: SshHandle) {
-        val command = "printf '%s\\n' '${ProtocolParsers.HANDOFF_BEGIN}'; cat /root/.config/proxy-runbook/HANDOFF-SECRETS.txt 2>/dev/null || true; printf '%s\\n' '${ProtocolParsers.HANDOFF_END}'"
+    private suspend fun showHandoff(handle: SshHandle, additionalSecretHandoff: String = "") {
+        val command = "printf '%s\\n' '${ProtocolParsers.HANDOFF_BEGIN}'; if [ -r /root/.config/text-node-assistant/HANDOFF-SECRETS.txt ]; then cat /root/.config/text-node-assistant/HANDOFF-SECRETS.txt; else cat /root/.config/proxy-runbook/HANDOFF-SECRETS.txt 2>/dev/null || true; fi; printf '%s\\n' '${ProtocolParsers.HANDOFF_END}'"
         val result = checked(handle, command, emit = false)
         val legacy = ProtocolParsers.handoff(result.stdout)
         val login = ProtocolParsers.loginCredentialForm(legacy)
         val fields = linkedMapOf(
-            "PNA_VERSION" to VERSION,
+            "TNA_VERSION" to VERSION,
             "VPS_SSH_USER" to handle.target.user,
             "VPS_SSH_PORT" to handle.target.port.toString(),
             "VPS_PASSWORD_STATUS" to "PRESENT_IN_PROTECTED_HANDOFF",
@@ -387,11 +842,11 @@ class WorkflowRunner(
             fields["SSH_PRIVATE_KEY_STORAGE"] = "ANDROID_KEYSTORE_ENCRYPTED_APP_PRIVATE"
             fields["SSH_AUTH_KEY_ID"] = sshAuthenticationKeyId(record.publicKeyOpenSsh)
         }
-        runCatching { ProtocolParsers.kv(checked(handle, "cat /etc/proxy-runbook/public.env 2>/dev/null || true", emit = false).stdout) }.getOrNull()?.let { runtime ->
+        runCatching { ProtocolParsers.kv(checked(handle, "if [ -r /etc/text-node-assistant/public.env ]; then cat /etc/text-node-assistant/public.env; else cat /etc/proxy-runbook/public.env 2>/dev/null || true; fi", emit = false).stdout) }.getOrNull()?.let { runtime ->
             runtime["PUBLIC_IP"]?.takeIf(ProtocolParsers::validCanonicalPublicIpv4)?.let { fields["VPS_PUBLIC_IP"] = it }
             runtime["COVER_DOMAIN"]?.takeIf(Validation::validDomain)?.let { fields["CONSTRUCTION_DOMAIN"] = it.lowercase() }
         }
-        runCatching { ProtocolParsers.kv(checked(handle, "cat /etc/proxy-runbook/deployment-state.env 2>/dev/null || true", emit = false).stdout) }.getOrNull()?.let { deployment ->
+        runCatching { ProtocolParsers.kv(checked(handle, "if [ -r /etc/text-node-assistant/deployment-state.env ]; then cat /etc/text-node-assistant/deployment-state.env; else cat /etc/proxy-runbook/deployment-state.env 2>/dev/null || true; fi", emit = false).stdout) }.getOrNull()?.let { deployment ->
             fields["DEPLOYMENT_MODE"] = deployment["DEPLOYMENT_MODE"].orEmpty().ifBlank { "direct-reality" }
             fields["ACTIVE_MODE"] = deployment["ACTIVE_MODE"].orEmpty().ifBlank { "ACTIVE_DIRECT" }
             fields["ORIGIN_HISTORY"] = deployment["ORIGIN_HISTORY"].orEmpty().ifBlank { "unknown" }
@@ -416,13 +871,15 @@ class WorkflowRunner(
             if (drive["PRIVATE_DRIVE_MODE"] == "copyparty") {
                 fields["PRIVATE_DRIVE_MODE"] = "copyparty"
                 fields["PRIVATE_DRIVE_STATUS"] = drive["PRIVATE_DRIVE_STATUS"].orEmpty()
-                fields["PRIVATE_DRIVE_PUBLIC_ACCESS"] = "BLOCKED_PENDING_CLOUDFLARE"
-                fields["PRIVATE_DRIVE_WEBDAV_LARGE_FILE_LIMIT"] = "OVER_100MB_NOT_SUPPORTED_VIA_CLOUDFLARE"
+                fields["MANDATORY_DRIVE_ACCESS"] = "LOCAL_SSH_TUNNEL_ONLY"
+                fields["PRIVATE_DRIVE_PUBLIC_ACCESS"] = "NOT_USED"
+                fields["DRIVE_DOMAIN_REQUIRED"] = "false"
+                fields["DRIVE_REGISTRATION_READY"] = drive["DRIVE_REGISTRATION_READY"].orEmpty().ifBlank { "unknown" }
             } else {
                 fields["PRIVATE_DRIVE_MODE"] = "disabled"
             }
         }
-        val handoff = ProtocolParsers.completeHandoff(legacy, fields)
+        val handoff = ProtocolParsers.completeHandoff(legacy, fields) + additionalSecretHandoff.takeIf { it.isNotBlank() }?.let { "\n\n$it" }.orEmpty()
         _state.update { it.copy(secretHandoff = handoff) }
         log("CREDENTIAL_HANDOFF_VALIDATED; secrets are shown only in the protected handoff panel")
     }
@@ -449,37 +906,86 @@ class WorkflowRunner(
 
     private suspend fun privateDrive(handle: SshHandle): Boolean {
         val choice = prompts.ask(
-            tr("私人网盘控制中心", "Private drive control center"),
+            tr("强制网盘控制中心", "Mandatory drive control center"),
             tr(
-                "当前阶段仅开放回环服务和 SSH 隧道；Cloudflare 橙云、Origin Rule 与公网端口保持阻断。\n[1] 安装/重建  [2] 脱敏状态  [3] 轮换账密  [4] SSH 隧道打开  [5] 生成 Nginx 候选  [6] 卸载并保留文件  [7] 永久清空",
-                "This phase permits only the loopback service and SSH tunnel; Cloudflare, Origin Rule, and public ports remain blocked.\n[1] Install/rebuild  [2] Redacted status  [3] Rotate credentials  [4] Open SSH tunnel  [5] Generate Nginx candidate  [6] Uninstall/preserve data  [7] Permanent purge",
+                "网盘是受管基线的一部分，只允许本机 SSH 隧道访问；只有菜单 [1] 可安装。\n[1] 脱敏状态  [2] 打开网盘  [3] 轮换 admin 能力  [4] 列出普通账号  [5] 注册普通账号（每 VPS 最多 2 个）  [0] 返回",
+                "The drive is part of the managed baseline and is reachable only through a local SSH tunnel; only action 1 installs it.\n[1] Redacted status  [2] Open drive  [3] Rotate admin capability  [4] List ordinary accounts  [5] Register ordinary account (maximum 2 per VPS)  [0] Back",
             ),
             PromptKind.TEXT,
-            defaultValue = "2",
-        ).trim().ifEmpty { "2" }
+            defaultValue = "1",
+        ).trim().ifEmpty { "1" }
         return when (choice) {
-            "1" -> { installOrRotateDrive(handle, false); false }
-            "2" -> { checked(handle, "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh status"); false }
-            "3" -> { installOrRotateDrive(handle, true); false }
-            "4" -> openDriveTunnel(handle)
-            "5" -> { prepareDriveCandidate(handle); false }
-            "6" -> {
-                confirmYes(tr("卸载 copyparty 服务但完整保留文件卷？", "Uninstall copyparty while preserving the complete data volume?"), false)
-                val result = checked(handle, "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh uninstall-preserve")
-                require("PNA_DRIVE_UNINSTALLED_DATA_PRESERVED" in result.stdout)
-                false
-            }
-            "7" -> {
-                val first = prompts.ask(tr("永久删除网盘", "Permanently delete drive"), tr("输入大写 DELETE DRIVE DATA；这不能由配置备份恢复。", "Type uppercase DELETE DRIVE DATA; configuration backups cannot restore these files."), PromptKind.EXACT_CONFIRMATION, danger = true)
-                require(first == "DELETE DRIVE DATA") { tr("已取消永久删除", "Permanent deletion cancelled") }
-                val second = prompts.ask(tr("最终确认", "Final confirmation"), tr("再次输入大写 PURGE-DATA", "Now type uppercase PURGE-DATA"), PromptKind.EXACT_CONFIRMATION, danger = true)
-                require(second == "PURGE-DATA") { tr("已取消永久删除", "Permanent deletion cancelled") }
-                val result = checked(handle, "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh purge PURGE-DATA")
-                require("PNA_DRIVE_PURGED" in result.stdout)
-                false
-            }
-            else -> error(tr("私人网盘选项无效", "Invalid private-drive selection"))
+            "1" -> { checked(handle, "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh status"); false }
+            "2" -> openDriveTunnel(handle)
+            "3" -> { rotateDriveAdminCapability(handle); false }
+            "4" -> { checked(handle, "bash $REMOTE_ROOT/linux/30-copyparty-account.sh list"); false }
+            "5" -> { registerOrdinaryDriveAccount(handle); false }
+            "0" -> false
+            else -> error(tr("强制网盘选项无效", "Invalid mandatory-drive selection"))
         }
+    }
+
+    private suspend fun rotateDriveAdminCapability(handle: SshHandle) {
+        val identityStatus = DeviceAdmissionProtocol.parseStatus(checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh status", emit = false).stdout)
+        val identity = deviceIdentity.loadOrCreate()
+        require(identityStatus.devices.any { it.deviceId == identity.deviceId && it.role == "controller" && it.status == "active" }) {
+            tr("只有此节点的 active controller 能轮换 admin 能力", "Only an active controller for this node can rotate the admin capability")
+        }
+        val username = randomDriveAdminUsername()
+        val password = randomDrivePassword()
+        val current = driveStatus(handle)
+        val quota = current["PRIVATE_DRIVE_QUOTA_GIB"].orEmpty().takeIf { it.toIntOrNull() != null } ?: "auto"
+        val result = handle.exec(
+            "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh rotate-admin ${SshHandle.shellQuote(username)} ${SshHandle.shellQuote(quota)}",
+            root = true,
+            stdinBytes = "$password\n".toByteArray(),
+            log = ::log,
+        )
+        check(result.ok && "__TNA_DRIVE_RESULT_END__" in result.stdout)
+        verifyDriveAdmin(handle, username, password)
+        driveAdminCapabilities.put(DriveAdminCapability(identityStatus.nodeId, username, password))
+        _state.update { it.copy(secretHandoff = "===== TNA DRIVE ADMIN ROTATION v0.9.5 =====\nDRIVE_ADMIN_USERNAME=$username\nDRIVE_ADMIN_PASSWORD=$password\nSTORAGE=ANDROID_KEYSTORE_ENCRYPTED_APP_VAULT") }
+    }
+
+    private suspend fun registerOrdinaryDriveAccount(handle: SshHandle) {
+        val identity = deviceIdentity.loadOrCreate()
+        val status = DeviceAdmissionProtocol.parseStatus(checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh status", emit = false).stdout)
+        require(status.devices.any { it.deviceId == identity.deviceId && it.role == "controller" && it.status == "active" }) {
+            tr("只有 active controller 能注册普通网盘账号", "Only an active controller can register an ordinary drive account")
+        }
+        val username = required(tr("普通网盘用户名", "Ordinary drive username"), tr("3—32 位；不能使用 admin/root", "3-32 characters; admin/root are reserved")) {
+            Regex("^[A-Za-z][A-Za-z0-9._-]{2,31}$").matches(it) && it.lowercase() !in setOf("admin", "root") && !it.startsWith("tna-admin-")
+        }
+        val password = randomDrivePassword()
+        val quota = required(tr("账号容量", "Account quota"), tr("推荐 auto；也可输入 1—50 GiB", "Recommended: auto; or enter 1-50 GiB"), "auto") {
+            it == "auto" || it.toIntOrNull()?.let { number -> number in 1..50 } == true
+        }
+        val random = SecureRandom()
+        val accountId = "tna-account-" + ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val spaceId = "tna-space-" + ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val controllersResult = checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh controller-encryption-keys ${SshHandle.shellQuote(identity.deviceId)}", emit = false)
+        val block = markedCurrentOrLegacy(
+            controllersResult.stdout,
+            "__TNA_CONTROLLER_ENCRYPTION_KEYS_V1_BEGIN__",
+            "__TNA_CONTROLLER_ENCRYPTION_KEYS_V1_END__",
+            "__TNA_CONTROLLER_ENCRYPTION_KEYS_V1_BEGIN__",
+            "__TNA_CONTROLLER_ENCRYPTION_KEYS_V1_END__",
+        )
+        val controllers = block.lines().filter { it.isNotBlank() }.map { row ->
+            val parts = row.split('\t')
+            require(parts.size == 3 && parts[0] == "CONTROLLER")
+            ControllerEncryptionKey(parts[1], parts[2])
+        }
+        val escrow = DriveEscrowCodec.encryptNew(status.nodeId, accountId, spaceId, username, password, controllers, deviceIdentity)
+        val encodedEscrow = DriveEscrowCodec.rawUrl(DriveEscrowCodec.encode(escrow).toByteArray())
+        val result = handle.exec(
+            "bash $REMOTE_ROOT/linux/30-copyparty-account.sh register ${SshHandle.shellQuote(username)} ${SshHandle.shellQuote(quota)} ${SshHandle.shellQuote(accountId)} ${SshHandle.shellQuote(spaceId)}",
+            root = true,
+            stdinBytes = "$password\n$encodedEscrow\n".toByteArray(),
+            log = ::log,
+        )
+        check(result.ok && "__TNA_DRIVE_ACCOUNT_RESULT_END__" in result.stdout) { "Drive account registration failed (${result.exitCode})" }
+        _state.update { it.copy(secretHandoff = "===== TNA ORDINARY DRIVE ACCOUNT v0.9.5 =====\nDRIVE_ACCOUNT_ID=$accountId\nDRIVE_SPACE_ID=$spaceId\nDRIVE_USERNAME=$username\nDRIVE_PASSWORD=$password\nACCESS=ALL_TRUSTED_DEVICES_AFTER_LOGIN") }
     }
 
     private suspend fun cdnPublicIp(handle: SshHandle): String {
@@ -496,7 +1002,7 @@ class WorkflowRunner(
     }
 
     private fun verifyCloudflareEdge(domain: String) {
-        val connection = URL("https://$domain/").openConnection(Proxy.NO_PROXY) as HttpsURLConnection
+        val connection = URL("https://$domain:8443/").openConnection(Proxy.NO_PROXY) as HttpsURLConnection
         connection.connectTimeout = 10_000
         connection.readTimeout = 30_000
         connection.instanceFollowRedirects = true
@@ -505,198 +1011,63 @@ class WorkflowRunner(
             val status = connection.responseCode
             check(status in 200..399) { "Cloudflare edge returned HTTP $status" }
             check(!connection.getHeaderField("Cf-Ray").isNullOrBlank()) { "Cloudflare edge response is missing Cf-Ray" }
-            check(connection.getHeaderField("X-PNA-Managed-Origin") == "cdn-xhttp-v095") { "managed 8443 origin marker is missing" }
-            check(connection.getHeaderField("X-PNA-Origin-Port") == "8443") { "443-to-8443 Origin Rule was not proven" }
+            check(connection.getHeaderField("X-TNA-Managed-Origin") == "cdn-xhttp-v095") { "managed 8443 origin marker is missing" }
+            check(connection.getHeaderField("X-TNA-Origin-Port") == "8443") { "managed 8443 edge route was not proven" }
         } finally {
             connection.disconnect()
         }
     }
 
-    private suspend fun rollbackCdnPublic(handle: SshHandle, domain: String, publicIp: String) {
-        val result = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --rollback-public", emit = false)
-        require("CDN_PUBLIC_ORIGIN_ROLLED_BACK=1" in result.stdout)
-    }
-
     private suspend fun cdnXhttpControl(handle: SshHandle) {
         val choice = prompts.ask(
-            tr("CDN / XHTTP 双模式控制中心", "CDN / XHTTP dual-mode control center"),
+            tr("链路拓扑状态", "Link-topology status"),
             tr(
-                "[1] 脱敏状态  [2] 回环影子  [3] 复制回环影子链接  [4] Cloudflare CIDR 只读计划\n[5] 晋升 8443 为 Cloudflare-only  [6] 验证橙云并复制生产 443 链接\n[7] 真机浏览后提交  [8] 撤回公网 8443  [9] 删除全部 CDN/XHTTP 组件",
-                "[1] Redacted status  [2] Loopback shadow  [3] Copy loopback staged link  [4] Read-only Cloudflare CIDR plan\n[5] Promote 8443 to Cloudflare-only  [6] Validate orange-cloud and copy production 443 link\n[7] Commit after real browsing  [8] Roll back public 8443  [9] Remove all CDN/XHTTP components",
+                "拓扑施工、切换和拆除只允许通过操作 [1]，这里不会改 DNS、Cloudflare、防火墙或节点。\n[1] 查看脱敏拓扑状态  [2] 显示并复制当前设备节点  [0] 返回",
+                "Topology construction, switching, and removal are allowed only through action [1]. This screen never changes DNS, Cloudflare, the firewall, or the node.\n[1] Show redacted topology status  [2] Show and copy this device's node  [0] Back",
             ),
             PromptKind.TEXT,
             defaultValue = "1",
         ).trim().ifEmpty { "1" }
         when (choice) {
-            "1" -> {
-                val command = ". $REMOTE_ROOT/linux/lib-deployment-state.sh; pna_state_init_direct_if_missing; pna_state_show; " +
-                    "if bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh show >/dev/null 2>&1; then echo XHTTP_COMPONENT=READY_LOOPBACK; else echo XHTTP_COMPONENT=NOT_READY; fi; " +
-                    "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status 2>/dev/null || true; " +
-                    "if grep -q '^CDN_EDGE_VALIDATED=1$' /etc/proxy-runbook/cloudflare/edge-state.env 2>/dev/null; then echo CLOUDFLARE_EDGE_VALIDATION=PASS; else echo CLOUDFLARE_EDGE_VALIDATION=NOT_PASSED; fi; " +
-                    "echo CLOUDFLARE_API_MUTATION=NONE; echo REALITY_PUBLIC_443=UNCHANGED"
-                checked(handle, command)
-            }
+            "1" -> checked(
+                handle,
+                ". $REMOTE_ROOT/linux/lib-deployment-state.sh; tna_state_init_direct_if_missing; tna_state_show; " +
+                    "if [ -r /etc/text-node-assistant/topology.env ]; then " +
+                    "sed -n -E '/^(TOPOLOGY_MODE|GRAY_DOMAIN|ORANGE_DOMAIN|GRAY_DNS_VALIDATED|ORANGE_EDGE_VALIDATED|ACTIVE_MODE)=/p' /etc/text-node-assistant/topology.env; " +
+                    "fi; bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status 2>/dev/null || true; " +
+                    "echo TOPOLOGY_MUTATION=NONE; echo TOPOLOGY_CHANGE_ENTRY=ACTION_1",
+            )
             "2" -> {
-                val domain = required(tr("施工域名", "Deployment hostname"), tr("输入已由当前证书覆盖的域名", "Enter the hostname covered by the current certificate")) { Validation.validDomain(it) }.lowercase()
-                confirmYes(tr("确认只做回环验收，不修改 DNS、橙云、防火墙或公网端口？", "Confirm loopback validation only, without changing DNS, orange-cloud state, the firewall, or public ports?"), false)
-                val publicIp = cdnPublicIp(handle)
-                val create = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh create ${SshHandle.shellQuote(domain)}", emit = false)
-                require("XHTTP_STATUS=READY" in create.stdout || "PNA_XHTTP_ALREADY_READY" in create.stdout)
-                val stage = checked(handle, "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage-local ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
-                require("CDN_STAGE_SCOPE=LOCAL_ONLY" in stage.stdout)
-                val validate = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --local-only", emit = false)
-                require("CDN_LOCAL_VALIDATION=PASS" in validate.stdout && "PUBLIC_ORIGIN_8443=NOT_ENABLED" in validate.stdout)
-                log(tr("回环 XHTTP/Nginx 影子验收通过；公网与 Cloudflare 未修改。", "The loopback XHTTP/Nginx shadow passed; public and Cloudflare state were not changed."))
+                val identity = deviceIdentity.loadOrCreate()
+                val result = checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh handoff ${SshHandle.shellQuote(identity.deviceId)}", emit = false)
+                val block = markedCurrentOrLegacy(
+                    result.stdout,
+                    "__TNA_DEVICE_HANDOFF_V1_BEGIN__",
+                    "__TNA_DEVICE_HANDOFF_V1_END__",
+                    "__PNA_DEVICE_HANDOFF_V1_BEGIN__",
+                    "__PNA_DEVICE_HANDOFF_V1_END__",
+                )
+                require("DIRECT_REALITY_LINK=vless://" in block || "CDN_XHTTP_LINK=vless://" in block) { "Device handoff protocol validation failed" }
+                _state.update { it.copy(secretHandoff = block) }
             }
-            "3" -> {
-                val domain = required(tr("施工域名", "Deployment hostname"), tr("输入创建影子时使用的域名", "Enter the hostname used to create the shadow")) { Validation.validDomain(it) }.lowercase()
-                val result = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(domain)} 8443", emit = false)
-                val link = ProtocolParsers.kv(result.stdout)["XHTTP_LINK"].orEmpty()
-                val profile = ProtocolParsers.cdnXHttpLink(link)
-                require(profile.domain == domain && profile.port == 8443)
-                _state.update { current -> current.copy(secretHandoff = "===== PNA CDN XHTTP LOCAL STAGE v0.9.5 =====\nCDN_XHTTP_STAGE_LINK=$link\nREACHABILITY=LOOPBACK_VALIDATED_NOT_PUBLIC\nPRODUCTION_443_LINK=NOT_RELEASED") }
-            }
-            "4" -> {
-                val current = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status", emit = false)
-                if (ProtocolParsers.kv(current.stdout)["CLOUDFLARE_FIREWALL_APPLIED"] == "1") {
-                    log(tr("8443 锁源已应用；先用 [8] 撤回再刷新 CIDR。", "The 8443 origin lock is applied; use [8] before refreshing CIDRs."))
-                } else {
-                    checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh fetch")
-                    val plan = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh plan ${handle.target.port}")
-                    require("PLAN_ONLY=1" in plan.stdout && "KEEP_REALITY_PUBLIC_TCP=443" in plan.stdout)
-                }
-            }
-            "5" -> {
-                val domain = required(tr("施工域名", "Deployment hostname"), tr("输入现有证书覆盖的域名", "Enter the hostname covered by the existing certificate")) { Validation.validDomain(it) }.lowercase()
-                confirmYes(tr("将公开 Nginx 8443，但 UFW 只允许 Cloudflare 官方 CIDR；SSH 与 Reality 443 不动。继续？", "Nginx 8443 will become public but UFW will allow official Cloudflare CIDRs only; SSH and Reality 443 remain unchanged. Continue?"), false)
-                val publicIp = cdnPublicIp(handle)
-                val create = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh create ${SshHandle.shellQuote(domain)}", emit = false)
-                require("XHTTP_STATUS=READY" in create.stdout || "PNA_XHTTP_ALREADY_READY" in create.stdout)
-                checked(handle, "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage-local ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
-                checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --local-only", emit = false)
-                val lock = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status", emit = false)
-                if (ProtocolParsers.kv(lock.stdout)["CLOUDFLARE_FIREWALL_APPLIED"] != "1") {
-                    checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh fetch", emit = false)
-                    checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh apply", emit = false)
-                }
-                try {
-                    val stage = checked(handle, "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
-                    require("CDN_STAGE_SCOPE=CLOUDFLARE_ONLY" in stage.stdout)
-                    val validate = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --origin-ready", emit = false)
-                    require("CDN_ORIGIN_VALIDATION=PASS" in validate.stdout)
-                    verifyDirectOriginBlocked(publicIp)
-                } catch (error: Throwable) {
-                    runCatching { rollbackCdnPublic(handle, domain, publicIp) }
-                    throw error
-                }
-                log(tr("[GOOD] 8443 已锁定为 Cloudflare-only；Reality 443 与 SSH 未修改。", "[GOOD] 8443 is Cloudflare-only; Reality 443 and SSH were not changed."))
-                log(tr("请在 Cloudflare 官方 Dashboard：开启橙云；SSL/TLS 设 Full (strict)；Origin Rule 把此 hostname 的目标端口改为 8443；整 hostname 绕过缓存；不要加 Access/质询/重定向/Worker。完成后运行 [6]。", "In the official Cloudflare Dashboard: enable orange-cloud; set Full (strict); use an Origin Rule to override this hostname to port 8443; bypass cache for the hostname; do not add Access/challenges/redirects/Workers. Then run [6]."))
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://dash.cloudflare.com/?to=%2F%3Aaccount%2F%3Azone%2Frules")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            }
-            "6" -> {
-                val domain = required(tr("橙云施工域名", "Orange-cloud deployment hostname"), tr("输入已配置 Origin Rule 的域名", "Enter the hostname with its Origin Rule configured")) { Validation.validDomain(it) }.lowercase()
-                confirmYes(tr("确认已完成橙云、Full (strict)、443→8443 Origin Rule、缓存绕过，并且没有 Access/质询/重定向/Worker？", "Confirm orange-cloud, Full (strict), the 443-to-8443 Origin Rule, cache bypass, and no Access/challenge/redirect/Worker?"), false)
-                val publicIp = cdnPublicIp(handle)
-                verifyCloudflareEdge(domain)
-                verifyDirectOriginBlocked(publicIp)
-                val remote = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)} --edge", emit = false)
-                require("ORIGIN_RULE_443_TO_8443=PASS" in remote.stdout && "REAL_DEVICE_BROWSE=REQUIRED" in remote.stdout)
-                val result = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(domain)} 443", emit = false)
-                val link = ProtocolParsers.kv(result.stdout)["XHTTP_LINK"].orEmpty()
-                val profile = ProtocolParsers.cdnXHttpLink(link)
-                require(profile.domain == domain && profile.port == 443)
-                _state.update { current -> current.copy(secretHandoff = "===== PNA CDN XHTTP PRODUCTION TEST v0.9.5 =====\nCDN_XHTTP_LINK=$link\nCDN_EDGE_443=VALIDATED\nCDN_ORIGIN_8443=CLOUDFLARE_ONLY\nREAL_DEVICE_BROWSE=REQUIRED_BEFORE_COMMIT") }
-            }
-            "7" -> {
-                val domain = required(tr("已测试域名", "Tested hostname"), tr("输入刚才导入客户端并真实浏览的域名", "Enter the hostname imported into the client and used for real browsing")) { Validation.validDomain(it) }.lowercase()
-                val exact = prompts.ask(tr("真机确认", "Real-device confirmation"), tr("真实浏览成功后输入大写 REAL BROWSE OK", "After real browsing succeeds, type uppercase REAL BROWSE OK"), PromptKind.EXACT_CONFIRMATION, danger = true)
-                require(exact == "REAL BROWSE OK") { tr("未提交 CDN 活动状态", "CDN active state was not committed") }
-                val result = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(cdnPublicIp(handle))} --confirm-client", emit = false)
-                require("CDN_REAL_CLIENT_CONFIRMED=1" in result.stdout)
-                log(tr("CDN/XHTTP 已提交为活动客户端路径；Reality 443 仍保留。", "CDN/XHTTP is committed as the active client path; Reality 443 remains installed."))
-            }
-            "8" -> {
-                val domain = required(tr("施工域名", "Deployment hostname"), tr("输入要撤回公网 8443 的域名", "Enter the hostname whose public 8443 origin will be rolled back")) { Validation.validDomain(it) }.lowercase()
-                val exact = prompts.ask(tr("撤回公网源站", "Roll back public origin"), tr("输入大写 ROLLBACK CDN ORIGIN", "Type uppercase ROLLBACK CDN ORIGIN"), PromptKind.EXACT_CONFIRMATION, danger = true)
-                require(exact == "ROLLBACK CDN ORIGIN") { tr("已取消撤回", "Rollback cancelled") }
-                rollbackCdnPublic(handle, domain, cdnPublicIp(handle))
-                log(tr("公网 8443 和本工具 UFW 规则已撤回；回环影子与 Reality 443 保留。", "Public 8443 and managed UFW rules were rolled back; the loopback shadow and Reality 443 remain."))
-            }
-            "9" -> {
-                val domain = required(tr("施工域名", "Deployment hostname"), tr("输入当前 CDN/XHTTP 域名", "Enter the current CDN/XHTTP hostname")) { Validation.validDomain(it) }.lowercase()
-                val exact = prompts.ask(tr("删除 CDN/XHTTP", "Remove CDN/XHTTP"), tr("输入大写 REMOVE XHTTP STAGE", "Type uppercase REMOVE XHTTP STAGE"), PromptKind.EXACT_CONFIRMATION, danger = true)
-                require(exact == "REMOVE XHTTP STAGE") { tr("已取消删除", "Removal cancelled") }
-                rollbackCdnPublic(handle, domain, cdnPublicIp(handle))
-                val command = "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh disable-stage && bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh delete && " +
-                    ". $REMOTE_ROOT/linux/lib-deployment-state.sh; current=\$(pna_state_env_value ACTIVE_MODE || true); " +
-                    "[ \"\$current\" = DUAL_INSTALLED_ACTIVE_DIRECT ] && pna_state_transition DUAL_INSTALLED_ACTIVE_DIRECT ACTIVE_DIRECT direct-reality xray-reality previously-exposed; echo PNA_CDN_MANAGED_COMPONENTS_REMOVED"
-                val result = checked(handle, command)
-                require("PNA_CDN_MANAGED_COMPONENTS_REMOVED" in result.stdout)
-            }
-            else -> error(tr("CDN/XHTTP 选项无效", "Invalid CDN/XHTTP selection"))
+            "0" -> Unit
+            else -> error(tr("链路拓扑选项无效", "Invalid link-topology selection"))
         }
-    }
-
-    private suspend fun installOrRotateDrive(handle: SshHandle, rotate: Boolean) {
-        val username = required(
-            tr("网盘账户名", "Drive username"),
-            tr("3—32 位，英文字母开头，仅允许字母、数字、点、下划线、连字符", "3-32 characters, starting with a letter; letters, digits, dot, underscore, and hyphen only"),
-            "pnaadmin",
-        ) { Regex("^[A-Za-z][A-Za-z0-9._-]{2,31}$").matches(it) }
-        val quota = required(tr("网盘容量", "Drive quota"), tr("20GB 参考机只允许 2 或 3 GiB", "The 20GB reference profile permits only 2 or 3 GiB"), "2") { it == "2" || it == "3" }
-        val policy = prompts.ask(tr("密码策略", "Password policy"), tr("[1] 安全随机生成（推荐）  [2] 自定义遮罩输入两次", "[1] Secure random (recommended)  [2] Custom, entered twice in masked fields"), PromptKind.TEXT, defaultValue = "1").trim().ifEmpty { "1" }
-        val password = when (policy) {
-            "1" -> ByteArray(30).also(SecureRandom()::nextBytes).let { Base64.encodeToString(it, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING) }
-            "2" -> {
-                val first = Validation.singleLineSecret(prompts.ask(tr("网盘密码", "Drive password"), tr("输入 14—128 位可打印 ASCII；空格不会被修剪", "Enter 14-128 printable ASCII characters; spaces are not trimmed"), PromptKind.SECRET))
-                val second = Validation.singleLineSecret(prompts.ask(tr("确认网盘密码", "Confirm drive password"), tr("再次输入同一密码", "Enter the same password again"), PromptKind.SECRET))
-                require(first == second) { tr("两次密码不一致", "The passwords do not match") }
-                require(Regex("^[\\x20-\\x7e]{14,128}$").matches(first)) { tr("密码必须是 14—128 位可打印 ASCII", "Password must contain 14-128 printable ASCII characters") }
-                first
-            }
-            else -> error(tr("密码策略无效", "Invalid password policy"))
-        }
-        confirmYes(tr("将校验固定 release 与 SHA-256，并执行无 Cookie 登录/上传/下载/删除验收。继续？", "The pinned release and SHA-256 will be verified, followed by a cookie-free login/upload/download/delete transaction. Continue?"), false)
-        val verb = if (rotate) "rotate" else "install"
-        val command = "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh $verb ${SshHandle.shellQuote(username)} $quota"
-        val result = handle.exec(command, root = true, stdinBytes = (password + "\n").toByteArray(), log = ::log)
-        check(result.ok) { "private-drive transaction failed (${result.exitCode}): ${result.stderr.takeLast(1200)}" }
-        listOf("PNA_DRIVE_CREDENTIAL_CRUD_OK", "COPYPARTY_LISTEN=127.0.0.1:3923", "PRIVATE_DRIVE_PUBLIC_ACCESS=BLOCKED").forEach { require(it in result.stdout) }
-        _state.update { current ->
-            current.copy(secretHandoff = buildString {
-                appendLine("===== PNA PRIVATE DRIVE HANDOFF v0.9.5 =====")
-                appendLine("PRIVATE_DRIVE_STATUS=LOCAL_ONLY_READY_WAITING_FOR_CLOUDFLARE")
-                appendLine("PRIVATE_DRIVE_ENGINE=copyparty")
-                appendLine("COPYPARTY_VERSION=v1.20.21")
-                appendLine("DRIVE_ACCOUNT_USERNAME=$username")
-                appendLine("DRIVE_ACCOUNT_PASSWORD=$password")
-                appendLine("PRIVATE_DRIVE_QUOTA_GIB=$quota")
-                appendLine("PRIVATE_DRIVE_LOCAL_ORIGIN=http://127.0.0.1:3923/")
-                appendLine("PRIVATE_DRIVE_PUBLIC_URL=PENDING_CLOUDFLARE_ORIGIN_RULE")
-                append("WEBDAV_OVER_CLOUDFLARE_LARGE_PUT=UNSUPPORTED")
-            })
-        }
-        log("PRIVATE_DRIVE_CREDENTIAL_HANDOFF_READY; secret is visible only in the protected handoff panel")
     }
 
     private suspend fun openDriveTunnel(handle: SshHandle): Boolean {
         val status = checked(handle, "bash $REMOTE_ROOT/linux/29-copyparty-drive.sh status", emit = false)
-        require("COPYPARTY_SERVICE=active" in status.stdout && "COPYPARTY_LOOPBACK_LISTENER=1" in status.stdout) { tr("copyparty 本地回源未就绪", "The copyparty loopback origin is not ready") }
-        val forward = handle.openLocalForward(3923)
+        val values = ProtocolParsers.kv(status.stdout)
+        require(values["COPYPARTY_SERVICE"] == "active" && values["COPYPARTY_LOOPBACK_LISTENER"] == "1") { tr("copyparty 本地回源未就绪", "The copyparty loopback origin is not ready") }
+        val remotePort = values["COPYPARTY_LOOPBACK_PORT"]?.toIntOrNull()
+        require(remotePort != null && remotePort in 39000..39999) { tr("远端网盘回环端口元数据无效", "The remote drive loopback-port metadata is invalid") }
+        val forward = handle.openLocalForward(remotePort)
         val url = "http://127.0.0.1:${forward.localPort}/"
         TunnelRegistry.install(context, handle, forward, url)
         activeHandle = null
         _state.update { it.copy(panelUrl = url) }
-        log("PRIVATE_DRIVE_TUNNEL_ACTIVE url=$url")
+        log("PRIVATE_DRIVE_TUNNEL_ACTIVE url=$url remote=127.0.0.1:$remotePort")
         return true
-    }
-
-    private suspend fun prepareDriveCandidate(handle: SshHandle) {
-        val hostname = required(tr("独立网盘 hostname", "Separate drive hostname"), tr("例如 drive.example.com；当前只生成候选，不改 Cloudflare", "For example drive.example.com; this only generates a candidate and does not change Cloudflare")) { Validation.validDomain(it) }.lowercase()
-        val port = required(tr("Origin Rule 目标端口", "Origin Rule destination port"), tr("只允许 2053 / 2083 / 2087 / 2096", "Only 2053 / 2083 / 2087 / 2096 are allowed"), "2087") { it in setOf("2053", "2083", "2087", "2096") }
-        val result = checked(handle, "bash $REMOTE_ROOT/linux/31-copyparty-nginx.sh prepare ${SshHandle.shellQuote(hostname)} $port")
-        require("PNA_DRIVE_NGINX_NOT_ENABLED=WAITING_FOR_CLOUDFLARE_AND_CERTIFICATE" in result.stdout)
-        log(tr("只生成 root-only 候选；没有公网监听，也没有修改 Cloudflare。", "Only a root-only candidate was generated; no public listener or Cloudflare state changed."))
     }
 
     private suspend fun rotateVpsPassword(handle: SshHandle) {
@@ -713,7 +1084,7 @@ class WorkflowRunner(
     }
 
     private suspend fun optimizeCover(handle: SshHandle) {
-        val env = ProtocolParsers.kv(checked(handle, "cat /etc/proxy-runbook/public.env", emit = false).stdout)
+        val env = ProtocolParsers.kv(checked(handle, "if [ -r /etc/text-node-assistant/public.env ]; then cat /etc/text-node-assistant/public.env; else cat /etc/proxy-runbook/public.env; fi", emit = false).stdout)
         val domain = env["COVER_DOMAIN"].orEmpty()
         require(Validation.validDomain(domain)) { tr("没有有效的运行时伪装域名，请先执行操作 [1]", "No valid runtime cover domain; run action 1 first") }
         log(checked(handle, "bash $REMOTE_ROOT/linux/05b-cover-site-polished.sh --list", emit = false).stdout.trim())
@@ -775,16 +1146,17 @@ class WorkflowRunner(
         check(confirmation == "UNINSTALL")
         val command = """
             set -Eeuo pipefail
-            dirs=(/opt/proxy-runbook-v0.5 /opt/proxy-runbook-v0.6 /opt/proxy-runbook-v0.6.1 /opt/proxy-runbook-v0.6.2 /opt/proxy-runbook-v0.6.5 /opt/proxy-runbook-v0.6.6 /opt/proxy-runbook-v0.7.1 /opt/proxy-runbook-v0.7.4 /opt/proxy-runbook-v0.8.2 /opt/proxy-runbook-v0.8.4 /opt/proxy-runbook-v0.8.5 /opt/proxy-runbook-v0.8.6 /opt/proxy-runbook-v0.9.0 /opt/proxy-runbook-v0.9.5)
+            dirs=(/opt/text-node-assistant-v0.9.5 /opt/proxy-runbook-v0.5 /opt/proxy-runbook-v0.6 /opt/proxy-runbook-v0.6.1 /opt/proxy-runbook-v0.6.2 /opt/proxy-runbook-v0.6.5 /opt/proxy-runbook-v0.6.6 /opt/proxy-runbook-v0.7.1 /opt/proxy-runbook-v0.7.4 /opt/proxy-runbook-v0.8.2 /opt/proxy-runbook-v0.8.4 /opt/proxy-runbook-v0.8.5 /opt/proxy-runbook-v0.8.6 /opt/proxy-runbook-v0.9.0 /opt/proxy-runbook-v0.9.5)
             for target in "${'$'}{dirs[@]}"; do [ ! -e "${'$'}target" ] || { [ -d "${'$'}target" ] && [ ! -L "${'$'}target" ]; } || exit 61; done
+            [ ! -e /opt/text-node-assistant-current ] || [ -L /opt/text-node-assistant-current ] || exit 62
             [ ! -e /opt/proxy-runbook-current ] || [ -L /opt/proxy-runbook-current ] || exit 62
-            printf 'PROXY_RUNBOOK_UNINSTALL_BEGIN\n'
-            rm -f /opt/proxy-runbook-current /usr/local/sbin/proxy-node /tmp/proxy-runbook-toolkit-v*.tar.gz
+            printf 'TNA_TOOLKIT_UNINSTALL_BEGIN\n'
+            rm -f /opt/text-node-assistant-current /opt/proxy-runbook-current /usr/local/sbin/text-node /usr/local/sbin/proxy-node /tmp/text-node-assistant-toolkit-v*.tar.gz /tmp/proxy-runbook-toolkit-v*.tar.gz
             for target in "${'$'}{dirs[@]}"; do [ ! -d "${'$'}target" ] || rm -rf -- "${'$'}target"; done
-            printf 'PRESERVED=NODE_SERVICES_AND_CONFIG\nPROXY_RUNBOOK_UNINSTALL_END\n'
+            printf 'PRESERVED=NODE_SERVICES_AND_CONFIG\nTNA_TOOLKIT_UNINSTALL_END\n'
         """.trimIndent()
         val result = checked(handle, command)
-        require("PROXY_RUNBOOK_UNINSTALL_BEGIN" in result.stdout && "PROXY_RUNBOOK_UNINSTALL_END" in result.stdout) { tr("远端返回缺少完整卸载标记", "complete uninstall markers were missing") }
+        require("TNA_TOOLKIT_UNINSTALL_BEGIN" in result.stdout && "TNA_TOOLKIT_UNINSTALL_END" in result.stdout) { tr("远端返回缺少完整卸载标记", "complete uninstall markers were missing") }
     }
 
     private suspend fun pruneBackups(handle: SshHandle, exactConfirmation: Boolean = true) {
@@ -814,11 +1186,27 @@ class WorkflowRunner(
     }
 
     private suspend fun dismantle(handle: SshHandle) {
-        val plan = checked(handle, "bash $REMOTE_ROOT/linux/22-dismantle-managed-node.sh --plan")
-        require("PNA_DISMANTLE_PLAN_BEGIN" in plan.stdout && "PNA_DISMANTLE_PLAN_END" in plan.stdout) { tr("远端返回缺少完整拆除计划标记", "complete dismantle plan markers are missing") }
-        required(tr("全量拆除并恢复基线", "Full dismantle"), tr("请输入大写 RESTORE ORIGINAL。任何拆除前都会先下载救援包。", "Type uppercase RESTORE ORIGINAL. A rescue archive is downloaded before any removal.")) { it == "RESTORE ORIGINAL" }
+        val status = ProtocolParsers.kv(checked(handle, "bash $REMOTE_ROOT/linux/22-dismantle-managed-node.sh --status", emit = false).stdout)
+        val driveOnly = status["NODE_LIFECYCLE_STATE"] == "PROXY_REMOVED_DRIVE_RETAINED"
+        val choice = required(
+            tr("拆除施工和恢复基线", "Dismantle construction and restore baseline"),
+            if (driveOnly) {
+                tr("当前仅剩强制网盘。\n[1] 保持现状返回  [2] 拆除剩余网盘并完整恢复原生基线", "Only the mandatory drive remains.\n[1] Keep it and return  [2] Remove the remaining drive and fully restore the native baseline")
+            } else {
+                tr("[1] 只拆代理，保留网盘、账号、设备准入和 SSH\n[2] 整体拆除并恢复原生基线", "[1] Remove proxy only; retain drive, accounts, device admission, and SSH\n[2] Remove everything and restore the native baseline")
+            },
+        ) { it in setOf("1", "2") }
+        if (driveOnly && choice == "1") return
+        val target = if (driveOnly) "remaining-drive" else if (choice == "1") "proxy-only" else "full"
+        val plan = checked(handle, "bash $REMOTE_ROOT/linux/22-dismantle-managed-node.sh --plan $target")
+        require("TNA_DISMANTLE_PLAN_BEGIN" in plan.stdout && "TNA_DISMANTLE_PLAN_END" in plan.stdout) { tr("远端返回缺少完整拆除计划标记", "complete dismantle plan markers are missing") }
+        if (target == "proxy-only") {
+            required(tr("只拆代理", "Proxy-only removal"), tr("请输入大写 REMOVE PROXY KEEP DRIVE。任何拆除前都会先下载救援包。", "Type uppercase REMOVE PROXY KEEP DRIVE. A rescue archive is downloaded before removal.")) { it == "REMOVE PROXY KEEP DRIVE" }
+        } else {
+            required(tr("完整恢复原生基线", "Full native-baseline restore"), tr("请输入大写 RESTORE ORIGINAL。任何拆除前都会先下载救援包。", "Type uppercase RESTORE ORIGINAL. A rescue archive is downloaded before removal.")) { it == "RESTORE ORIGINAL" }
+        }
         val legacy = "RESTORE_GRADE=LEGACY_UNCERTAIN" in plan.stdout
-        if (legacy) required(tr("旧版本限制", "Legacy limitation"), tr("请输入大写 LEGACY FULL RESTORE，确认接受在没有逐字节原始基线时执行有界拆除。", "Type uppercase LEGACY FULL RESTORE to accept bounded removal without a byte-for-byte baseline.")) { it == "LEGACY FULL RESTORE" }
+        if (legacy && target != "proxy-only") required(tr("旧版本限制", "Legacy limitation"), tr("请输入大写 LEGACY FULL RESTORE，确认接受在没有逐字节原始基线时执行有界拆除。", "Type uppercase LEGACY FULL RESTORE to accept bounded removal without a byte-for-byte baseline.")) { it == "LEGACY FULL RESTORE" }
         val backup = checked(handle, "bash $REMOTE_ROOT/linux/01-safe-backup.sh")
         require("BACKUP_OK" in backup.stdout) { tr("拆除前救援备份失败", "pre-dismantle backup failed") }
         val remote = Regex("/root/proxy-node-backup-[0-9]{8}-[0-9]{6}\\.tar\\.gz").find(backup.stdout)?.value ?: error(tr("远端返回缺少救援包路径", "rescue archive path missing"))
@@ -828,9 +1216,14 @@ class WorkflowRunner(
         val file = File(directory, remote.substringAfterLast('/')).apply { writeBytes(bytes) }
         _state.update { it.copy(downloadedFile = file.absolutePath) }
         log("RESCUE_ARCHIVE_DOWNLOADED ${file.name}")
-        val env = if (legacy) "PNA_DISMANTLE_CONFIRM=RESTORE_ORIGINAL PNA_LEGACY_FULL=1" else "PNA_DISMANTLE_CONFIRM=RESTORE_ORIGINAL"
-        val result = checked(handle, "$env bash $REMOTE_ROOT/linux/22-dismantle-managed-node.sh --execute", interactive = true)
-        listOf("PNA_DISMANTLE_BEGIN", "SSH_ACCESS_PRESERVED=1", "PRESERVED_SHARED_BASE_PACKAGES=1", "PNA_DISMANTLE_END").forEach { require(it in result.stdout) { "dismantle marker $it missing; rescue retained" } }
+        val env = when {
+            target == "proxy-only" -> "TNA_DISMANTLE_CONFIRM=REMOVE_PROXY_KEEP_DRIVE"
+            legacy -> "TNA_DISMANTLE_CONFIRM=RESTORE_ORIGINAL TNA_LEGACY_FULL=1"
+            else -> "TNA_DISMANTLE_CONFIRM=RESTORE_ORIGINAL"
+        }
+        val verb = if (target == "proxy-only") "--execute-proxy-only" else if (target == "remaining-drive") "--execute-remaining-drive" else "--execute-full"
+        val result = checked(handle, "$env bash $REMOTE_ROOT/linux/22-dismantle-managed-node.sh $verb", interactive = true)
+        listOf("TNA_DISMANTLE_BEGIN", "SSH_ACCESS_PRESERVED=1", "PRESERVED_SHARED_BASE_PACKAGES=1", "TNA_DISMANTLE_END").forEach { require(it in result.stdout) { "dismantle marker $it missing; rescue retained" } }
     }
 
     private suspend fun securityEvents(handle: SshHandle) {
@@ -845,12 +1238,12 @@ class WorkflowRunner(
                 "3" -> {
                     if (!confirmYes(tr("应用受管 sshd jail（5次/10分钟，封禁1小时）和隐私化连接元数据规则？", "Apply the managed sshd jail (5 attempts/10 minutes, 1-hour ban) and privacy-preserving connection metadata?"), false, allowNo = true)) continue
                     val applied = checked(handle, "bash $REMOTE_ROOT/linux/24-security-baseline.sh --apply 7", emit = false)
-                    require("PNA_SECURITY_BASELINE_APPLIED" in applied.stdout && "PNA_SECURITY_BASELINE_STATUS_END" in applied.stdout) { tr("安全基线返回不完整", "Security-baseline response was incomplete") }
+                    require("TNA_SECURITY_BASELINE_APPLIED" in applied.stdout && "TNA_SECURITY_BASELINE_STATUS_END" in applied.stdout) { tr("安全基线返回不完整", "Security-baseline response was incomplete") }
                     log(applied.stdout.trim())
                 }
                 "4" -> {
                     val status = checked(handle, "bash $REMOTE_ROOT/linux/24-security-baseline.sh --status", emit = false)
-                    require("PNA_SECURITY_BASELINE_STATUS_BEGIN" in status.stdout && "PNA_SECURITY_BASELINE_STATUS_END" in status.stdout) { tr("安全基线状态返回不完整", "Security-baseline status was incomplete") }
+                    require("TNA_SECURITY_BASELINE_STATUS_BEGIN" in status.stdout && "TNA_SECURITY_BASELINE_STATUS_END" in status.stdout) { tr("安全基线状态返回不完整", "Security-baseline status was incomplete") }
                     log(status.stdout.trim())
                 }
                 else -> {
@@ -861,7 +1254,7 @@ class WorkflowRunner(
                     ) { it in setOf("1h", "6h", "24h", "7d") } else "24h"
                     val result = checked(handle, "bash $REMOTE_ROOT/linux/25-security-events.sh --protocol-v1 --since $since --cursor 0 --limit 200", emit = false)
                     require(result.stdout.count { it == '\n' } <= 1300) { tr("安全事件响应超过边界", "Security-event response exceeded its bound") }
-                    require("__PNA_SECURITY_V1_BEGIN__" in result.stdout && "__PNA_SECURITY_V1_END__" in result.stdout && "SUMMARY\t" in result.stdout) { tr("安全事件协议返回不完整", "Security-event protocol response was incomplete") }
+                    require("__TNA_SECURITY_V1_BEGIN__" in result.stdout && "__TNA_SECURITY_V1_END__" in result.stdout && "SUMMARY\t" in result.stdout) { tr("安全事件协议返回不完整", "Security-event protocol response was incomplete") }
                     log(tr("连接/失败事件不自动等同攻击；只有 Fail2ban 当前封禁具有明确封禁语义。", "Connection/failure events are not automatically attacks; only current Fail2ban bans have explicit ban semantics."))
                     log(result.stdout.trim())
                 }
@@ -877,68 +1270,73 @@ class WorkflowRunner(
             log(buildString {
                 appendLine("DEVICE_ADMISSION node=${status.nodeId} active_controllers=${status.activeControllers} active_devices=${status.activeDevices}")
                 status.devices.forEach { appendLine("${it.deviceId} role=${it.role} status=${it.status} label=${it.label}${if (it.deviceId == identity.deviceId) " this-device" else ""}") }
-                append("PER_DEVICE_VLESS=SUPPORTED; hardware-uncloneable lock is not claimed")
+                append("INVITE_POLICY=EXPIRES_AFTER_SUCCESSFUL_BIND; PER_DEVICE_VLESS=SUPPORTED")
             })
             if (status.activeControllers == 0) {
                 val answer = prompts.ask(
                     tr("登记首个控制设备", "Register the first controller"),
-                    tr("此节点还没有 controller。把当前 Android 设备登记为首个 controller？[Y/n]", "This node has no controller. Register this Android device as the first controller? [Y/n]"),
+                    tr("此节点还没有 controller。把当前 Android 设备登记为首个 controller？这会绑定本机独享 SSH key。[Y/n]", "This node has no controller. Register this Android device and bind its device-local SSH key? [Y/n]"),
                     PromptKind.YES_NO,
                     defaultValue = "y",
                 ).trim().lowercase()
                 if (answer in setOf("y", "yes", "是", "")) {
-                    val label = required(tr("设备名称", "Device label"), tr("1—64 位安全字符，例如 Android Phone", "1-64 safe characters, for example Android Phone"), "Android Phone") { Regex("^[A-Za-z0-9._ -]{1,64}$").matches(it) }
-                    val input = "\n${identity.publicValue}\n$label\ncontroller\n\n".toByteArray()
+                    val labelValue = required(tr("设备名称", "Device label"), tr("1—64 位安全字符，例如 Android Phone", "1-64 safe characters, for example Android Phone"), "Android Phone") { Regex("^[A-Za-z0-9._ -]{1,64}$").matches(it) }
+                    val existing = managedKeys.get(handle.target.id)
+                    val key = existing ?: managedKeys.generate(handle.target.id)
+                    val sshPublic = normalizeSshPublic(key.publicKeyOpenSsh)
+                    val input = "\n${identity.publicValue}\n$labelValue\ncontroller\n${identity.encryptionPublic}\n${handle.target.user}\n$sshPublic\n\n".toByteArray()
                     val result = handle.exec("bash $REMOTE_ROOT/linux/26-device-admission.sh bootstrap-controller", root = true, stdinBytes = input, log = ::log)
-                    check(result.ok && "__PNA_DEVICE_BOOTSTRAP_V1_END__" in result.stdout) { "First-controller bootstrap failed (${result.exitCode}): ${result.stderr.takeLast(1000)}" }
+                    check(result.ok && "__TNA_DEVICE_BOOTSTRAP_V1_END__" in result.stdout) { "First-controller bootstrap failed (${result.exitCode}): ${(result.stderr.ifBlank { result.stdout }).takeLast(1000)}" }
+                    if (existing == null) managedKeys.put(key)
+                    verifyManagedDeviceKey(handle.target)
+                    log(tr("首个 controller、设备独享 SSH key 和网盘恢复公钥均已登记。", "The first controller, its device-local SSH key, and drive-recovery public key are registered."))
                     continue
                 }
             }
             val choice = prompts.ask(
                 tr("设备准入", "Device admission"),
                 tr(
-                    "[1] 刷新  [2] 显示本机公开身份  [3] 创建 10 分钟单次邀请  [4] 响应邀请  [5] 批准响应  [6] 暂停  [7] 恢复  [8] 吊销  [9] 当前设备节点  [0] 返回",
-                    "[1] Refresh  [2] Show local public identity  [3] Create 10-minute invitation  [4] Respond  [5] Approve  [6] Pause  [7] Resume  [8] Revoke  [9] Current-device nodes  [0] Back",
+                    "[1] 刷新  [2] 显示本机公开身份  [3] 创建绑定成功后失效的邀请  [4] 指导新设备  [5] 批准响应  [6] 暂停  [7] 恢复  [8] 吊销  [9] 当前设备节点  [0] 返回",
+                    "[1] Refresh  [2] Show local public identity  [3] Create bind-until-success invitation  [4] Guide new device  [5] Approve response  [6] Pause  [7] Resume  [8] Revoke  [9] Current-device nodes  [0] Back",
                 ),
                 PromptKind.TEXT,
                 defaultValue = "1",
             ).trim().ifEmpty { "1" }
             when (choice) {
                 "1" -> Unit
-                "2" -> _state.update { it.copy(secretHandoff = "DEVICE_ID=${identity.deviceId}\nPUBLIC_KEY=${identity.publicValue}\nPRIVATE_IDENTITY_STORAGE=ANDROID_KEYSTORE_ENCRYPTED_APP_VAULT") }
+                "2" -> _state.update { it.copy(secretHandoff = "DEVICE_ID=${identity.deviceId}\nPUBLIC_KEY=${identity.publicValue}\nENCRYPTION_PUBLIC_KEY=${identity.encryptionPublic}\nPRIVATE_IDENTITY_STORAGE=ANDROID_KEYSTORE_ENCRYPTED_APP_VAULT") }
                 "3" -> {
-                    val result = checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh create-invite ${SshHandle.shellQuote(identity.deviceId)}", emit = false)
-                    val invite = DeviceAdmissionProtocol.parseInviteOutput(result.stdout)
+                    require(status.devices.any { it.deviceId == identity.deviceId && it.role == "controller" && it.status == "active" }) { tr("当前 Android 设备不是 active controller", "This Android device is not an active controller") }
+                    val result = checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh create-invite ${SshHandle.shellQuote(identity.deviceId)} ${SshHandle.shellQuote(handle.target.user)}", emit = false)
+                    val host = requireNotNull(hostKeys.get(handle.target.id)) { tr("本机没有已固定的 SSH Host 公钥", "No pinned SSH host key exists locally") }
+                    val token = if (handle.target.port == 22) handle.target.host else "[${handle.target.host}]:${handle.target.port}"
+                    val invite = DeviceAdmissionProtocol.parseInviteOutput(result.stdout, NodeEndpoint(handle.target.host, handle.target.user, handle.target.port, "$token ${host.algorithm} ${host.keyBase64}"))
                     _state.update { it.copy(secretHandoff = DeviceAdmissionProtocol.encodeInvite(invite)) }
+                    log(tr("邀请只有在新设备首次 key 登录成功后才失效；批准失败或网络中断都可重试。", "The invitation is consumed only after the new device's first successful key login; approval or network failures remain retryable."))
                 }
-                "4" -> {
-                    val bundle = required(tr("粘贴邀请", "Paste invitation"), "PNAINV1…") { it.startsWith("PNAINV1.") }
-                    val invite = DeviceAdmissionProtocol.decodeInvite(bundle)
-                    val label = required(tr("设备名称", "Device label"), tr("1—64 位安全字符", "1-64 safe characters"), "Android Phone") { Regex("^[A-Za-z0-9._ -]{1,64}$").matches(it) }
-                    val roleChoice = prompts.ask(tr("设备角色", "Device role"), tr("[1] 仅流量（默认）  [2] controller", "[1] Traffic-only (default)  [2] controller"), PromptKind.TEXT, defaultValue = "1").trim().ifEmpty { "1" }
-                    val role = if (roleChoice == "2") "controller" else "traffic-only".also { require(roleChoice == "1") }
-                    val response = DeviceAdmissionProtocol.response(invite, identity, label, role, deviceIdentity::sign)
-                    _state.update { it.copy(secretHandoff = DeviceAdmissionProtocol.encodeResponse(response)) }
-                }
+                "4" -> log(tr("在尚未获准入的新设备首页选择“新设备响应准入邀请 [J]”。该入口不要求先登录 VPS。", "On the untrusted device, choose 'Join from an untrusted device [J]' on the home screen. It requires no prior VPS login."))
                 "5" -> {
-                    val bundle = required(tr("粘贴响应", "Paste response"), "PNARESP1…") { it.startsWith("PNARESP1.") }
+                    val bundle = required(tr("粘贴新设备响应", "Paste new-device response"), "TNARESP2…") { it.startsWith("TNARESP2.") }
                     val response = DeviceAdmissionProtocol.decodeResponse(bundle)
                     require(response.nodeId == status.nodeId) { tr("响应不属于当前节点", "The response belongs to another node") }
-                    val input = "${response.nonce}\n${response.publicValue}\n${response.label}\n${response.role}\n${response.signature}\n".toByteArray()
-                    val result = handle.exec("bash $REMOTE_ROOT/linux/26-device-admission.sh enroll", root = true, stdinBytes = input, log = ::log)
-                    check(result.ok && "NONCE_CONSUMED=1" in result.stdout) { "Device enrollment failed (${result.exitCode}): ${result.stderr.takeLast(1000)}" }
-                    log(tr("设备已登记；签名已验证，邀请已消费且不能重放。", "The device was enrolled; its signature was verified and the invitation cannot be replayed."))
+                    val result = handle.exec("bash $REMOTE_ROOT/linux/26-device-admission.sh enroll", root = true, stdinBytes = DeviceAdmissionProtocol.enrollmentInput(response), log = ::log)
+                    check(result.ok && "STATUS=pending-verification" in result.stdout && "NONCE_CONSUMED=0" in result.stdout) { "Device enrollment failed (${result.exitCode}): ${(result.stderr.ifBlank { result.stdout }).takeLast(1000)}" }
+                    if (response.role == "controller") {
+                        preparePendingControllerEscrow(handle, identity, response.deviceId)
+                    }
+                    log(tr("设备已预登记为 pending-verification；让新设备回到 [J] 按 Enter，首次 key 登录成功后才会激活并消费邀请。", "The device is pending-verification. Have it return to [J] and press Enter; only its first successful key login activates it and consumes the invitation."))
                 }
                 "6", "7", "8" -> {
-                    val target = required("DEVICE_ID", "pna-device-…") { Regex("^pna-device-[a-z2-7]{26}$").matches(it) }
+                    val targetId = required("DEVICE_ID", "tna-device-…") { Regex("^(?:tna|pna)-device-[a-z2-7]{26}$").matches(it) }
                     val verb = mapOf("6" to "pause", "7" to "resume", "8" to "revoke").getValue(choice)
-                    if (verb == "revoke") confirmYes(tr("吊销会立即删除该设备的受管 VLESS；继续？", "Revocation immediately removes this device's managed VLESS credentials. Continue?"), false)
-                    checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh $verb ${SshHandle.shellQuote(identity.deviceId)} ${SshHandle.shellQuote(target)}")
+                    if (verb == "revoke") confirmYes(tr("吊销会立即删除该设备的 SSH、受管 VLESS 与网盘访问；继续？", "Revocation immediately removes this device's SSH, managed VLESS, and drive access. Continue?"), false)
+                    val result = checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh $verb ${SshHandle.shellQuote(identity.deviceId)} ${SshHandle.shellQuote(targetId)}")
+                    require("__TNA_DEVICE_STATE_V1_END__" in result.stdout || "__PNA_DEVICE_STATE_V1_END__" in result.stdout)
                 }
                 "9" -> {
                     val result = checked(handle, "bash $REMOTE_ROOT/linux/26-device-admission.sh handoff ${SshHandle.shellQuote(identity.deviceId)}", emit = false)
-                    val block = result.stdout.substringAfter("__PNA_DEVICE_HANDOFF_V1_BEGIN__\n", "").substringBefore("\n__PNA_DEVICE_HANDOFF_V1_END__", "")
-                    require("DIRECT_REALITY_LINK=vless://" in block) { "Device handoff protocol validation failed" }
+                    val block = markedCurrentOrLegacy(result.stdout, "__TNA_DEVICE_HANDOFF_V1_BEGIN__", "__TNA_DEVICE_HANDOFF_V1_END__", "__PNA_DEVICE_HANDOFF_V1_BEGIN__", "__PNA_DEVICE_HANDOFF_V1_END__")
+                    require("DIRECT_REALITY_LINK=vless://" in block || "CDN_XHTTP_LINK=vless://" in block) { "Device handoff protocol validation failed" }
                     _state.update { it.copy(secretHandoff = block) }
                 }
                 "0" -> return
@@ -946,6 +1344,141 @@ class WorkflowRunner(
             }
         }
     }
+
+    private data class DriveAccountRecord(
+        val accountId: String,
+        val spaceId: String,
+        val role: String,
+        val status: String,
+        val username: String,
+    )
+
+    private suspend fun preparePendingControllerEscrow(
+        handle: SshHandle,
+        current: com.proxynodeassistant.android.data.DeviceIdentity,
+        pendingDeviceId: String,
+    ) {
+        require(Regex("^tna-device-[a-z2-7]{26}$").matches(pendingDeviceId))
+        val accountsResult = checked(handle, "bash $REMOTE_ROOT/linux/30-copyparty-account.sh list", emit = false)
+        val accountBlock = markedCurrentOrLegacy(
+            accountsResult.stdout,
+            "__TNA_DRIVE_ACCOUNT_LIST_BEGIN__",
+            "__TNA_DRIVE_ACCOUNT_LIST_END__",
+            "__TNA_DRIVE_ACCOUNT_LIST_BEGIN__",
+            "__TNA_DRIVE_ACCOUNT_LIST_END__",
+        )
+        val accounts = accountBlock.lines().filter { it.isNotBlank() }.map { line ->
+            val parts = line.split('\t')
+            require(parts.size == 7 && parts[0].startsWith("ACCOUNT=")) { "Invalid drive account-list row" }
+            DriveAccountRecord(parts[0].removePrefix("ACCOUNT="), parts[1], parts[2], parts[3], parts[4])
+        }.filter { it.role == "ordinary" && it.status in setOf("active", "paused") }
+        if (accounts.isEmpty()) return
+
+        val controllerResult = checked(
+            handle,
+            "bash $REMOTE_ROOT/linux/26-device-admission.sh controller-encryption-keys ${SshHandle.shellQuote(current.deviceId)} include-pending",
+            emit = false,
+        )
+        val controllerBlock = markedCurrentOrLegacy(
+            controllerResult.stdout,
+            "__TNA_CONTROLLER_ENCRYPTION_KEYS_V1_BEGIN__",
+            "__TNA_CONTROLLER_ENCRYPTION_KEYS_V1_END__",
+            "__TNA_CONTROLLER_ENCRYPTION_KEYS_V1_BEGIN__",
+            "__TNA_CONTROLLER_ENCRYPTION_KEYS_V1_END__",
+        )
+        val controllers = controllerBlock.lines().filter { it.isNotBlank() }.map { line ->
+            val parts = line.split('\t')
+            require(parts.size == 3 && parts[0] == "CONTROLLER") { "Invalid controller encryption-key row" }
+            ControllerEncryptionKey(parts[1], parts[2])
+        }
+        require(controllers.any { it.deviceId == pendingDeviceId }) { "Pending controller encryption key was not returned by the node" }
+
+        accounts.forEach { account ->
+            val path = "/etc/text-node-assistant/drive-credential-escrow/${account.accountId}.json"
+            val encoded = checked(handle, "set -eu; test -f ${SshHandle.shellQuote(path)}; base64 -w0 ${SshHandle.shellQuote(path)}", emit = false).stdout.trim()
+            val raw = Base64.decode(encoded, Base64.DEFAULT).toString(Charsets.UTF_8)
+            val existing = DriveEscrowCodec.decode(raw)
+            require(existing.accountId == account.accountId && existing.spaceId == account.spaceId && existing.username == account.username)
+            val password = DriveEscrowCodec.decrypt(existing, current, deviceIdentity)
+            val rewrapped = DriveEscrowCodec.rewrap(existing, password, controllers, deviceIdentity)
+            val transfer = DriveEscrowCodec.rawUrl(DriveEscrowCodec.encode(rewrapped).toByteArray()) + "\n"
+            val replace = handle.exec(
+                "bash $REMOTE_ROOT/linux/30-copyparty-account.sh replace-escrow ${SshHandle.shellQuote(current.deviceId)} ${SshHandle.shellQuote(account.accountId)}",
+                root = true,
+                stdinBytes = transfer.toByteArray(),
+                log = ::log,
+            )
+            check(replace.ok && "TNA_DRIVE_ESCROW_REPLACED=1" in replace.stdout) {
+                "Drive escrow rewrap failed for ${account.accountId}: ${(replace.stderr.ifBlank { replace.stdout }).takeLast(1000)}"
+            }
+            val readbackEncoded = checked(handle, "base64 -w0 ${SshHandle.shellQuote(path)}", emit = false).stdout.trim()
+            val readback = DriveEscrowCodec.decode(Base64.decode(readbackEncoded, Base64.DEFAULT).toString(Charsets.UTF_8))
+            check(DriveEscrowCodec.decrypt(readback, current, deviceIdentity) == password) {
+                "Drive escrow authenticated readback failed for ${account.accountId}"
+            }
+        }
+        log(tr("现有普通网盘凭据已在本机解密并重新封装给全部 active/pending controller；VPS 未收到明文密码。", "Existing ordinary-drive credentials were decrypted locally and rewrapped for all active/pending controllers; the VPS never received plaintext passwords."))
+    }
+
+    private suspend fun joinDeviceWithInvitation() {
+        val bundle = required(tr("粘贴准入邀请", "Paste admission invitation"), "TNAINV2…") { it.startsWith("TNAINV2.") }
+        val invite = DeviceAdmissionProtocol.decodeInvite(bundle)
+        val target = NodeTarget(invite.host, invite.user, invite.port)
+        importInvitationHostKey(invite, target)
+        val identity = deviceIdentity.loadOrCreate()
+        val labelValue = required(tr("设备名称", "Device label"), tr("1—64 位安全字符，例如 Android Phone", "1-64 safe characters, for example Android Phone"), "Android Phone") { Regex("^[A-Za-z0-9._ -]{1,64}$").matches(it) }
+        val roleChoice = required(tr("设备角色", "Device role"), tr("1=仅流量/网盘（默认），2=controller", "1=traffic/drive only (default), 2=controller"), "1") { it in setOf("1", "2") }
+        val role = if (roleChoice == "2") "controller" else "traffic-only"
+        val existing = managedKeys.get(target.id)
+        val key = existing ?: managedKeys.generate(target.id)
+        val response = DeviceAdmissionProtocol.response(invite, identity, labelValue, role, key.publicKeyOpenSsh, deviceIdentity::sign)
+        if (existing == null) managedKeys.put(key)
+        targets.remember(target)
+        _state.update { it.copy(target = target, secretHandoff = DeviceAdmissionProtocol.encodeResponse(response)) }
+        log(tr("响应已生成。交给现有 controller 在设备准入 [5] 批准；批准只会预登记，不会消费邀请。", "The response is ready. Give it to an existing controller and approve it with device admission [5]. Approval only pre-registers it and does not consume the invitation."))
+        prompts.ask(tr("完成首次绑定", "Complete first bind"), tr("controller 显示 pending-verification 后回到这里按 Enter。程序将用本机独享 key 首次登录；成功后邀请才失效。", "After the controller shows pending-verification, return and press Enter. The app will make the first login with its device-local key; only success consumes the invitation."), PromptKind.TEXT)
+        val handle = ssh.connect(target, SessionCredential(AuthMode.MANAGED_KEY), language)
+        activeHandle = handle
+        try {
+            val result = handle.exec("true", root = false, log = ::log)
+            check(result.ok && "__TNA_DEVICE_BIND_V2_END__" in result.stdout && "NONCE_CONSUMED=1" in result.stdout) {
+                tr("首次设备 key 登录尚未完成；邀请仍可重试，本机私钥已保留。", "The first device-key login is incomplete; the invitation remains retryable and the local private key is retained.")
+            }
+            val block = runCatching { markedCurrentOrLegacy(result.stdout, "__TNA_DEVICE_HANDOFF_V1_BEGIN__", "__TNA_DEVICE_HANDOFF_V1_END__", "__PNA_DEVICE_HANDOFF_V1_BEGIN__", "__PNA_DEVICE_HANDOFF_V1_END__") }.getOrNull()
+            if (!block.isNullOrBlank()) _state.update { it.copy(secretHandoff = block) }
+            log(tr("设备 SSH key、独立节点与网盘回环权限均已绑定；邀请现已失效。", "The device SSH key, independent node, and loopback-drive access are bound; the invitation is now consumed."))
+        } finally {
+            activeHandle = null
+            handle.close()
+        }
+    }
+
+    private fun importInvitationHostKey(invite: DeviceInvite, target: NodeTarget) {
+        val records = invite.knownHosts.trim().lines().mapNotNull { line ->
+            val parts = line.trim().split(Regex("\\s+"))
+            if (parts.size < 3) null else Triple(parts[1], parts[2], runCatching { Base64.decode(parts[2], Base64.DEFAULT) }.getOrNull())
+        }
+        val selected = records.firstOrNull { it.first == "ssh-ed25519" } ?: records.firstOrNull() ?: error("Invitation has no usable pinned host key")
+        val raw = requireNotNull(selected.third)
+        hostKeys.put(HostKeyRecord(target.id, selected.first, selected.second, KeyFingerprint.createSHA256Fingerprint(raw)))
+    }
+
+    private suspend fun verifyManagedDeviceKey(target: NodeTarget) {
+        val verified = ssh.connect(target, SessionCredential(AuthMode.MANAGED_KEY), language)
+        try {
+            val result = verified.exec("printf SSH_KEY_OK", root = false)
+            check(result.ok && (result.stdout.trim() == "SSH_KEY_OK" || "__TNA_DEVICE_HANDOFF_V1_END__" in result.stdout)) { "Device SSH key did not verify" }
+        } finally { verified.close() }
+    }
+
+    private fun normalizeSshPublic(value: String): String {
+        val fields = value.trim().split(Regex("\\s+"))
+        require(fields.size >= 2 && fields[0] == "ssh-ed25519" && fields[1].matches(Regex("^[A-Za-z0-9+/]{68}$")))
+        return "${fields[0]} ${fields[1]}"
+    }
+
+    private fun markedCurrentOrLegacy(value: String, begin: String, end: String, legacyBegin: String, legacyEnd: String): String =
+        runCatching { ProtocolParsers.markedBlock(value, begin, end) }.getOrElse { ProtocolParsers.markedBlock(value, legacyBegin, legacyEnd) }
 
     private suspend fun checked(handle: SshHandle, command: String, interactive: Boolean = false, emit: Boolean = true) =
         handle.exec(command, root = true, interactive = interactive, log = if (emit) ::log else { _ -> }).also { result ->
@@ -999,13 +1532,14 @@ class WorkflowRunner(
     private fun tr(zh: String, en: String): String = if (language == Language.ZH) zh else en
 
     companion object {
-        const val VERSION = "0.9.5"
-        const val BUILD_ID = "20260825-v095-cloudflare-manual-promotion-v12"
-        const val BUILD_REVISION = 12
-        const val REMOTE_ROOT = "/opt/proxy-runbook-current"
-        const val INSTALL_ROOT = "/opt/proxy-runbook-v0.9.5"
-        const val TOOLKIT_ASSET = "proxy-runbook-toolkit-v0.9.5.tgz"
-        const val TOOLKIT_ARCHIVE = "proxy-runbook-toolkit-v0.9.5.tar.gz"
+        const val VERSION = Product.VERSION
+        const val BUILD_ID = Product.BUILD_ID
+        const val BUILD_REVISION = Product.BUILD_REVISION
+        const val REMOTE_ROOT = Product.REMOTE_ROOT
+		const val LEGACY_REMOTE_ROOT = Product.LEGACY_REMOTE_ROOT
+        const val INSTALL_ROOT = Product.INSTALL_ROOT
+        const val TOOLKIT_ASSET = Product.TOOLKIT_ASSET
+        const val TOOLKIT_ARCHIVE = Product.TOOLKIT_ARCHIVE
 		const val CLOUDFLARE_DNS_DASHBOARD = "https://dash.cloudflare.com/?to=%2F%3Aaccount%2F%3Azone%2Fdns%2Frecords"
     }
 }

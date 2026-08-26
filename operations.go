@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -153,7 +155,7 @@ func (a *App) waitForDNS(domain, publicIP string) bool {
 	}
 }
 
-func (a *App) deployOptimize() error {
+func (a *App) deployOptimize() (returnErr error) {
 	c, err := a.readyConn()
 	if err != nil {
 		return fmt.Errorf(a.msg("SSH 初始化失败：%w", "SSH setup failed: %w"), err)
@@ -167,6 +169,7 @@ func (a *App) deployOptimize() error {
 		return fmt.Errorf(a.msg("远端工具包版本无法安全识别：%w。没有上传任何东西。", "The remote toolkit version could not be safely classified: %w. Nothing was uploaded."), err)
 	}
 	updateSameVersionBuild := false
+	repairSameVersionToolkit := false
 	switch relation {
 	case ToolkitSameComplete:
 		switch compareToolkitBuild(probe, toolkitBuildID, toolkitBuildRevision) {
@@ -179,10 +182,11 @@ func (a *App) deployOptimize() error {
 			return fmt.Errorf(a.msg("远端同版本构建比当前 EXE 新；禁止降级，请换用更新的 EXE", "The remote same-version build is newer than this EXE; downgrade is blocked. Use a newer EXE"))
 		}
 	case ToolkitSameIncomplete:
-		return fmt.Errorf(a.msg(
-			"远端已有同版本 v%s，但文件不完整；为防止循环重装，本次拒绝覆盖。请先运行 [13]，确认卸载后再回 [1]",
-			"Remote toolkit v%s matches this EXE but is incomplete; overwrite is refused to prevent reinstall loops. Run [13], confirm uninstall, then return to [1]",
-		), toolkitVersion)
+		repairSameVersionToolkit = true
+		a.println(fmt.Sprintf(a.msg(
+			"检测到同版本 v%s 工具包不完整；菜单 [1] 将原位修复工具程序，不会重装节点，也不会改动网盘数据、账号、设备准入或现有配置。",
+			"The v%s toolkit is incomplete; menu [1] will repair the program files in place without reinstalling the node or changing drive data, accounts, device admission, or existing configuration.",
+		), toolkitVersion))
 	case ToolkitNewer:
 		return fmt.Errorf(a.msg(
 			"远端工具包 v%s 比当前 EXE v%s 新；本次禁止降级，也不会继续施工。请换用 v%s 或更新版本的 EXE",
@@ -193,18 +197,32 @@ func (a *App) deployOptimize() error {
 	case ToolkitMissing:
 		a.println(a.msg("远端未安装工具包；菜单 [1] 将安装当前内嵌版本。", "No remote toolkit is installed; menu [1] will install the embedded version."))
 	}
-	if relation == ToolkitOlder || relation == ToolkitMissing || updateSameVersionBuild {
+	if relation == ToolkitOlder || relation == ToolkitMissing || updateSameVersionBuild || repairSameVersionToolkit {
 		if err := a.uploadToolkit(c); err != nil {
 			return fmt.Errorf(a.msg("工具包按需安装/升级失败：%w", "On-demand toolkit install/upgrade failed: %w"), err)
 		}
 	}
+	if err := a.recoverInterruptedInstallTransaction(c); err != nil {
+		return err
+	}
+	if err := a.captureOriginalBaselineBeforeConstruction(c); err != nil {
+		return fmt.Errorf(a.msg("施工前原生基线准备失败：%w", "Pre-construction baseline preparation failed: %w"), err)
+	}
+	if err := a.ensureInstallNodeIdentity(c, relation, probe); err != nil {
+		return fmt.Errorf(a.msg("菜单 [1] 的稳定节点身份准备失败：%w", "Menu [1] stable-node identity preparation failed: %w"), err)
+	}
 	if err := a.syncManagedKeyIdentity(c); err != nil {
 		return fmt.Errorf(a.msg("稳定节点身份同步失败：%w", "Stable node identity synchronization failed: %w"), err)
 	}
-	domain, email, inputErr := a.askDomainEmail()
+	preservedDrive, err := a.inspectInstallRecoveryState(c)
+	if err != nil {
+		return err
+	}
+	topology, inputErr := a.chooseTopologyPlan(c)
 	if inputErr != nil {
 		return inputErr
 	}
+	domain, email := topology.baseDomainEmail()
 	coverTemplate, templateErr := a.chooseCoverTemplate(c)
 	if templateErr != nil {
 		return templateErr
@@ -213,23 +231,59 @@ func (a *App) deployOptimize() error {
 	if err != nil {
 		return err
 	}
-	if !a.waitForDNS(domain, publicIP) {
+	if topology.Mode == topologyOrange {
+		if !a.waitForOrangeDNS(domain, publicIP) {
+			return errors.New(a.msg("已在橙云证书/代理施工前停止。", "Stopped before orange-cloud certificate/proxy work."))
+		}
+	} else if !a.waitForDNS(domain, publicIP) {
 		return errors.New(a.msg("已在证书/REALITY 施工前停止。", "Stopped before certificate/REALITY work."))
+	}
+	if topology.Mode == topologyDual && !a.waitForOrangeDNS(topology.OrangeDomain, publicIP) {
+		return errors.New(a.msg("已在双路橙云影子施工前停止。", "Stopped before the dual-route orange shadow was staged."))
+	}
+	if topology.Mode == topologyOrange || topology.Mode == topologyDual {
+		if err := a.guideCloudflareOriginCertificatePrerequisites(topology.OrangeDomain); err != nil {
+			return err
+		}
 	}
 	if err := a.writeAutoInput(c, domain, email); err != nil {
 		return err
 	}
+	transactionID, err := a.beginInstallTransaction(c)
+	if err != nil {
+		return err
+	}
+	transactionActive := true
+	defer func() {
+		if !transactionActive {
+			return
+		}
+		rollbackErr := a.rollbackInstallTransaction(c, transactionID)
+		if rollbackErr == nil {
+			return
+		}
+		if returnErr == nil {
+			returnErr = rollbackErr
+		} else {
+			returnErr = fmt.Errorf("%v; automatic install rollback also failed: %w", returnErr, rollbackErr)
+		}
+	}()
+	driveHandoff, err := a.prepareMandatoryDrive(c)
+	if err != nil {
+		return err
+	}
 	a.println(a.msg("开始自适应施工。推荐的安全/幂等项自动采用默认值；24443 真机验货仍会强制确认。", "Starting adaptive convergence. Safe/idempotent recommendations use defaults; real 24443 verification still requires confirmation."))
 	remoteGUIMode := "0"
-	if os.Getenv("PNA_GUI_MODE") == "1" {
+	if guiModeEnabled() {
 		remoteGUIMode = "1"
 	}
-	command := "PROXY_RUNBOOK_LOGIN_USER=" + shQuote(c.User) +
-		" PROXY_RUNBOOK_SSH_KEY_INSTALLED=1 PROXY_RUNBOOK_ASSUME_DEFAULTS=1" +
-		" PROXY_RUNBOOK_GUI_MODE=" + shQuote(remoteGUIMode) +
-		" PROXY_RUNBOOK_LANG=" + shQuote(string(a.lang)) +
-		" PROXY_RUNBOOK_COVER_TEMPLATE=" + shQuote(coverTemplate) +
-		" PROXY_RUNBOOK_AUTO_INPUT=/tmp/proxy-runbook-auto-input" +
+	command := "TNA_LOGIN_USER=" + shQuote(c.User) +
+		" TNA_SSH_KEY_INSTALLED=1 TNA_ASSUME_DEFAULTS=1" +
+		" TNA_GUI_MODE=" + shQuote(remoteGUIMode) +
+		" TNA_LANG=" + shQuote(string(a.lang)) +
+		" TNA_TOPOLOGY_MODE=" + shQuote(map[topologyMode]string{topologyGray: "gray", topologyOrange: "orange", topologyDual: "dual"}[topology.Mode]) +
+		" TNA_COVER_TEMPLATE=" + shQuote(coverTemplate) +
+		" TNA_AUTO_INPUT=/tmp/text-node-assistant-auto-input" +
 		" bash " + remoteRoot + "/linux/00-auto-install-or-optimize.sh"
 	result := a.runRootInteractive(c, command)
 	if !shouldContinueAfterWizard(result.ExitCode) {
@@ -252,20 +306,59 @@ func (a *App) deployOptimize() error {
 		a.println(a.msg("本分支已硬停止：不会复制交接单，也不会询问打开面板。下一步运行菜单 [3]。", "This branch stopped fail-closed: no handoff is copied and no panel is opened. Run menu [3] next."))
 		return fmt.Errorf(a.msg("远端向导返回非零状态 %d", "remote wizard returned non-zero status %d"), result.ExitCode)
 	}
+	if topology.Mode == topologyOrange || topology.Mode == topologyDual {
+		if err := a.promoteCDNPublicOriginForTopology(c, topology.OrangeDomain, topology.OrangeEmail, topology.Mode); err != nil {
+			return err
+		}
+		if err := a.guideCloudflareOrangeSetup(topology.OrangeDomain); err != nil {
+			return err
+		}
+		if err := a.validateCDNEdgeForTopology(c, topology.OrangeDomain, topology.Mode); err != nil {
+			return err
+		}
+		if err := a.confirmCDNRealClientForTopology(c, topology.OrangeDomain, topology.Mode); err != nil {
+			return err
+		}
+		commit := a.rootCapture(c, "grep -Fqx 'CDN_REAL_CLIENT_CONFIRMED=1' /etc/text-node-assistant/cloudflare/edge-state.env")
+		if !commit.OK() {
+			return errors.New(a.msg("真机浏览尚未确认；橙云拓扑没有提交，强制网盘普通注册也继续保持关闭。", "Real-device browsing was not confirmed; the orange topology was not committed and ordinary drive registration remains disabled."))
+		}
+	}
+	if err := a.reconcileTopologyPlan(c, topology); err != nil {
+		return err
+	}
+	if err := a.finalizeMandatoryDrive(c, topology.lifecycle()); err != nil {
+		return err
+	}
+	if err := a.verifyPreservedDriveIdentity(c, preservedDrive); err != nil {
+		return fmt.Errorf(a.msg("仅拆代理后的保留对象验收失败：%w", "Preserved-object verification after proxy-only removal failed: %w"), err)
+	}
+	if err := a.ensureCurrentControllerAfterInstall(c); err != nil {
+		return fmt.Errorf(a.msg("首个 controller 交付未完成：%w", "First-controller delivery did not complete: %w"), err)
+	}
+	driveHandoff, err = a.ensureLocalDriveAdminCapability(c, driveHandoff)
+	if err != nil {
+		return fmt.Errorf(a.msg("本机 admin 空间能力交付未完成：%w", "Local admin-space capability delivery did not complete: %w"), err)
+	}
 
 	handoff, handoffErr := a.fetchHandoff(c)
 	if handoffErr != nil {
-		a.println(a.msg("施工成功，但交接单未通过完整性校验：", "Convergence succeeded, but the handoff failed integrity checks:") + " " + handoffErr.Error())
-		a.println(a.msg("未复制任何内容；可在确认后使用菜单 [7] 重试。", "Nothing was copied; use menu [7] to retry after checking."))
-	} else {
-		completeHandoff, completeErr := a.buildCompleteHandoff(handoff, c)
-		if completeErr != nil {
-			return fmt.Errorf(a.msg("完整交接单追加块生成失败：%w", "complete handoff appendix failed: %w"), completeErr)
-		}
-		if err := a.secretHandoff("CREDENTIAL HANDOFF", completeHandoff); err != nil {
-			a.println(err.Error())
-		}
+		return fmt.Errorf(a.msg("施工阶段完成，但强制交接单未通过完整性校验；本次不会提交半交付状态：%w", "Construction stages completed, but the mandatory handoff failed integrity validation; a partially delivered state will not be committed: %w"), handoffErr)
 	}
+	completeHandoff, completeErr := a.buildCompleteHandoff(handoff, c)
+	if completeErr != nil {
+		return fmt.Errorf(a.msg("完整交接单追加块生成失败：%w", "complete handoff appendix failed: %w"), completeErr)
+	}
+	if driveHandoff != "" {
+		completeHandoff += "\n\n" + driveHandoff
+	}
+	if err := a.secretHandoff("CREDENTIAL HANDOFF", completeHandoff); err != nil {
+		a.println(err.Error())
+	}
+	if err := a.commitInstallTransaction(c, transactionID); err != nil {
+		return err
+	}
+	transactionActive = false
 	if a.yes(a.msg(
 		"是否在打开面板前整理远端多余备份，并只保留一份新验证的当前配置备份？",
 		"Before opening the panel, prune redundant remote backups and retain one newly verified current-config backup?",
@@ -288,8 +381,8 @@ func (a *App) uninstallRemoteToolkit() error {
 		return err
 	}
 	a.println(a.msg(
-		"此操作只卸载 ProxyNodeAssistant 上传的远端工具包程序。",
-		"This removes only the remote toolkit program uploaded by ProxyNodeAssistant.",
+		"此操作只卸载 TextNodeAssistant 上传的远端工具包程序。",
+		"This removes only the remote toolkit program uploaded by TextNodeAssistant.",
 	))
 	a.println(a.msg(
 		"会删除：/opt 下已知 v0.5—v0.9.5 工具包、proxy-runbook-current、proxy-node 命令和 /tmp 上传残留。",
@@ -309,7 +402,7 @@ func (a *App) uninstallRemoteToolkit() error {
 	if !result.OK() {
 		return fmt.Errorf(a.msg("远端工具包卸载失败（状态 %d）：%s", "Remote toolkit uninstall failed (exit %d): %s"), result.ExitCode, processFailureDetail(result))
 	}
-	if !strings.Contains(result.Stdout, "PROXY_RUNBOOK_UNINSTALL_BEGIN\n") || !strings.Contains(result.Stdout, "PROXY_RUNBOOK_UNINSTALL_END") {
+	if !strings.Contains(result.Stdout, "TNA_TOOLKIT_UNINSTALL_BEGIN\n") || !strings.Contains(result.Stdout, "TNA_TOOLKIT_UNINSTALL_END") {
 		return errors.New(a.msg("远端返回成功，但缺少完整卸载确认标记；请不要假定已经删除。", "The remote command succeeded without a complete uninstall marker; do not assume removal."))
 	}
 	a.println(strings.TrimSpace(result.Stdout))
@@ -349,7 +442,7 @@ func (a *App) downloadDismantleRescue(c Connection, remotePath string) (string, 
 	if err != nil {
 		return "", err
 	}
-	downloadDir := filepath.Join(home, "Downloads", "ProxyNodeAssistant-Rescue")
+	downloadDir := filepath.Join(home, "Downloads", "TextNodeAssistant-Rescue")
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
 		return "", err
 	}
@@ -391,6 +484,62 @@ func (a *App) downloadDismantleRescue(c Connection, remotePath string) (string, 
 	return localPath, nil
 }
 
+type dismantleRescueStats struct {
+	DriveRootSeen bool
+	DriveFiles    int64
+	DriveBytes    int64
+}
+
+func verifyDismantleRescueContents(localPath string, requireDrive bool, expectedFiles, expectedBytes int64) (dismantleRescueStats, error) {
+	input, err := os.Open(localPath)
+	if err != nil {
+		return dismantleRescueStats{}, err
+	}
+	defer input.Close()
+	gzipReader, err := gzip.NewReader(input)
+	if err != nil {
+		return dismantleRescueStats{}, fmt.Errorf("rescue gzip validation failed: %w", err)
+	}
+	defer gzipReader.Close()
+	tarReader := tar.NewReader(gzipReader)
+	stats := dismantleRescueStats{}
+	entries := int64(0)
+	const driveSegment = "/files/srv/text-node-assistant/drive-data"
+	for {
+		header, nextErr := tarReader.Next()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			return dismantleRescueStats{}, fmt.Errorf("rescue tar validation failed: %w", nextErr)
+		}
+		entries++
+		name := "/" + strings.TrimPrefix(filepath.ToSlash(header.Name), "/")
+		index := strings.Index(name, driveSegment)
+		if index < 0 {
+			continue
+		}
+		remainder := strings.TrimPrefix(name[index+len(driveSegment):], "/")
+		stats.DriveRootSeen = true
+		if remainder != "" && (header.Typeflag == tar.TypeReg || header.Typeflag == tar.TypeRegA) {
+			stats.DriveFiles++
+			stats.DriveBytes += header.Size
+		}
+	}
+	if entries == 0 {
+		return dismantleRescueStats{}, errors.New("rescue archive contains no entries")
+	}
+	if requireDrive {
+		if !stats.DriveRootSeen {
+			return dismantleRescueStats{}, errors.New("rescue archive is missing the mandatory drive-data root")
+		}
+		if stats.DriveFiles != expectedFiles || stats.DriveBytes != expectedBytes {
+			return dismantleRescueStats{}, fmt.Errorf("drive-data inventory mismatch: archive files=%d bytes=%d, remote plan files=%d bytes=%d", stats.DriveFiles, stats.DriveBytes, expectedFiles, expectedBytes)
+		}
+	}
+	return stats, nil
+}
+
 func (a *App) dismantleManagedNode() error {
 	c, err := a.readyConn()
 	if err != nil {
@@ -399,39 +548,100 @@ func (a *App) dismantleManagedNode() error {
 	if err := a.ensureToolkit(c); err != nil {
 		return err
 	}
-	plan := a.rootCapture(c, "bash "+remoteRoot+"/linux/22-dismantle-managed-node.sh --plan")
+	identity, err := a.fetchNodeIdentity(c)
+	if err != nil {
+		return fmt.Errorf(a.msg("无法读取稳定 NODE_ID；为避免全拆后失去节点归属证据，本次拒绝拆除：%w", "The stable NODE_ID could not be read. Dismantling is blocked so node-ownership evidence is not lost after a full restore: %w"), err)
+	}
+	if err := a.requireLocalAdminReauthentication(
+		"“拆除施工和恢复基线”属于高风险操作，必须再次验证本机 admin；密码只在本机校验。",
+		"Dismantling and baseline restore is high risk and requires local-admin reauthentication; the password is verified only on this device.",
+	); err != nil {
+		return err
+	}
+	statusResult := a.rootCapture(c, "bash "+remoteRoot+"/linux/22-dismantle-managed-node.sh --status")
+	if !statusResult.OK() || !strings.Contains(statusResult.Stdout, "TNA_DISMANTLE_STATUS_BEGIN") || !strings.Contains(statusResult.Stdout, "TNA_DISMANTLE_STATUS_END") {
+		return fmt.Errorf("dismantle status failed (exit %d): %s", statusResult.ExitCode, processFailureDetail(statusResult))
+	}
+	status := parseKV(statusResult.Stdout)
+	legal := status["LEGAL_ACTIONS"]
+	var mode, planArg, executeArg, exactConfirmation string
+	switch legal {
+	case "PROXY_ONLY,FULL_BASELINE":
+		a.println(a.msg("当前检测到：代理施工和强制网盘均存在。此状态禁止单独拆网盘。", "Detected: both the managed proxy and mandatory drive are present. Drive-only removal is forbidden in this state."))
+		a.println(a.msg("[1] 仅拆除代理施工（保留网盘、文件、账号、设备、SSH 和工具包）", "[1] Remove only the managed proxy (preserve drive, files, accounts, devices, SSH, and toolkit)"))
+		a.println(a.msg("[2] 整体拆除全部 TNA 施工并恢复原始基线", "[2] Remove all TNA construction and restore the original baseline"))
+		a.println(a.msg("[0] 取消", "[0] Cancel"))
+		switch strings.TrimSpace(a.prompt(a.msg("请选择拆除模式", "Choose a removal mode"))) {
+		case "1":
+			mode, planArg, executeArg, exactConfirmation = "PROXY_ONLY", "proxy-only", "--execute-proxy-only", "REMOVE PROXY KEEP DRIVE"
+		case "2":
+			mode, planArg, executeArg, exactConfirmation = "FULL_BASELINE", "full", "--execute-full", "RESTORE ORIGINAL"
+		default:
+			a.println(a.msg("已取消；远端未修改。", "Cancelled; the remote was not changed."))
+			return nil
+		}
+	case "REMAINING_DRIVE":
+		a.println(a.msg("当前检测到：代理已完整拆除，仅保留强制网盘。", "Detected: the proxy has been fully removed and only the mandatory drive remains."))
+		a.println(a.msg("[1] 拆除剩余网盘和 TNA 管理施工，恢复原始基线", "[1] Remove the remaining drive and TNA management layer, then restore the original baseline"))
+		a.println(a.msg("[0] 取消", "[0] Cancel"))
+		if strings.TrimSpace(a.prompt(a.msg("请选择", "Choose"))) != "1" {
+			a.println(a.msg("已取消；远端未修改。", "Cancelled; the remote was not changed."))
+			return nil
+		}
+		mode, planArg, executeArg, exactConfirmation = "REMAINING_DRIVE", "remaining-drive", "--execute-remaining-drive", "RESTORE ORIGINAL"
+	case "NONE":
+		a.println(a.msg("没有检测到 TNA 受管施工；没有可执行的拆除动作。", "No TNA-managed construction was detected; there is nothing to dismantle."))
+		return nil
+	case "RECOVER_IN_MENU_1":
+		return errors.New(a.msg("检测到拆除中断或受管组件漂移；请先运行菜单 [1]，由唯一安装入口生成并执行恢复计划。", "An interrupted removal or managed-component drift was detected. Run menu [1] first so the only install entry can build and execute a recovery plan."))
+	default:
+		return fmt.Errorf("unsupported dismantle state: lifecycle=%s proxy=%s drive=%s legal=%s", status["NODE_LIFECYCLE_STATE"], status["PROXY_PRESENT"], status["DRIVE_PRESENT"], legal)
+	}
+
+	plan := a.rootCapture(c, "bash "+remoteRoot+"/linux/22-dismantle-managed-node.sh --plan "+shQuote(planArg))
 	if !plan.OK() {
 		return fmt.Errorf("dismantle plan failed (exit %d): %s", plan.ExitCode, processFailureDetail(plan))
 	}
-	if !strings.Contains(plan.Stdout, "PNA_DISMANTLE_PLAN_BEGIN\n") || !strings.Contains(plan.Stdout, "PNA_DISMANTLE_PLAN_END") {
+	if !strings.Contains(plan.Stdout, "TNA_DISMANTLE_PLAN_BEGIN\n") || !strings.Contains(plan.Stdout, "TNA_DISMANTLE_PLAN_END") {
 		return errors.New(a.msg("远端没有返回完整拆除计划；拒绝继续。", "The remote did not return a complete dismantle plan; refusing to continue."))
 	}
 	a.println(strings.TrimSpace(plan.Stdout))
-	a.println(a.msg(
-		"高风险操作：程序会先在 Windows 下载一份校验过的完整救援包，再拆除本工具管理的节点栈、网站、证书、WARP、性能配置、流量组件、远端工具与备份。SSH 配置、当前登录 key、22 端口和共享系统基础包保留。",
-		"HIGH RISK: a verified full rescue archive is downloaded to Windows first. The tool then removes its managed node stack, cover site, certificate, WARP, performance settings, traffic component, remote toolkit, and backups. SSH configuration, the current login key, port 22, and shared system base packages are preserved.",
-	))
-	confirmation := strings.TrimSpace(a.prompt(a.msg("确认全量拆除请输入大写 RESTORE ORIGINAL", "Type uppercase RESTORE ORIGINAL to confirm full dismantling")))
-	if confirmation != "RESTORE ORIGINAL" {
+	if mode == "PROXY_ONLY" {
+		a.println(a.msg("本操作只撤销代理线路；网盘服务、全部文件、空间 ID、普通账号、加密托管、受信设备、SSH 和工具包必须原样保留。", "This removes only the proxy routes. The drive service, every file, space IDs, ordinary accounts, encrypted escrow, trusted devices, SSH, and toolkit must remain unchanged."))
+	} else {
+		a.println(fmt.Sprintf(a.msg("整体拆除会永久删除 VPS 上的网盘文件卷：%s（文件 %s 个，合计 %s 字节）。程序会先把完整救援包下载到 Windows 并逐项复核。", "Full removal permanently deletes the VPS drive volume %s (%s files, %s bytes). A full rescue is downloaded to Windows and independently checked first."), planArgValue(plan.Stdout, "DRIVE_DATA_ROOT"), planArgValue(plan.Stdout, "DRIVE_FILE_COUNT"), planArgValue(plan.Stdout, "DRIVE_DATA_BYTES")))
+	}
+	confirmation := strings.TrimSpace(a.prompt(fmt.Sprintf(a.msg("确认继续请输入大写 %s", "Type uppercase %s to continue"), exactConfirmation)))
+	if confirmation != exactConfirmation {
 		a.println(a.msg("已取消；没有创建备份或修改远端。", "Cancelled; no backup was created and the remote was not changed."))
 		return nil
 	}
 	legacy := strings.Contains(plan.Stdout, "RESTORE_GRADE=LEGACY_UNCERTAIN")
 	if legacy {
-		a.println(a.msg("该节点由旧版施工，缺少施工前基线；只能执行有边界的 legacy 全拆，不能声称逐字节还原。", "This node was built by an older release and has no pre-install baseline. Only bounded legacy full removal is possible; byte-for-byte restoration cannot be claimed."))
-		legacyConfirmation := strings.TrimSpace(a.prompt(a.msg("接受该限制请输入大写 LEGACY FULL RESTORE", "Type uppercase LEGACY FULL RESTORE to accept this limitation")))
-		if legacyConfirmation != "LEGACY FULL RESTORE" {
+		legacyPhrase := "LEGACY FULL RESTORE"
+		if mode == "PROXY_ONLY" {
+			legacyPhrase = "LEGACY PROXY ONLY"
+			a.println(a.msg("该旧节点缺少施工前逐文件基线；仅拆代理将只删除有 TNA 归属证据的资源，并保留无法证明归属的共享配置。", "This legacy node lacks a file-level pre-install baseline. Proxy-only removal deletes only resources with TNA ownership evidence and preserves ambiguous shared configuration."))
+		} else {
+			a.println(a.msg("该节点由旧版施工，缺少施工前基线；只能执行有边界的 legacy 全拆，不能声称逐字节还原。", "This node was built by an older release and has no pre-install baseline. Only bounded legacy full removal is possible; byte-for-byte restoration cannot be claimed."))
+		}
+		legacyConfirmation := strings.TrimSpace(a.prompt(fmt.Sprintf(a.msg("接受该限制请输入大写 %s", "Type uppercase %s to accept this limitation"), legacyPhrase)))
+		if legacyConfirmation != legacyPhrase {
 			a.println(a.msg("已取消；远端保持不变。", "Cancelled; the remote was left unchanged."))
 			return nil
 		}
 	}
 
-	a.println(a.msg("正在创建拆除前完整救援包…", "Creating the full pre-dismantle rescue archive..."))
-	backup := a.rootCapture(c, "bash "+remoteRoot+"/linux/01-safe-backup.sh")
+	backupMode := "--config-only"
+	if mode != "PROXY_ONLY" {
+		backupMode = "--full"
+	}
+	a.println(a.msg("正在创建拆除前救援包…", "Creating the pre-dismantle rescue archive..."))
+	backup := a.rootCapture(c, "bash "+remoteRoot+"/linux/01-safe-backup.sh "+backupMode)
 	if !backup.OK() || !strings.Contains(backup.Stdout, "BACKUP_OK\n") {
 		return fmt.Errorf("pre-dismantle backup failed (exit %d): %s", backup.ExitCode, processFailureDetail(backup))
 	}
-	archivePattern := regexp.MustCompile(`/root/proxy-node-backup-[0-9]{8}-[0-9]{6}\.tar\.gz`)
+	archivePattern := regexp.MustCompile(`/root/text-node(?:-config)?-backup-[0-9]{8}-[0-9]{6}\.tar\.gz`)
 	remoteArchive := archivePattern.FindString(backup.Stdout)
 	if remoteArchive == "" {
 		return errors.New(a.msg("备份返回成功，但没有识别到安全归档路径；拒绝拆除。", "The backup reported success but no safe archive path was recognized; refusing to dismantle."))
@@ -440,29 +650,73 @@ func (a *App) dismantleManagedNode() error {
 	if err != nil {
 		return fmt.Errorf(a.msg("救援包未能下载并通过 SHA-256 校验；拒绝拆除：%w", "The rescue archive could not be downloaded and SHA-256 verified; refusing to dismantle: %w"), err)
 	}
-	a.println(a.msg("救援包已下载并通过 SHA-256 校验：", "The rescue archive was downloaded and SHA-256 verified:") + " " + localArchive)
-
-	command := "PNA_DISMANTLE_CONFIRM=RESTORE_ORIGINAL"
-	if legacy {
-		command += " PNA_LEGACY_FULL=1"
+	expectedFiles, filesErr := strconv.ParseInt(planArgValue(plan.Stdout, "DRIVE_FILE_COUNT"), 10, 64)
+	expectedBytes, bytesErr := strconv.ParseInt(planArgValue(plan.Stdout, "DRIVE_DATA_BYTES"), 10, 64)
+	if filesErr != nil || bytesErr != nil || expectedFiles < 0 || expectedBytes < 0 {
+		return fmt.Errorf("dismantle plan returned an invalid drive inventory; rescue=%s", localArchive)
 	}
-	command += " bash " + remoteRoot + "/linux/22-dismantle-managed-node.sh --execute"
+	archiveStats, err := verifyDismantleRescueContents(localArchive, mode != "PROXY_ONLY", expectedFiles, expectedBytes)
+	if err != nil {
+		return fmt.Errorf(a.msg("救援包内容复核失败；拒绝拆除，文件保留在 %s：%w", "Rescue-content verification failed; dismantling is blocked and the archive remains at %s: %w"), localArchive, err)
+	}
+	rescueSHA, err := fileSHA256(localArchive)
+	if err != nil {
+		return fmt.Errorf("local rescue checksum readback failed: %w", err)
+	}
+	rescueInfo, err := os.Stat(localArchive)
+	if err != nil || rescueInfo.Size() < 1 {
+		return fmt.Errorf("local rescue file metadata readback failed: %w", err)
+	}
+	a.println(fmt.Sprintf(a.msg("救援包已通过 SHA-256 和内容清单校验：%s（网盘文件 %d 个、%d 字节）", "The rescue passed SHA-256 and content-inventory checks: %s (drive files=%d, bytes=%d)"), localArchive, archiveStats.DriveFiles, archiveStats.DriveBytes))
+
+	command := "TNA_DISMANTLE_CONFIRM=" + shQuote(strings.ReplaceAll(exactConfirmation, " ", "_"))
+	if mode == "PROXY_ONLY" {
+		command = "TNA_DISMANTLE_CONFIRM=REMOVE_PROXY_KEEP_DRIVE"
+	} else {
+		command = "TNA_DISMANTLE_CONFIRM=RESTORE_ORIGINAL TNA_DATA_EXPORT_VERIFIED=1"
+	}
+	if legacy {
+		command += " TNA_LEGACY_FULL=1"
+	}
+	command += " bash " + remoteRoot + "/linux/22-dismantle-managed-node.sh " + executeArg
 	result := a.runRootInteractive(c, command)
 	if !result.OK() {
 		return fmt.Errorf(a.msg("远端拆除失败（状态 %d）；Windows 救援包保留在 %s：%s", "Remote dismantling failed (exit %d); the Windows rescue remains at %s: %s"), result.ExitCode, localArchive, processFailureDetail(result))
 	}
-	for _, marker := range []string{"PNA_DISMANTLE_BEGIN", "SSH_ACCESS_PRESERVED=1", "PRESERVED_SHARED_BASE_PACKAGES=1", "PNA_DISMANTLE_END"} {
+	for _, marker := range []string{"TNA_DISMANTLE_BEGIN", "SSH_ACCESS_PRESERVED=1", "PRESERVED_SHARED_BASE_PACKAGES=1", "TNA_DISMANTLE_END"} {
 		if !strings.Contains(result.Stdout, marker) {
 			return fmt.Errorf("remote dismantle returned success but marker %s is missing; rescue=%s", marker, localArchive)
 		}
 	}
-	verify := a.rootCapture(c, "set -e; test ! -e /opt/proxy-runbook-current; test ! -e /etc/proxy-runbook; test ! -e /root/.config/proxy-runbook; printf 'PNA_POST_DISMANTLE_VERIFY_OK\\n'")
-	if !verify.OK() || !strings.Contains(verify.Stdout, "PNA_POST_DISMANTLE_VERIFY_OK") {
-		return fmt.Errorf(a.msg("拆除脚本已结束，但独立复核失败；救援包位于 %s", "The dismantle script ended, but independent verification failed; rescue archive: %s"), localArchive)
+	verifyCommand := "set -e; test ! -e /opt/text-node-assistant-current; test ! -e /etc/text-node-assistant; test ! -e /root/.config/text-node-assistant; printf 'TNA_POST_DISMANTLE_VERIFY_OK\\n'"
+	if mode == "PROXY_ONLY" {
+		verifyCommand = "set -e; out=$(bash " + remoteRoot + "/linux/22-dismantle-managed-node.sh --status); printf '%s\\n' \"$out\"; grep -Fqx 'PROXY_PRESENT=0' <<<\"$out\"; grep -Fqx 'DRIVE_PRESENT=1' <<<\"$out\"; grep -Fqx 'NODE_LIFECYCLE_STATE=PROXY_REMOVED_DRIVE_RETAINED' <<<\"$out\"; systemctl is-active --quiet text-node-assistant-copyparty; printf 'TNA_POST_DISMANTLE_VERIFY_OK\\n'"
 	}
-	a.println(a.msg("全量拆除完成并独立复核通过。SSH 登录能力保留；重新部署只能运行菜单 [1]。", "Full dismantling completed and passed independent verification. SSH access was preserved; use menu [1] as the only reinstall entry."))
+	verify := a.rootCapture(c, verifyCommand)
+	verified := verify.OK() && strings.Contains(verify.Stdout, "TNA_POST_DISMANTLE_VERIFY_OK")
+	receipt := newDismantleReceipt(identity, c, mode, plan.Stdout, result.Stdout, localArchive, rescueSHA, rescueInfo.Size(), archiveStats.DriveFiles, archiveStats.DriveBytes, verified)
+	receiptPath, receiptErr := writeDismantleReceipt(receipt)
+	if !verified {
+		if receiptErr != nil {
+			return fmt.Errorf(a.msg("拆除脚本已结束，但独立复核和本地失败回执写入均失败；救援包位于 %s；回执错误：%v", "The dismantle script ended, but independent verification and the local failure receipt both failed; rescue archive: %s; receipt error: %v"), localArchive, receiptErr)
+		}
+		return fmt.Errorf(a.msg("拆除脚本已结束，但独立复核失败；救援包位于 %s；失败回执位于 %s", "The dismantle script ended, but independent verification failed; rescue archive: %s; failure receipt: %s"), localArchive, receiptPath)
+	}
+	if receiptErr != nil {
+		return fmt.Errorf(a.msg("远端拆除及独立复核均已完成，但本机结构化回执写入失败；救援包位于 %s：%w", "Remote dismantling and independent verification completed, but the local structured receipt could not be written; rescue archive: %s: %w"), localArchive, receiptErr)
+	}
+	if mode == "PROXY_ONLY" {
+		a.println(a.msg("仅代理拆除完成并独立复核通过：网盘、文件、账号、设备和 SSH 保留；普通注册已关闭。需要恢复代理时只运行菜单 [1]。", "Proxy-only removal completed and passed independent verification: drive, files, accounts, devices, and SSH were preserved; ordinary registration is disabled. Use menu [1] to restore a proxy."))
+	} else {
+		a.println(a.msg("整体拆除完成并独立复核通过。SSH 恢复能力和本地救援包保留；重新施工只能运行菜单 [1]。", "Full dismantling completed and passed independent verification. SSH recovery access and the local rescue archive were preserved; use menu [1] as the only reinstall entry."))
+	}
 	a.println(a.msg("本地救援包：", "Local rescue archive:") + " " + localArchive)
+	a.println(a.msg("本地拆除回执（不含秘密）：", "Local dismantle receipt (secret-free):") + " " + receiptPath)
 	return nil
+}
+
+func planArgValue(output, key string) string {
+	return parseKV(output)[key]
 }
 
 func (a *App) openPanel() error {
@@ -679,7 +933,7 @@ func (a *App) showHandoff() error {
 }
 
 func (a *App) runtimePublicEnv(c Connection) (map[string]string, error) {
-	result := a.rootCapture(c, "cat /etc/proxy-runbook/public.env 2>/dev/null || true")
+	result := a.rootCapture(c, "cat /etc/text-node-assistant/public.env 2>/dev/null || true")
 	if !result.OK() {
 		return nil, fmt.Errorf("runtime metadata fetch failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}
@@ -702,7 +956,7 @@ func (a *App) optimizeCover() error {
 	if !validDomain(domain) {
 		return errors.New(a.msg("当前 VPS 没有有效的 cover domain 运行态；请执行 [1] 并由本人输入域名和邮箱。", "This VPS has no valid runtime cover domain; run [1] and enter the domain/email yourself."))
 	}
-	custom := a.rootCapture(c, "if [ -f /var/www/cover/index.html ] && [ ! -f /var/www/cover/.proxy-runbook-cover ] && ! grep -qE 'This site is online|<h1>Welcome</h1>' /var/www/cover/index.html; then printf YES; else printf NO; fi")
+	custom := a.rootCapture(c, "if [ -f /var/www/cover/index.html ] && [ ! -f /var/www/cover/.text-node-assistant-cover ] && ! grep -qE 'This site is online|<h1>Welcome</h1>' /var/www/cover/index.html; then printf YES; else printf NO; fi")
 	replace := false
 	if custom.OK() && strings.TrimSpace(custom.Stdout) == "YES" {
 		a.println(a.msg("检测到自定义网站；默认不会覆盖。", "A custom website was detected and is preserved by default."))
@@ -785,7 +1039,7 @@ func (a *App) pruneBackupsAndBackupCurrentConfigWithConn(c Connection, requireTy
 			return fmt.Errorf("remote cleanup returned success but marker %s is missing", marker)
 		}
 	}
-	archivePattern := regexp.MustCompile(`/root/proxy-node-current-config-[0-9]{8}-[0-9]{6}\.tar\.gz`)
+	archivePattern := regexp.MustCompile(`/root/text-node-current-config-[0-9]{8}-[0-9]{6}\.tar\.gz`)
 	archive := archivePattern.FindString(result.Stdout)
 	if archive == "" {
 		return errors.New(a.msg("清理完成标记存在，但没有识别到唯一当前配置备份路径。", "Cleanup markers were present, but the current-config archive path was not recognized."))
@@ -813,7 +1067,7 @@ func (a *App) emergencyReport() error {
 		return errors.New(a.msg("没有识别到远端报告路径。", "The remote report path was not recognized."))
 	}
 	stamp := time.Now().Format("20060102-150405")
-	tmpPath := "/tmp/proxy-node-assistant-report-" + stamp + ".txt"
+	tmpPath := "/tmp/text-node-assistant-report-" + stamp + ".txt"
 	prepare := "cp " + shQuote(remotePath) + " " + shQuote(tmpPath) + "; chown " + shQuote(c.User) + " " + shQuote(tmpPath) + "; chmod 600 " + shQuote(tmpPath)
 	prepared := a.rootCapture(c, prepare)
 	if !prepared.OK() {
@@ -823,7 +1077,7 @@ func (a *App) emergencyReport() error {
 	if err != nil {
 		return err
 	}
-	downloadDir := filepath.Join(home, "Downloads", "ProxyNodeAssistant-Reports")
+	downloadDir := filepath.Join(home, "Downloads", "TextNodeAssistant-Reports")
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
 		return err
 	}
@@ -859,7 +1113,7 @@ func (a *App) rotateSSHKey() error {
 	}
 	stamp := time.Now().Format("20060102-150405")
 	newPath := c.KeyPath + ".new-" + stamp
-	if err := generateKey(newPath, "proxy-node-assistant-rotated"); err != nil {
+	if err := generateKey(newPath, "text-node-assistant-rotated"); err != nil {
 		return err
 	}
 	authKey := c.KeyPath

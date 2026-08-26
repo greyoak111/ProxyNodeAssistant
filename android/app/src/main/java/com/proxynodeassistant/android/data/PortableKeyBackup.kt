@@ -13,7 +13,8 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 object PortableKeyBackup {
-    private val magic = byteArrayOf(0x50, 0x4e, 0x41, 0x4b, 0x31) // PNAK1
+    private val magic = byteArrayOf(0x54, 0x4e, 0x41, 0x4b, 0x32) // TNAK2
+    private val legacyMagic = byteArrayOf(0x50, 0x4e, 0x41, 0x4b, 0x31) // PNAK1 read-only compatibility
     private const val iterations = 250_000
 
     fun export(records: List<ManagedKeyRecord>, passphrase: CharArray): ByteArray {
@@ -50,15 +51,19 @@ object PortableKeyBackup {
     fun import(payload: ByteArray, passphrase: CharArray): List<ManagedKeyRecord> {
         require(payload.size in 64..5_000_000) { "Invalid key backup size" }
         require(passphrase.size >= 12) { "Backup passphrase must be at least 12 characters" }
-        require(payload.copyOfRange(0, magic.size).contentEquals(magic)) { "This is not a PNA encrypted key backup" }
-        val salt = payload.copyOfRange(magic.size, magic.size + 16)
-        val iv = payload.copyOfRange(magic.size + 16, magic.size + 28)
-        val ciphertext = payload.copyOfRange(magic.size + 28, payload.size)
+        val acceptedMagic = when {
+            payload.copyOfRange(0, magic.size).contentEquals(magic) -> magic
+            payload.copyOfRange(0, legacyMagic.size).contentEquals(legacyMagic) -> legacyMagic
+            else -> error("This is not a TNA encrypted key backup")
+        }
+        val salt = payload.copyOfRange(acceptedMagic.size, acceptedMagic.size + 16)
+        val iv = payload.copyOfRange(acceptedMagic.size + 16, acceptedMagic.size + 28)
+        val ciphertext = payload.copyOfRange(acceptedMagic.size + 28, payload.size)
         val key = derive(passphrase, salt)
         val plaintext = try {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
-            cipher.updateAAD(magic)
+            cipher.updateAAD(acceptedMagic)
             cipher.doFinal(ciphertext)
         } catch (error: Throwable) {
             throw IllegalArgumentException("Wrong passphrase or damaged key backup", error)

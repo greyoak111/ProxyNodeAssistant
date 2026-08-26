@@ -78,7 +78,7 @@ func runCaptured(name string, args []string, stdin []byte, hidden bool) ProcessR
 
 func runStreaming(name string, args []string, stdin io.Reader, hidden bool) ProcessResult {
 	cmd := exec.Command(managedCommandPath(name), args...)
-	if hidden || os.Getenv("PNA_GUI_MODE") == "1" {
+	if hidden || guiModeEnabled() {
 		hideChildWindow(cmd)
 	}
 	var stdout, stderr bytes.Buffer
@@ -100,7 +100,7 @@ func runStreaming(name string, args []string, stdin io.Reader, hidden bool) Proc
 // mode continues to inherit its caller's standard streams.
 func runInteractiveSSH(name string, args []string) ProcessResult {
 	cmd := exec.Command(managedCommandPath(name), args...)
-	if os.Getenv("PNA_GUI_MODE") == "1" {
+	if guiModeEnabled() {
 		hideChildWindow(cmd)
 	}
 	cmd.Stdin = os.Stdin

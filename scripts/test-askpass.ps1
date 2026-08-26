@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $resolved = (Resolve-Path -LiteralPath $AskPassExe).Path
-$pipe = "PNA-ASKPASS-SMOKE-" + [Guid]::NewGuid().ToString("N")
+$pipe = "TNA-ASKPASS-SMOKE-" + [Guid]::NewGuid().ToString("N")
 $job = Start-Job -ScriptBlock {
     param($PipeName)
     $server = [IO.Pipes.NamedPipeServerStream]::new($PipeName, [IO.Pipes.PipeDirection]::InOut, 1, [IO.Pipes.PipeTransmissionMode]::Byte)
@@ -29,7 +29,7 @@ try {
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
-    $start.EnvironmentVariables["PNA_ASKPASS_PIPE"] = $pipe
+    $start.EnvironmentVariables["TNA_ASKPASS_PIPE"] = $pipe
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     [void]$process.Start()

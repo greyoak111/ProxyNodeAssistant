@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Proxy Node Assistant</string>
+    <string name="app_name">TextNodeAssistant</string>
     <string name="tunnel_channel">Panel SSH tunnel</string>
     <string name="tunnel_running">3x-ui panel tunnel is active</string>
     <string name="tunnel_stop">Close tunnel</string>

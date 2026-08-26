@@ -92,7 +92,7 @@ func pinnedHostKeyLines(keys, fingerprint string) ([]string, error) {
 }
 
 func parseIPRebindPreflight(stdout string) (ipRebindContext, error) {
-	block, err := extractMarkerBlock(stdout, "__PNA_IP_REBIND_PREFLIGHT_V1_BEGIN__", "__PNA_IP_REBIND_PREFLIGHT_V1_END__")
+	block, err := extractMarkerBlockCurrentOrLegacy(stdout, "__TNA_IP_REBIND_PREFLIGHT_V1_BEGIN__", "__TNA_IP_REBIND_PREFLIGHT_V1_END__", "__PNA_IP_REBIND_PREFLIGHT_V1_BEGIN__", "__PNA_IP_REBIND_PREFLIGHT_V1_END__")
 	if err != nil {
 		return ipRebindContext{}, err
 	}

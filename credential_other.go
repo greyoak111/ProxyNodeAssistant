@@ -2,10 +2,6 @@
 
 package main
 
-import "errors"
-
-var errCredentialManagerUnsupported = errors.New("Windows Credential Manager is unavailable on this platform")
-
 func credentialWrite(target, userName, secret string) error {
 	return errCredentialManagerUnsupported
 }

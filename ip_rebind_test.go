@@ -39,7 +39,7 @@ func TestPinnedHostKeyLinesRequireExactOldFingerprint(t *testing.T) {
 
 func TestIPRebindPreflightProtocolIsStrict(t *testing.T) {
 	valid := `noise
-__PNA_IP_REBIND_PREFLIGHT_V1_BEGIN__
+__TNA_IP_REBIND_PREFLIGHT_V1_BEGIN__
 IP_REBIND_STATUS=IP_REBIND_PREPARED
 OLD_IP=8.8.8.8
 NEW_IP=1.1.1.1
@@ -54,7 +54,7 @@ ACTIVE_MODE=ACTIVE_DIRECT
 SNAPSHOT_CREATED=1
 DNS_MUTATED=0
 CLOUDFLARE_MUTATION=NONE
-__PNA_IP_REBIND_PREFLIGHT_V1_END__
+__TNA_IP_REBIND_PREFLIGHT_V1_END__
 `
 	ctx, err := parseIPRebindPreflight(valid)
 	if err != nil || ctx.NewIP != "1.1.1.1" || ctx.Mode != "direct-reality" {
@@ -71,7 +71,7 @@ __PNA_IP_REBIND_PREFLIGHT_V1_END__
 func TestManagedKeyMetadataV2PreservesStableRebindIdentity(t *testing.T) {
 	want := managedKeyMetadata{
 		Host: "8.8.8.8", User: "root", Port: 22, Status: "BOUND", UpdatedAt: time.Unix(42, 0).UTC(),
-		NodeID: "pna-node-0123456789abcdef0123456789abcdef", ServerID: "pna-srv-0123456789abcdef0123456789abcdef",
+		NodeID: "tna-node-0123456789abcdef0123456789abcdef", ServerID: "tna-srv-0123456789abcdef0123456789abcdef",
 		HostKeySHA256: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", MachineIDHash: strings.Repeat("a", 64),
 		FirstKnownPublic: "8.8.8.8", CurrentPublic: "1.1.1.1", SSHAuthKeyID: "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
 	}

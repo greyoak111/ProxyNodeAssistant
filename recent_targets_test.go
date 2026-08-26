@@ -25,7 +25,7 @@ func TestRecentTargetsParseNormalizeAndCap(t *testing.T) {
 
 func TestRecentTargetsRememberDeleteAndClear(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "recent-targets.tsv")
-	t.Setenv("PNA_HISTORY_PATH", path)
+	t.Setenv("TNA_HISTORY_PATH", path)
 	first := RecentTarget{Host: "192.0.2.20", User: "root", Port: 22}
 	second := RecentTarget{Host: "node.example", User: "ubuntu", Port: 2222}
 	if err := rememberRecentTarget(first); err != nil {

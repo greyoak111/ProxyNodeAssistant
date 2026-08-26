@@ -11,16 +11,27 @@ import (
 )
 
 const (
-	handoffBegin = "__PNA_HANDOFF_BEGIN__"
-	handoffEnd   = "__PNA_HANDOFF_END__"
-	panelBegin   = "__PNA_PANEL_META_BEGIN__"
-	panelEnd     = "__PNA_PANEL_META_END__"
-	statusBegin  = "__PNA_RUN_STATUS_BEGIN__"
-	statusEnd    = "__PNA_RUN_STATUS_END__"
-	diagBegin    = "__PNA_DIAG_V1_BEGIN__"
-	diagEnd      = "__PNA_DIAG_V1_END__"
-	toolkitBegin = "__PNA_TOOLKIT_PROBE_BEGIN__"
-	toolkitEnd   = "__PNA_TOOLKIT_PROBE_END__"
+	handoffBegin = "__TNA_HANDOFF_BEGIN__"
+	handoffEnd   = "__TNA_HANDOFF_END__"
+	panelBegin   = "__TNA_PANEL_META_BEGIN__"
+	panelEnd     = "__TNA_PANEL_META_END__"
+	statusBegin  = "__TNA_RUN_STATUS_BEGIN__"
+	statusEnd    = "__TNA_RUN_STATUS_END__"
+	diagBegin    = "__TNA_DIAG_V1_BEGIN__"
+	diagEnd      = "__TNA_DIAG_V1_END__"
+	toolkitBegin = "__TNA_TOOLKIT_PROBE_BEGIN__"
+	toolkitEnd   = "__TNA_TOOLKIT_PROBE_END__"
+
+	legacyHandoffBegin = "__PNA_HANDOFF_BEGIN__"
+	legacyHandoffEnd   = "__PNA_HANDOFF_END__"
+	legacyPanelBegin   = "__PNA_PANEL_META_BEGIN__"
+	legacyPanelEnd     = "__PNA_PANEL_META_END__"
+	legacyStatusBegin  = "__PNA_RUN_STATUS_BEGIN__"
+	legacyStatusEnd    = "__PNA_RUN_STATUS_END__"
+	legacyDiagBegin    = "__PNA_DIAG_V1_BEGIN__"
+	legacyDiagEnd      = "__PNA_DIAG_V1_END__"
+	legacyToolkitBegin = "__PNA_TOOLKIT_PROBE_BEGIN__"
+	legacyToolkitEnd   = "__PNA_TOOLKIT_PROBE_END__"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
@@ -53,9 +64,9 @@ func validateCDNXHTTPProfile(profile CDNXHTTPLink) error {
 	if !xhttpPathPattern.MatchString(profile.Path) {
 		return errors.New("CDN XHTTP link path must be / plus 32 lowercase hex characters plus /")
 	}
-	expectedLabel := "PNA-CDN-XHTTP"
+	expectedLabel := "TNA-CDN-XHTTP"
 	if profile.Port == 8443 {
-		expectedLabel = "PNA-CDN-XHTTP-STAGE"
+		expectedLabel = "TNA-CDN-XHTTP-STAGE"
 	}
 	if profile.Label != expectedLabel {
 		return fmt.Errorf("CDN XHTTP link label must be %s", expectedLabel)
@@ -133,6 +144,8 @@ func parseCDNXHTTPLink(value string) (CDNXHTTPLink, error) {
 
 type ToolkitProbe struct {
 	Present       bool
+	Brand         string
+	Root          string
 	Version       string
 	BuildID       string
 	BuildRevision int
@@ -182,6 +195,18 @@ func extractMarkedBlock(stdout, begin, end string) (string, error) {
 	return result, nil
 }
 
+func extractCurrentOrLegacyBlock(stdout, begin, end, legacyBegin, legacyEnd string) (string, error) {
+	payload, err := extractMarkedBlock(stdout, begin, end)
+	if err == nil {
+		return payload, nil
+	}
+	legacyPayload, legacyErr := extractMarkedBlock(stdout, legacyBegin, legacyEnd)
+	if legacyErr == nil {
+		return legacyPayload, nil
+	}
+	return "", err
+}
+
 func parseKV(value string) map[string]string {
 	result := make(map[string]string)
 	for _, raw := range strings.Split(strings.ReplaceAll(value, "\r\n", "\n"), "\n") {
@@ -202,7 +227,7 @@ func parseKV(value string) map[string]string {
 }
 
 func validateHandoff(stdout string) (string, error) {
-	payload, err := extractMarkedBlock(stdout, handoffBegin, handoffEnd)
+	payload, err := extractCurrentOrLegacyBlock(stdout, handoffBegin, handoffEnd, legacyHandoffBegin, legacyHandoffEnd)
 	if err != nil {
 		return "", fmt.Errorf("credential handoff rejected: %w", err)
 	}
@@ -230,7 +255,7 @@ type PanelMetadata struct {
 }
 
 func parsePanelMetadata(stdout string) (PanelMetadata, error) {
-	payload, err := extractMarkedBlock(stdout, panelBegin, panelEnd)
+	payload, err := extractCurrentOrLegacyBlock(stdout, panelBegin, panelEnd, legacyPanelBegin, legacyPanelEnd)
 	if err != nil {
 		return PanelMetadata{}, fmt.Errorf("panel metadata rejected: %w", err)
 	}
@@ -268,7 +293,7 @@ func normalizePanelPath(value string) (string, error) {
 }
 
 func parseRunStatus(stdout string) (map[string]string, error) {
-	payload, err := extractMarkedBlock(stdout, statusBegin, statusEnd)
+	payload, err := extractCurrentOrLegacyBlock(stdout, statusBegin, statusEnd, legacyStatusBegin, legacyStatusEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +305,7 @@ func parseRunStatus(stdout string) (map[string]string, error) {
 }
 
 func parseToolkitProbe(stdout string) (ToolkitProbe, error) {
-	payload, err := extractMarkedBlock(stdout, toolkitBegin, toolkitEnd)
+	payload, err := extractCurrentOrLegacyBlock(stdout, toolkitBegin, toolkitEnd, legacyToolkitBegin, legacyToolkitEnd)
 	if err != nil {
 		return ToolkitProbe{}, fmt.Errorf("toolkit probe rejected: %w", err)
 	}
@@ -295,6 +320,20 @@ func parseToolkitProbe(stdout string) (ToolkitProbe, error) {
 	version := strings.TrimSpace(kv["TOOLKIT_VERSION"])
 	if !toolkitVersionPattern.MatchString(version) {
 		return ToolkitProbe{}, errors.New("toolkit probe rejected: invalid version")
+	}
+	brand := strings.TrimSpace(kv["TOOLKIT_BRAND"])
+	root := strings.TrimSpace(kv["TOOLKIT_ROOT"])
+	switch brand {
+	case "TNA":
+		if root != remoteRoot {
+			return ToolkitProbe{}, errors.New("toolkit probe rejected: current brand/root mismatch")
+		}
+	case "PNA_LEGACY":
+		if root != legacyRemoteRoot {
+			return ToolkitProbe{}, errors.New("toolkit probe rejected: legacy brand/root mismatch")
+		}
+	default:
+		return ToolkitProbe{}, errors.New("toolkit probe rejected: invalid brand")
 	}
 	buildID := strings.TrimSpace(kv["TOOLKIT_BUILD_ID"])
 	if buildID != "" && !toolkitBuildPattern.MatchString(buildID) {
@@ -316,7 +355,7 @@ func parseToolkitProbe(stdout string) (ToolkitProbe, error) {
 	default:
 		return ToolkitProbe{}, errors.New("toolkit probe rejected: invalid completeness flag")
 	}
-	return ToolkitProbe{Present: true, Version: strings.TrimPrefix(version, "v"), BuildID: buildID, BuildRevision: buildRevision, Complete: complete}, nil
+	return ToolkitProbe{Present: true, Brand: brand, Root: root, Version: strings.TrimPrefix(version, "v"), BuildID: buildID, BuildRevision: buildRevision, Complete: complete}, nil
 }
 
 func compareToolkitBuild(probe ToolkitProbe, localBuildID string, localRevision int) int {
@@ -408,7 +447,7 @@ func classifyToolkit(probe ToolkitProbe, localVersion string) (ToolkitRelation, 
 }
 
 func parseDiagnosticProtocol(stdout string) (DiagResult, error) {
-	payload, err := extractMarkedBlock(stdout, diagBegin, diagEnd)
+	payload, err := extractCurrentOrLegacyBlock(stdout, diagBegin, diagEnd, legacyDiagBegin, legacyDiagEnd)
 	if err != nil {
 		return DiagResult{}, fmt.Errorf("diagnostic protocol rejected: %w", err)
 	}

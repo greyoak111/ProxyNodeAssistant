@@ -2,15 +2,15 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=../runbook/proxy-runbook-v0.9.5/linux/lib-dns-quorum.sh
-. "$ROOT/runbook/proxy-runbook-v0.9.5/linux/lib-dns-quorum.sh"
+# shellcheck source=../runbook/text-node-assistant-v0.9.5/linux/lib-dns-quorum.sh
+. "$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-dns-quorum.sh"
 
 SYSTEM_ANSWERS=''
 CLOUDFLARE_ANSWERS=''
 GOOGLE_ANSWERS=''
-pna_dns_system_answers() { printf '%s\n' "$SYSTEM_ANSWERS"; }
-pna_dns_cloudflare_answers() { printf '%s\n' "$CLOUDFLARE_ANSWERS"; }
-pna_dns_google_answers() { printf '%s\n' "$GOOGLE_ANSWERS"; }
+tna_dns_system_answers() { printf '%s\n' "$SYSTEM_ANSWERS"; }
+tna_dns_cloudflare_answers() { printf '%s\n' "$CLOUDFLARE_ANSWERS"; }
+tna_dns_google_answers() { printf '%s\n' "$GOOGLE_ANSWERS"; }
 
 expected=203.0.113.10
 SYSTEM_ANSWERS="$expected"

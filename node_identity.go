@@ -22,12 +22,12 @@ type NodeIdentity struct {
 	CurrentPublicIP string
 }
 
-var serverIDPattern = regexp.MustCompile(`^pna-srv-[0-9a-f]{32}$`)
+var serverIDPattern = regexp.MustCompile(`^(?:tna|pna)-srv-[0-9a-f]{32}$`)
 var sha256FingerprintPattern = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]+$`)
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func parseNodeIdentity(stdout string) (NodeIdentity, error) {
-	block, err := extractMarkerBlock(stdout, "__PNA_NODE_IDENTITY_V1_BEGIN__", "__PNA_NODE_IDENTITY_V1_END__")
+	block, err := extractMarkerBlockCurrentOrLegacy(stdout, "__TNA_NODE_IDENTITY_V1_BEGIN__", "__TNA_NODE_IDENTITY_V1_END__", "__PNA_NODE_IDENTITY_V1_BEGIN__", "__PNA_NODE_IDENTITY_V1_END__")
 	if err != nil {
 		return NodeIdentity{}, err
 	}

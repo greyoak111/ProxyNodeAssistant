@@ -28,8 +28,8 @@ func TestDeploymentModeIsFailClosed(t *testing.T) {
 
 func TestCDNXHTTPLinkRoundTrip(t *testing.T) {
 	for _, profile := range []CDNXHTTPLink{
-		{UUID: "11111111-1111-4111-8111-111111111111", Domain: "edge.example.com", Port: 443, Path: "/0123456789abcdef0123456789abcdef/", Label: "PNA-CDN-XHTTP"},
-		{UUID: "22222222-2222-4222-8222-222222222222", Domain: "edge.example.com", Port: 8443, Path: "/fedcba9876543210fedcba9876543210/", Label: "PNA-CDN-XHTTP-STAGE"},
+		{UUID: "11111111-1111-4111-8111-111111111111", Domain: "edge.example.com", Port: 443, Path: "/0123456789abcdef0123456789abcdef/", Label: "TNA-CDN-XHTTP"},
+		{UUID: "22222222-2222-4222-8222-222222222222", Domain: "edge.example.com", Port: 8443, Path: "/fedcba9876543210fedcba9876543210/", Label: "TNA-CDN-XHTTP-STAGE"},
 	} {
 		link, err := buildCDNXHTTPLink(profile)
 		if err != nil {
@@ -46,7 +46,7 @@ func TestCDNXHTTPLinkRoundTrip(t *testing.T) {
 }
 
 func TestCDNXHTTPLinkParserRejectsDowngradesAndAmbiguity(t *testing.T) {
-	base := "vless://11111111-1111-4111-8111-111111111111@edge.example.com:443?encryption=none&security=tls&sni=edge.example.com&fp=chrome&type=xhttp&host=edge.example.com&path=%2F0123456789abcdef0123456789abcdef%2F&mode=packet-up#PNA-CDN-XHTTP"
+	base := "vless://11111111-1111-4111-8111-111111111111@edge.example.com:443?encryption=none&security=tls&sni=edge.example.com&fp=chrome&type=xhttp&host=edge.example.com&path=%2F0123456789abcdef0123456789abcdef%2F&mode=packet-up#TNA-CDN-XHTTP"
 	for _, mutation := range []string{
 		strings.Replace(base, "security=tls", "security=none", 1),
 		strings.Replace(base, "type=xhttp", "type=ws", 1),
@@ -79,19 +79,19 @@ func TestCDNXHTTPControlSurfacePromotesOnlyThroughManualCloudflareGate(t *testin
 	for path, markers := range map[string][]string{
 		"cdn_xhttp.go": {
 			"CLOUDFLARE_API_MUTATION=NONE", "verifyExternalOriginLocked",
-			"ORIGIN_RULE_443_TO_8443=PASS", "REAL BROWSE OK", "stage-local",
+			"ORIGIN_RULE_443_TO_8443=NOT_REQUIRED_CLOUDFLARE_STANDARD_PORT", "REAL BROWSE OK", "stage-local",
 		},
-		"runbook/proxy-runbook-v0.9.5/linux/04f-xhttp-cdn-api.sh": {
-			"PNA_XHTTP_ERROR=EXISTING_DOMAIN_MISMATCH", "PNA_XHTTP_ERROR=STATE_DOMAIN_MISMATCH",
+		"runbook/text-node-assistant-v0.9.5/linux/04f-xhttp-cdn-api.sh": {
+			"retarget_managed", "TNA_XHTTP_RETARGETED=1", "TNA_XHTTP_ERROR=STATE_DOMAIN_MISMATCH",
 		},
 		"android/app/src/main/java/com/proxynodeassistant/android/remote/WorkflowRunner.kt": {
 			`"22" ->`, "CDN_STAGE_SCOPE=LOCAL_ONLY", "verifyDirectOriginBlocked", "REAL BROWSE OK",
 		},
-		"runbook/proxy-runbook-v0.9.5/linux/05f-cloudflare-origin-lock.sh": {
-			"PNA-CF-XHTTP-V095-ALLOW", "DENY_OTHER_SOURCES_TCP=8443", "REALITY_443_POLICY=UNCHANGED",
+		"runbook/text-node-assistant-v0.9.5/linux/05f-cloudflare-origin-lock.sh": {
+			"TNA-CF-XHTTP-V095-ALLOW", "DENY_OTHER_SOURCES_TCP=8443", "PUBLIC_TCP_443_POLICY=UNCHANGED",
 		},
-		"runbook/proxy-runbook-v0.9.5/linux/05g-cdn-xhttp-validate.sh": {
-			"CLOUDFLARE_DNS_PROXY=PASS", "ORIGIN_RULE_443_TO_8443=PASS", "REAL_DEVICE_BROWSE=REQUIRED",
+		"runbook/text-node-assistant-v0.9.5/linux/05g-cdn-xhttp-validate.sh": {
+			"CLOUDFLARE_DNS_PROXY=PASS", "ORIGIN_RULE_443_TO_8443=NOT_REQUIRED_CLOUDFLARE_STANDARD_PORT", "REAL_DEVICE_BROWSE=REQUIRED",
 		},
 	} {
 		body, err := os.ReadFile(path)
@@ -116,7 +116,7 @@ func TestCompleteHandoffHasByteExactLegacyPrefix(t *testing.T) {
 		t.Fatalf("golden legacy handoff rejected: %v", err)
 	}
 	complete, err := appendCompleteHandoff(legacy, map[string]string{
-		"PNA_VERSION":     "0.9.5",
+		"TNA_VERSION":     "0.9.5",
 		"ACTIVE_MODE":     "ACTIVE_DIRECT",
 		"DEPLOYMENT_MODE": "direct-reality",
 	})
@@ -138,7 +138,7 @@ func TestCompleteHandoffHasByteExactLegacyPrefix(t *testing.T) {
 			t.Fatalf("legacy line was lost: %s", preserved)
 		}
 	}
-	if got := complete[len(legacy):]; !strings.HasPrefix(got, "\n\n===== PNA COMPLETE HANDOFF v0.9.5 =====\n") {
+	if got := complete[len(legacy):]; !strings.HasPrefix(got, "\n\n===== TNA COMPLETE HANDOFF v0.9.5 =====\n") {
 		t.Fatalf("first appended bytes were unexpected: %q", got)
 	}
 }

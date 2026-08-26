@@ -2,6 +2,7 @@
 .build-tools/
 .android-tools/
 dist/
+.third-party-cache/
 outputs/
 package-stage-*/
 

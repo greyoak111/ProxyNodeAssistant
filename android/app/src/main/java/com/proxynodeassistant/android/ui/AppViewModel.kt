@@ -75,6 +75,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "T" -> navigate(AppPage.PROVIDER)
             "K" -> navigate(AppPage.KEYS)
             "H" -> navigate(AppPage.HISTORY)
+            "J" -> {
+                _ui.value = _ui.value.copy(selectedAction = action, showConnection = false, page = AppPage.WORKFLOW)
+                container.workflows.runLocalDeviceJoin(action, _ui.value.language)
+            }
             else -> _ui.value = _ui.value.copy(selectedAction = action, showConnection = true)
         }
     }
@@ -128,7 +132,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun copySecret(text: String) {
         val clipboard = getApplication<Application>().getSystemService(ClipboardManager::class.java)
-        val clip = ClipData.newPlainText("ProxyNodeAssistant secret", text)
+        val clip = ClipData.newPlainText("TextNodeAssistant secret", text)
         clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
         clipboard.setPrimaryClip(clip)
         _ui.value = _ui.value.copy(toast = tr("已复制；保存到密码管理器后请立即清空剪贴板", "Copied. Clear it after saving."))

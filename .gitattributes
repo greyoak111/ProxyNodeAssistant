@@ -1,17 +1,36 @@
 * text=auto
+
 .gitattributes text eol=lf
 .gitignore text eol=lf
 
-# Linux runbook scripts must stay LF even after a Windows checkout.
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
 *.sh text eol=lf
+*.env text eol=lf
+*.in text eol=lf
+*.tsv text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+*.ps1 text eol=lf
+*.cs text eol=lf
+*.xaml text eol=lf
+*.kt text eol=lf
+*.kts text eol=lf
+*.xml text eol=lf
+TOOLKIT_VERSION text eol=lf
+TOOLKIT_BUILD_ID text eol=lf
+TOOLKIT_BUILD_REVISION text eol=lf
+SHA256SUMS.txt text eol=lf
 
-# Native Windows launchers use CRLF.
-*.bat text eol=crlf
 *.cmd text eol=crlf
+*.bat text eol=crlf
 
-# Binary assets must never receive newline conversion.
 *.png binary
 *.ico binary
 *.gz binary
+*.tgz binary
 *.zip binary
 *.exe binary
+*.apk binary

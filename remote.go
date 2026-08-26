@@ -21,15 +21,17 @@ import (
 )
 
 const (
-	remoteRoot           = "/opt/proxy-runbook-current"
+	remoteRoot           = "/opt/text-node-assistant-current"
+	legacyRemoteRoot     = "/opt/proxy-runbook-current"
 	toolkitVersion       = "0.9.5"
-	toolkitBuildID       = "20260825-v095-cloudflare-manual-promotion-v12"
-	toolkitBuildRevision = 12
-	toolkitInstallDir    = "/opt/proxy-runbook-v0.9.5"
-	toolkitArchive       = "proxy-runbook-toolkit-v0.9.5.tar.gz"
+	toolkitBuildID       = "20260827-v095-tna-cdn-acme-origin-8443-r29"
+	toolkitBuildRevision = 29
+	toolkitInstallDir    = "/opt/text-node-assistant-v0.9.5"
+	toolkitArchive       = "text-node-assistant-toolkit-v0.9.5.tar.gz"
 )
 
 var managedToolkitDirs = []string{
+	"/opt/text-node-assistant-v0.9.5",
 	"/opt/proxy-runbook-v0.5",
 	"/opt/proxy-runbook-v0.6",
 	"/opt/proxy-runbook-v0.6.1",
@@ -56,6 +58,7 @@ var managedToolkitDirs = []string{
 }
 
 var managedToolkitArchives = []string{
+	"/tmp/text-node-assistant-toolkit-v0.9.5.tar.gz",
 	"/tmp/proxy-runbook-toolkit-v0.5.tar.gz",
 	"/tmp/proxy-runbook-toolkit-v0.6.tar.gz",
 	"/tmp/proxy-runbook-toolkit-v0.6.1.tar.gz",
@@ -155,7 +158,7 @@ func defaultKeyPath(host, user string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".ssh", "proxy-runbook", safePart(host)+"-"+safePart(user), "id_ed25519"), nil
+	return filepath.Join(home, ".ssh", "text-node-assistant", safePart(host)+"-"+safePart(user), "id_ed25519"), nil
 }
 
 func knownHostsPath(c Connection) string {
@@ -609,7 +612,7 @@ func (a *App) promptConnection(mode AuthMode) (Connection, error) {
 	}
 	c := Connection{Host: host, User: user, Port: port, AuthMode: mode}
 	if mode == AuthTemporaryPassword {
-		dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.5-session-")
+		dir, err := os.MkdirTemp("", "TextNodeAssistant-v0.9.5-session-")
 		if err != nil {
 			return Connection{}, err
 		}
@@ -745,7 +748,7 @@ func isolatedSSHHostKeyArgs(c Connection, path string) []string {
 
 func scanHostKeysViaSSH(c Connection) (string, hostKeyScanAttempt) {
 	attempt := hostKeyScanAttempt{Method: "isolated-ssh-fallback", ExitCode: -1}
-	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.5-hostkey-")
+	dir, err := os.MkdirTemp("", "TextNodeAssistant-v0.9.5-hostkey-")
 	if err != nil {
 		attempt.Diagnostic = err.Error()
 		return "", attempt
@@ -935,7 +938,7 @@ func (a *App) installPublicKey(c Connection, keyPath, authKeyPath string, onInst
 	args = append(args, target(c), remote)
 	var result ProcessResult
 	if interactivePassword {
-		if os.Getenv("PNA_GUI_MODE") == "1" {
+		if guiModeEnabled() {
 			a.println(a.msg("Windows OpenSSH 即将请求 VPS 密码；请在图形遮罩密码框中输入并提交。密码不会进入日志、参数、剪贴板或磁盘。", "Windows OpenSSH is about to request the VPS password. Enter it in the graphical masked password dialog. It is not written to logs, arguments, the clipboard, or disk."))
 		} else {
 			a.println(a.msg("下面是 Windows OpenSSH 的 VPS 密码输入。输入时屏幕不会显示字符，这是正常的；输入完成按 Enter。", "Windows OpenSSH will now ask for the VPS password. No characters are shown while typing; press Enter when finished."))
@@ -981,7 +984,7 @@ func validTemporaryKeyDir(dir string) bool {
 		return false
 	}
 	candidate, err := filepath.Abs(dir)
-	if err != nil || !strings.HasPrefix(filepath.Base(candidate), "ProxyNodeAssistant-v0.9.5-session-") {
+	if err != nil || (!strings.HasPrefix(filepath.Base(candidate), "TextNodeAssistant-v0.9.5-session-") && !strings.HasPrefix(filepath.Base(candidate), "ProxyNodeAssistant-v0.9.5-session-")) {
 		return false
 	}
 	relative, err := filepath.Rel(base, candidate)
@@ -1002,7 +1005,7 @@ func (a *App) prepareTemporaryPasswordAuth(c *Connection) error {
 	if err := a.ensureHostKey(*c); err != nil {
 		return err
 	}
-	if err := generateKey(c.KeyPath, "proxy-node-assistant-temporary-session"); err != nil {
+	if err := generateKey(c.KeyPath, "text-node-assistant-temporary-session"); err != nil {
 		return err
 	}
 	publicKey, err := readPublicKey(c.KeyPath)
@@ -1010,7 +1013,7 @@ func (a *App) prepareTemporaryPasswordAuth(c *Connection) error {
 		return err
 	}
 	c.Temporary.PublicKey = publicKey
-	if os.Getenv("PNA_GUI_MODE") == "1" {
+	if guiModeEnabled() {
 		a.println(a.msg("临时密码模式：稍后在图形遮罩密码框中输入一次 VPS 密码；它只通过本机受限命名管道交给 OpenSSH。", "Temporary password mode: enter the VPS password once in the graphical masked dialog; it is passed to OpenSSH only through a restricted local named pipe."))
 	} else {
 		a.println(a.msg("临时密码模式：下面只向 Windows OpenSSH 输入一次 VPS 密码；程序不会读取或保存密码。", "Temporary password mode: enter the VPS password once into Windows OpenSSH; this program never reads or stores it."))
@@ -1206,7 +1209,7 @@ func (a *App) authenticateActionConnection(c *Connection) error {
 }
 
 func (a *App) promptlessTemporaryConnection(host, user string, port int) (Connection, error) {
-	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.5-session-")
+	dir, err := os.MkdirTemp("", "TextNodeAssistant-v0.9.5-session-")
 	if err != nil {
 		return Connection{}, err
 	}
@@ -1224,8 +1227,20 @@ func (a *App) cleanupActionTemporaryAuth() error {
 }
 
 func (a *App) runRemoteAction(action func() error) (returnErr error) {
+	return a.runRemoteOperation(operationSpec{Type: "legacy-remote-action", Mutating: false}, action)
+}
+
+func (a *App) runRemoteOperation(spec operationSpec, action func() error) (returnErr error) {
 	a.actionConnection = nil
+	a.currentOperation = spec
 	defer func() {
+		if releaseErr := a.releaseNodeOperation(returnErr == nil); releaseErr != nil {
+			if returnErr == nil {
+				returnErr = releaseErr
+			} else {
+				a.println(a.msg("节点施工租约释放警告：", "Node-operation lease release warning:") + " " + releaseErr.Error())
+			}
+		}
 		if cleanupErr := a.cleanupActionTemporaryAuth(); cleanupErr != nil {
 			if returnErr == nil {
 				returnErr = fmt.Errorf(a.msg("本项操作结束，但临时登录清理不完整：%w", "The action ended, but temporary-login cleanup was incomplete: %w"), cleanupErr)
@@ -1247,7 +1262,7 @@ func managedKeyRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".ssh", "proxy-runbook"), nil
+	return filepath.Join(home, ".ssh", "text-node-assistant"), nil
 }
 
 func revokedKeyRoot() (string, error) {
@@ -1255,10 +1270,11 @@ func revokedKeyRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".ssh", "proxy-runbook-revoked"), nil
+	return filepath.Join(home, ".ssh", "text-node-assistant-revoked"), nil
 }
 
-const managedKeyInfoFile = "PNA-KEY-INFO.txt"
+const managedKeyInfoFile = "TNA-KEY-INFO.txt"
+const legacyManagedKeyInfoFile = "PNA-KEY-INFO.txt"
 
 type managedKeyMetadata struct {
 	Host             string
@@ -1350,6 +1366,9 @@ func writeManagedKeyMetadata(dir string, c Connection, status string) error {
 
 func loadManagedKeyMetadata(dir string) (managedKeyMetadata, error) {
 	data, err := os.ReadFile(filepath.Join(dir, managedKeyInfoFile))
+	if os.IsNotExist(err) {
+		data, err = os.ReadFile(filepath.Join(dir, legacyManagedKeyInfoFile))
+	}
 	if err != nil {
 		return managedKeyMetadata{}, err
 	}
@@ -1906,17 +1925,21 @@ func (a *App) readyConn() (Connection, error) {
 	if err := a.authenticateActionConnection(c); err != nil {
 		return Connection{}, err
 	}
+	if err := a.ensureNodeOperation(*c); err != nil {
+		return Connection{}, err
+	}
 	return *c, nil
 }
 
 func (a *App) remoteToolkitProbe(c Connection) (ToolkitProbe, error) {
 	command := "printf '%s\\n' " + shQuote(toolkitBegin) + "; " +
-		"if [ -r " + remoteRoot + "/TOOLKIT_VERSION ]; then " +
-		"version=''; IFS= read -r version < " + remoteRoot + "/TOOLKIT_VERSION || true; version=${version%$'\\r'}; " +
-		"build=''; if [ -r " + remoteRoot + "/TOOLKIT_BUILD_ID ]; then IFS= read -r build < " + remoteRoot + "/TOOLKIT_BUILD_ID || true; build=${build%$'\\r'}; fi; " +
-		"revision=''; if [ -r " + remoteRoot + "/TOOLKIT_BUILD_REVISION ]; then IFS= read -r revision < " + remoteRoot + "/TOOLKIT_BUILD_REVISION || true; revision=${revision%$'\\r'}; fi; " +
-		"complete=0; test -x " + remoteRoot + "/linux/00-auto-install-or-optimize.sh && test -x " + remoteRoot + "/linux/18-panel-metadata.sh && test -x " + remoteRoot + "/linux/19-prune-backups-current-config.sh && test -x " + remoteRoot + "/linux/20-adaptive-performance.sh && test -x " + remoteRoot + "/linux/21-traffic-status.sh && test -x " + remoteRoot + "/linux/22-dismantle-managed-node.sh && test -x " + remoteRoot + "/linux/23-node-identity.sh && test -x " + remoteRoot + "/linux/24-security-baseline.sh && test -x " + remoteRoot + "/linux/25-security-events.sh && test -x " + remoteRoot + "/linux/26-device-admission.sh && test -x " + remoteRoot + "/linux/27-ip-rebind.sh && test -x " + remoteRoot + "/linux/04f-xhttp-cdn-api.sh && test -x " + remoteRoot + "/linux/05e-cdn-xhttp-nginx.sh && test -x " + remoteRoot + "/linux/05f-cloudflare-origin-lock.sh && test -x " + remoteRoot + "/linux/05g-cdn-xhttp-validate.sh && test -x " + remoteRoot + "/linux/29-copyparty-drive.sh && test -x " + remoteRoot + "/linux/30-copyparty-account.sh && test -x " + remoteRoot + "/linux/31-copyparty-nginx.sh && test -s " + remoteRoot + "/THIRD_PARTY_LOCK.env && test -s " + remoteRoot + "/templates/copyparty/copyparty.conf.in && test -s " + remoteRoot + "/templates/systemd/proxy-node-assistant-copyparty.service && test -s " + remoteRoot + "/templates/nginx/proxy-node-assistant-copyparty.conf.in && test -s " + remoteRoot + "/templates/cover-sites/MANIFEST.tsv && test -s " + remoteRoot + "/templates/cover-sites/15-signal-runner.html && test -s " + remoteRoot + "/TOOLKIT_BUILD_ID && complete=1; " +
-		"printf 'TOOLKIT_PRESENT=1\\nTOOLKIT_VERSION=%s\\nTOOLKIT_BUILD_ID=%s\\nTOOLKIT_BUILD_REVISION=%s\\nTOOLKIT_COMPLETE=%s\\n' \"$version\" \"$build\" \"$revision\" \"$complete\"; " +
+		"root=''; brand=''; if [ -r " + remoteRoot + "/TOOLKIT_VERSION ]; then root=" + shQuote(remoteRoot) + "; brand='TNA'; elif [ -r " + legacyRemoteRoot + "/TOOLKIT_VERSION ]; then root=" + shQuote(legacyRemoteRoot) + "; brand='PNA_LEGACY'; fi; " +
+		"if [ -n \"$root\" ]; then " +
+		"version=''; IFS= read -r version < \"$root/TOOLKIT_VERSION\" || true; version=${version%$'\\r'}; " +
+		"build=''; if [ -r \"$root/TOOLKIT_BUILD_ID\" ]; then IFS= read -r build < \"$root/TOOLKIT_BUILD_ID\" || true; build=${build%$'\\r'}; fi; " +
+		"revision=''; if [ -r \"$root/TOOLKIT_BUILD_REVISION\" ]; then IFS= read -r revision < \"$root/TOOLKIT_BUILD_REVISION\" || true; revision=${revision%$'\\r'}; fi; " +
+		"complete=0; test -x \"$root/linux/00-migrate-legacy-state.sh\" && test -x \"$root/linux/00-auto-install-or-optimize.sh\" && test -x \"$root/linux/18-panel-metadata.sh\" && test -x \"$root/linux/19-prune-backups-current-config.sh\" && test -x \"$root/linux/20-adaptive-performance.sh\" && test -x \"$root/linux/21-traffic-status.sh\" && test -x \"$root/linux/22-dismantle-managed-node.sh\" && test -x \"$root/linux/23-node-identity.sh\" && test -x \"$root/linux/24-security-baseline.sh\" && test -x \"$root/linux/25-security-events.sh\" && test -x \"$root/linux/26-device-admission.sh\" && test -x \"$root/linux/27-ip-rebind.sh\" && test -x \"$root/linux/28-topology-reconcile.sh\" && test -x \"$root/linux/04f-xhttp-cdn-api.sh\" && test -x \"$root/linux/05e-cdn-xhttp-nginx.sh\" && test -x \"$root/linux/05f-cloudflare-origin-lock.sh\" && test -x \"$root/linux/05g-cdn-xhttp-validate.sh\" && test -x \"$root/linux/05h-ensure-cdn-certificate.sh\" && test -x \"$root/linux/lib-drive.sh\" && test -x \"$root/linux/29-copyparty-drive.sh\" && test -x \"$root/linux/30-copyparty-account.sh\" && test -s \"$root/THIRD_PARTY_LOCK.env\" && test -s \"$root/templates/copyparty/copyparty.conf.in\" && test -s \"$root/templates/systemd/text-node-assistant-copyparty.service\" && test -s \"$root/templates/cover-sites/MANIFEST.tsv\" && test -s \"$root/templates/cover-sites/15-signal-runner.html\" && test -s \"$root/TOOLKIT_BUILD_ID\" && complete=1; " +
+		"printf 'TOOLKIT_PRESENT=1\\nTOOLKIT_BRAND=%s\\nTOOLKIT_ROOT=%s\\nTOOLKIT_VERSION=%s\\nTOOLKIT_BUILD_ID=%s\\nTOOLKIT_BUILD_REVISION=%s\\nTOOLKIT_COMPLETE=%s\\n' \"$brand\" \"$root\" \"$version\" \"$build\" \"$revision\" \"$complete\"; " +
 		"else printf 'TOOLKIT_PRESENT=0\\n'; fi; " +
 		"printf '%s\\n' " + shQuote(toolkitEnd)
 	result := a.rootCapture(c, command)
@@ -1933,6 +1956,24 @@ func (a *App) toolkitInstalled(c Connection) bool {
 	}
 	relation, err := classifyToolkit(probe, toolkitVersion)
 	return err == nil && relation == ToolkitSameComplete && compareToolkitBuild(probe, toolkitBuildID, toolkitBuildRevision) == 0
+}
+
+// requireExactInstalledToolkit is a read-only gate for front-end sessions and
+// narrow local protocols.  It never uploads, bootstraps, migrates, or rewrites
+// node identity: menu [1] remains the only installation/upgrade entry point.
+func (a *App) requireExactInstalledToolkit(c Connection) error {
+	probe, err := a.remoteToolkitProbe(c)
+	if err != nil {
+		return err
+	}
+	relation, err := classifyToolkit(probe, toolkitVersion)
+	if err != nil {
+		return err
+	}
+	if relation != ToolkitSameComplete || compareToolkitBuild(probe, toolkitBuildID, toolkitBuildRevision) != 0 {
+		return errors.New(a.msg("远端工具包不是当前 EXE 的完整同构建版本；请只从菜单 [1] 安装或升级。", "The remote toolkit is not the exact complete build carried by this EXE; install or upgrade only from menu [1]."))
+	}
+	return nil
 }
 
 func (a *App) ensureToolkit(c Connection) error {
@@ -1959,8 +2000,8 @@ func (a *App) ensureToolkit(c Connection) error {
 		}
 	case ToolkitSameIncomplete:
 		return fmt.Errorf(a.msg(
-			"远端已有同版本 v%s，但文件不完整；同版本保护禁止自动覆盖。请先用菜单 [13] 明确卸载，再运行 [1] 重装",
-			"Remote toolkit v%s matches this EXE but is incomplete; same-version protection forbids automatic overwrite. Use menu [13] to uninstall it explicitly, then run [1]",
+			"远端已有同版本 v%s，但工具文件不完整；请运行菜单 [1] 原位修复，其他菜单不会改动工具包",
+			"Remote toolkit v%s matches this EXE but its program files are incomplete; run menu [1] for an in-place repair. Other menu actions will not modify the toolkit",
 		), toolkitVersion)
 	case ToolkitNewer:
 		return fmt.Errorf(a.msg(
@@ -1992,7 +2033,10 @@ func (a *App) uploadToolkit(c Connection) error {
 			return fmt.Errorf("remote toolkit v%s build revision %d is newer than EXE build revision %d; downgrade refused", probe.Version, probe.BuildRevision, toolkitBuildRevision)
 		}
 	case ToolkitSameIncomplete:
-		return fmt.Errorf("same-version toolkit v%s is incomplete; explicit uninstall via menu [13] is required before reinstall", toolkitVersion)
+		// uploadToolkit is deliberately reachable only from menu [1]. Replacing
+		// the immutable toolkit directory repairs program files; node state,
+		// drive data, identities and credentials all live outside that directory.
+		// Fall through to the staged upload/bootstrap path below.
 	case ToolkitNewer:
 		return fmt.Errorf("remote toolkit v%s is newer than EXE v%s; downgrade refused", probe.Version, toolkitVersion)
 	}
@@ -2010,7 +2054,7 @@ func (a *App) uploadToolkit(c Connection) error {
 	}
 	bootstrap := "mkdir -p /opt; rm -rf " + shQuote(toolkitInstallDir) + "; " +
 		"tar -xzf " + shQuote(remoteArchive) + " -C /opt; " +
-		"PROXY_RUNBOOK_LOGIN_USER=" + shQuote(c.User) + " PROXY_RUNBOOK_SSH_KEY_INSTALLED=1 " +
+		"TNA_LOGIN_USER=" + shQuote(c.User) + " TNA_SSH_KEY_INSTALLED=1 " +
 		"bash " + toolkitInstallDir + "/linux/00-bootstrap-toolkit.sh"
 	result := a.runRootInteractive(c, bootstrap)
 	if !result.OK() {
@@ -2077,8 +2121,8 @@ func toolkitUninstallCommand() string {
 	}
 	script.WriteString(" )\n")
 	script.WriteString(`
-current_link='/opt/proxy-runbook-current'
-launcher='/usr/local/sbin/proxy-node'
+current_links=('/opt/text-node-assistant-current' '/opt/proxy-runbook-current')
+launchers=('/usr/local/sbin/text-node' '/usr/local/sbin/proxy-node')
 
 # Complete ownership/type validation happens before the first deletion.
 for target in "${toolkit_dirs[@]}"; do
@@ -2091,29 +2135,37 @@ for target in "${toolkit_archives[@]}"; do
     [ -f "$target" ] && [ ! -L "$target" ] || { printf 'REFUSED_UNEXPECTED_ARCHIVE=%s\n' "$target" >&2; exit 62; }
   fi
 done
-if [ -e "$current_link" ] || [ -L "$current_link" ]; then
-  [ -L "$current_link" ] || { printf 'REFUSED_CURRENT_NOT_SYMLINK\n' >&2; exit 63; }
-  current_target="$(readlink -f "$current_link" 2>/dev/null || true)"
-  target_allowed=false
-  for target in "${toolkit_dirs[@]}"; do
-    [ "$current_target" = "$target" ] && target_allowed=true
-  done
-  $target_allowed || { printf 'REFUSED_UNMANAGED_CURRENT=%s\n' "$current_target" >&2; exit 64; }
-fi
-if [ -e "$launcher" ] || [ -L "$launcher" ]; then
-  [ -f "$launcher" ] && [ ! -L "$launcher" ] || { printf 'REFUSED_UNEXPECTED_LAUNCHER\n' >&2; exit 65; }
-  grep -qF '/opt/proxy-runbook-current/linux/13-maintenance-menu.sh' "$launcher" || { printf 'REFUSED_UNMANAGED_LAUNCHER\n' >&2; exit 66; }
-fi
+for current_link in "${current_links[@]}"; do
+  if [ -e "$current_link" ] || [ -L "$current_link" ]; then
+    [ -L "$current_link" ] || { printf 'REFUSED_CURRENT_NOT_SYMLINK=%s\n' "$current_link" >&2; exit 63; }
+    current_target="$(readlink -f "$current_link" 2>/dev/null || true)"
+    target_allowed=false
+    for target in "${toolkit_dirs[@]}"; do
+      [ "$current_target" = "$target" ] && target_allowed=true
+    done
+    $target_allowed || { printf 'REFUSED_UNMANAGED_CURRENT=%s\n' "$current_target" >&2; exit 64; }
+  fi
+done
+for launcher in "${launchers[@]}"; do
+  if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+    [ -f "$launcher" ] && [ ! -L "$launcher" ] || { printf 'REFUSED_UNEXPECTED_LAUNCHER=%s\n' "$launcher" >&2; exit 65; }
+    grep -Eq '/opt/(text-node-assistant|proxy-runbook)-current/linux/13-maintenance-menu\.sh' "$launcher" || { printf 'REFUSED_UNMANAGED_LAUNCHER=%s\n' "$launcher" >&2; exit 66; }
+  fi
+done
 
-printf 'PROXY_RUNBOOK_UNINSTALL_BEGIN\n'
-if [ -L "$current_link" ]; then
-  rm -f -- "$current_link"
-  printf 'REMOVED=%s\n' "$current_link"
-fi
-if [ -f "$launcher" ]; then
-  rm -f -- "$launcher"
-  printf 'REMOVED=%s\n' "$launcher"
-fi
+printf 'TNA_TOOLKIT_UNINSTALL_BEGIN\n'
+for current_link in "${current_links[@]}"; do
+  if [ -L "$current_link" ]; then
+    rm -f -- "$current_link"
+    printf 'REMOVED=%s\n' "$current_link"
+  fi
+done
+for launcher in "${launchers[@]}"; do
+  if [ -f "$launcher" ]; then
+    rm -f -- "$launcher"
+    printf 'REMOVED=%s\n' "$launcher"
+  fi
+done
 for target in "${toolkit_dirs[@]}"; do
   if [ -d "$target" ]; then
     rm -rf -- "$target"
@@ -2127,16 +2179,16 @@ for target in "${toolkit_archives[@]}"; do
   fi
 done
 
-[ ! -e "$current_link" ] && [ ! -L "$current_link" ]
-[ ! -e "$launcher" ] && [ ! -L "$launcher" ]
+for current_link in "${current_links[@]}"; do [ ! -e "$current_link" ] && [ ! -L "$current_link" ]; done
+for launcher in "${launchers[@]}"; do [ ! -e "$launcher" ] && [ ! -L "$launcher" ]; done
 for target in "${toolkit_dirs[@]}" "${toolkit_archives[@]}"; do
   [ ! -e "$target" ] && [ ! -L "$target" ] || { printf 'UNINSTALL_VERIFY_FAILED=%s\n' "$target" >&2; exit 67; }
 done
 printf 'PRESERVED=NODE_SERVICES_AND_CONFIG\n'
-printf 'PRESERVED=ETC_PROXY_RUNBOOK\n'
+printf 'PRESERVED=NODE_STATE_AND_CREDENTIALS\n'
 printf 'PRESERVED=ROOT_CREDENTIAL_HANDOFF\n'
 printf 'PRESERVED=BACKUP_ARCHIVES\n'
-printf 'PROXY_RUNBOOK_UNINSTALL_END\n'
+printf 'TNA_TOOLKIT_UNINSTALL_END\n'
 `)
 	return script.String()
 }
@@ -2145,7 +2197,7 @@ func (a *App) writeAutoInput(c Connection, domain, email string) error {
 	content := "DOMAIN_B64=" + base64.StdEncoding.EncodeToString([]byte(domain)) + "\n" +
 		"EMAIL_B64=" + base64.StdEncoding.EncodeToString([]byte(email)) + "\n" +
 		"LANG=" + string(a.lang) + "\n"
-	result := a.rootCaptureWithInput(c, "umask 077; cat > /tmp/proxy-runbook-auto-input; chmod 600 /tmp/proxy-runbook-auto-input", []byte(content))
+	result := a.rootCaptureWithInput(c, "umask 077; cat > /tmp/text-node-assistant-auto-input; chmod 600 /tmp/text-node-assistant-auto-input", []byte(content))
 	if !result.OK() {
 		return fmt.Errorf("failed to write one-run input (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}
@@ -2154,7 +2206,7 @@ func (a *App) writeAutoInput(c Connection, domain, email string) error {
 
 func (a *App) fetchHandoff(c Connection) (string, error) {
 	command := "printf '%s\\n' " + shQuote(handoffBegin) + "; " +
-		"cat /root/.config/proxy-runbook/HANDOFF-SECRETS.txt 2>/dev/null || true; " +
+		"if [ -r /root/.config/text-node-assistant/HANDOFF-SECRETS.txt ]; then cat /root/.config/text-node-assistant/HANDOFF-SECRETS.txt; else cat /root/.config/proxy-runbook/HANDOFF-SECRETS.txt 2>/dev/null || true; fi; " +
 		"printf '%s\\n' " + shQuote(handoffEnd)
 	result := a.rootCapture(c, command)
 	if !result.OK() {
@@ -2173,8 +2225,7 @@ func (a *App) panelMetadata(c Connection) (PanelMetadata, error) {
 
 func (a *App) remoteRunStatus(c Connection) map[string]string {
 	command := "printf '%s\\n' " + shQuote(statusBegin) + "; " +
-		"cat /etc/proxy-runbook/last-run.env 2>/dev/null || true; " +
-		"cat /etc/proxy-runbook/cover-last-run.env 2>/dev/null || true; " +
+		"if [ -d /etc/text-node-assistant ]; then cat /etc/text-node-assistant/last-run.env 2>/dev/null || true; cat /etc/text-node-assistant/cover-last-run.env 2>/dev/null || true; else cat /etc/proxy-runbook/last-run.env 2>/dev/null || true; cat /etc/proxy-runbook/cover-last-run.env 2>/dev/null || true; fi; " +
 		"printf '%s\\n' " + shQuote(statusEnd)
 	result := a.rootCapture(c, command)
 	if !result.OK() {

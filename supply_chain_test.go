@@ -10,11 +10,11 @@ import (
 )
 
 func TestWindowsAndAndroidEmbedTheSameToolkitArchive(t *testing.T) {
-	windowsArchive, err := os.ReadFile("assets/proxy-runbook-toolkit-v0.9.5.tar.gz")
+	windowsArchive, err := os.ReadFile("assets/text-node-assistant-toolkit-v0.9.5.tar.gz")
 	if err != nil {
 		t.Fatal(err)
 	}
-	androidArchive, err := os.ReadFile("android/app/src/main/assets/proxy-runbook-toolkit-v0.9.5.tgz")
+	androidArchive, err := os.ReadFile("android/app/src/main/assets/text-node-assistant-toolkit-v0.9.5.tgz")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func readPublicEnvFile(t *testing.T, path string) map[string]string {
 }
 
 func TestThirdPartyLockPinsImmutableInputs(t *testing.T) {
-	values := readPublicEnvFile(t, "runbook/proxy-runbook-v0.9.5/THIRD_PARTY_LOCK.env")
+	values := readPublicEnvFile(t, "runbook/text-node-assistant-v0.9.5/THIRD_PARTY_LOCK.env")
 	if values["THREEXUI_VERSION"] != "v3.6.0" || values["THREEXUI_COMMIT"] != "c377dca27c23549cdf84e0ffd2d287a16bee577c" {
 		t.Fatalf("unexpected 3x-ui pin: %#v", values)
 	}
@@ -73,10 +73,10 @@ func TestThirdPartyLockPinsImmutableInputs(t *testing.T) {
 
 func TestFreshInstallNeverExecutesMovingThirdPartyURLs(t *testing.T) {
 	for _, path := range []string{
-		"runbook/proxy-runbook-v0.9.5/linux/00-auto-install-or-optimize.sh",
-		"runbook/proxy-runbook-v0.9.5/linux/03-install-3xui.sh",
-		"runbook/proxy-runbook-v0.9.5/linux/lib-third-party.sh",
-		"runbook/proxy-runbook-v0.9.5/linux/29-copyparty-drive.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/03-install-3xui.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/lib-third-party.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/29-copyparty-drive.sh",
 	} {
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -97,7 +97,7 @@ func TestFreshInstallNeverExecutesMovingThirdPartyURLs(t *testing.T) {
 }
 
 func TestXHTTPPrototypeIsLoopbackPacketUpAndFailClosed(t *testing.T) {
-	body, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/04f-xhttp-cdn-api.sh")
+	body, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/04f-xhttp-cdn-api.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,8 +108,8 @@ func TestXHTTPPrototypeIsLoopbackPacketUpAndFailClosed(t *testing.T) {
 		`security:"none"`,
 		`mode:"packet-up"`,
 		`fallbacks:[]`,
-		"PNA_XHTTP_ERROR=READBACK_MISMATCH",
-		"PNA_XHTTP_ERROR=PUBLIC_LISTENER",
+		"TNA_XHTTP_ERROR=READBACK_MISMATCH",
+		"TNA_XHTTP_ERROR=PUBLIC_LISTENER",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("XHTTP prototype is missing %q", required)
@@ -118,7 +118,7 @@ func TestXHTTPPrototypeIsLoopbackPacketUpAndFailClosed(t *testing.T) {
 }
 
 func TestLocalCDNStageNeverBindsThePublicAddress(t *testing.T) {
-	body, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/05e-cdn-xhttp-nginx.sh")
+	body, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/05e-cdn-xhttp-nginx.sh")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,10 +13,11 @@ class AppContainer(context: Context) {
     val managedKeys = ManagedKeyRepository(applicationContext, vault)
 	val stableNodeIdentities = StableNodeIdentityRepository(vault)
 	val deviceIdentity = DeviceIdentityRepository(vault)
+	val driveAdminCapabilities = DriveAdminCapabilityRepository(vault)
     val providerCredentials = ProviderCredentialRepository(vault)
     val providerUsage = ProviderUsageRepository(applicationContext)
     val providerTraffic = ProviderTrafficClient()
     val prompts = PromptBroker()
     val ssh = SshEngine(hostKeys, managedKeys, prompts)
-	val workflows = WorkflowRunner(applicationContext, ssh, managedKeys, hostKeys, stableNodeIdentities, deviceIdentity, targets, prompts)
+	val workflows = WorkflowRunner(applicationContext, ssh, managedKeys, hostKeys, stableNodeIdentities, deviceIdentity, driveAdminCapabilities, targets, prompts)
 }

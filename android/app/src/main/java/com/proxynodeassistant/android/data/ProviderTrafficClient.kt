@@ -24,7 +24,7 @@ class ProviderTrafficClient {
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("User-Agent", "ProxyNodeAssistant-Android/0.9.5")
+            connection.setRequestProperty("User-Agent", "TextNodeAssistant-Android/0.9.5")
             connection.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream

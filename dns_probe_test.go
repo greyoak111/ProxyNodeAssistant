@@ -82,3 +82,43 @@ func TestDNSProbeTimeoutIsBounded(t *testing.T) {
 		t.Fatalf("probe exceeded bounded timeout: %s", elapsed)
 	}
 }
+
+func TestOrangeDNSProbeAcceptsSystemResolverWhenPublicDoHIsBlocked(t *testing.T) {
+	deps := dnsTestDependencies(
+		[]net.IP{net.ParseIP("192.0.2.44")}, nil,
+		map[string][]net.IP{}, map[string]error{
+			"cloudflare": errors.New("DoH timeout"),
+			"google":     errors.New("DoH timeout"),
+		},
+	)
+	result := probeOrangeDNS("edge.example.com", deps)
+	if !result.Accepted() || !result.System {
+		t.Fatalf("system resolver fallback was rejected: %+v", result)
+	}
+}
+
+func TestOrangeDNSProbeAcceptsSinglePublicResolver(t *testing.T) {
+	deps := dnsTestDependencies(
+		nil, errors.New("local resolver unavailable"),
+		map[string][]net.IP{
+			"cloudflare": {net.ParseIP("198.51.100.12")},
+		}, map[string]error{"google": errors.New("DoH timeout")},
+	)
+	result := probeOrangeDNS("edge.example.com", deps)
+	if !result.Accepted() || !result.Cloudflare || result.Google {
+		t.Fatalf("single public resolver answer was not preserved: %+v", result)
+	}
+}
+
+func TestOrangeDNSProbeRejectsNoIPv4Answer(t *testing.T) {
+	deps := dnsTestDependencies(
+		[]net.IP{}, errors.New("no A record"),
+		map[string][]net.IP{}, map[string]error{
+			"cloudflare": errors.New("timeout"),
+			"google":     errors.New("timeout"),
+		},
+	)
+	if result := probeOrangeDNS("edge.example.com", deps); result.Accepted() {
+		t.Fatalf("empty DNS observations were accepted: %+v", result)
+	}
+}

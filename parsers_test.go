@@ -57,13 +57,13 @@ func TestDomainEmailPromptDoesNotBusyLoopOnClosedInput(t *testing.T) {
 }
 
 func TestGUIRejectsBlankRequiredInputAndSerializesSubmissions(t *testing.T) {
-	source, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	source, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
 	for _, required := range []string{
-		"PNA_GUI_PROMPT_B64=",
+		"TNA_GUI_PROMPT_B64=",
 		"TryDecodeGuiPrompt",
 		"reader.ReadLine()",
 		"suppressedPromptFrames = prefilledInput.Count",
@@ -73,6 +73,8 @@ func TestGUIRejectsBlankRequiredInputAndSerializesSubmissions(t *testing.T) {
 		"if (operationInputPending) return",
 		"operationInputPending = true",
 		"SetOperationInputReady(false)",
+		`operation.Id != "J"`,
+		`lower.Contains("tnainv2")`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("GUI input guard is missing %q", required)
@@ -224,7 +226,7 @@ func TestEveryEntryPointHoldsCreatedPanelTunnels(t *testing.T) {
 }
 
 func TestGUIActionMapMatchesConsoleActions(t *testing.T) {
-	guiSource, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	guiSource, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,13 +250,13 @@ func TestGUIActionMapMatchesConsoleActions(t *testing.T) {
 		"RedirectStandardInput = true", "RedirectStandardOutput = true",
 		"NamedPipeServerStream", "AskPassResourceName", "PasswordBox", "SHA256.Create",
 		"PANEL_TUNNEL_SESSION_ACTIVE", "Close panel tunnel", "tunnelSessionActive",
-		"--tunnel-close-smoke", "PNA_GUI_TUNNEL_CLOSE_ACK", "Button.ClickEvent",
+		"--tunnel-close-smoke", "TNA_GUI_TUNNEL_CLOSE_ACK", "Button.ClickEvent",
 	} {
 		if !strings.Contains(guiText, required) {
 			t.Fatalf("fully graphical launch contract is missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"UseShellExecute = true", "LaunchConsole(", "runInteractiveConsole", `EnvironmentVariables["PNA_PASSWORD"]`, `mode == null ? "2"`} {
+	for _, forbidden := range []string{"UseShellExecute = true", "LaunchConsole(", "runInteractiveConsole", `EnvironmentVariables["TNA_PASSWORD"]`, `mode == null ? "2"`} {
 		if strings.Contains(guiText, forbidden) {
 			t.Fatalf("GUI still contains console/plaintext-password behavior %q", forbidden)
 		}
@@ -305,7 +307,7 @@ func TestRemoteBackupCleanupMenuUsesStandardActionWrapper(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(source)
-	if !strings.Contains(text, `case "15":`) || !strings.Contains(text, `runRemoteAction(a.pruneBackupsAndBackupCurrentConfig)`) {
+	if !strings.Contains(text, `case "15":`) || !strings.Contains(text, `}, a.pruneBackupsAndBackupCurrentConfig)`) {
 		t.Fatal("remote backup cleanup menu must use the standard dual-login action wrapper")
 	}
 	operations, err := os.ReadFile("operations.go")
@@ -320,7 +322,7 @@ func TestRemoteBackupCleanupMenuUsesStandardActionWrapper(t *testing.T) {
 }
 
 func TestCurrentConfigBackupValidatesBeforeLimitedCleanup(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.5/linux/19-prune-backups-current-config.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/19-prune-backups-current-config.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +334,7 @@ func TestCurrentConfigBackupValidatesBeforeLimitedCleanup(t *testing.T) {
 		`tar -xzf "$ARCHIVE" -C "$VERIFY"`,
 		`sha256sum -c MANIFEST.sha256`,
 		`! -path "$ARCHIVE" -print0`,
-		`/root/.config/proxy-runbook/xray-template-before-warp-*.json`,
+		`/root/.config/text-node-assistant/xray-template-before-warp-*.json`,
 		`CURRENT_CONFIG_ARCHIVES=1`,
 		`HISTORICAL_FILES_IN_ARCHIVE=0`,
 		`SERVICES_UNCHANGED=1`,
@@ -352,7 +354,7 @@ func TestCurrentConfigBackupValidatesBeforeLimitedCleanup(t *testing.T) {
 		}
 	}
 
-	fullBackup, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/01-safe-backup.sh")
+	fullBackup, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/01-safe-backup.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,11 +368,20 @@ func TestOpenSSHPreflightRunsBeforeMenuLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(source)
-	preflight := strings.Index(text, "a.startupOpenSSHPreflight()")
-	menuLoop := strings.Index(text, "for {\n\t\ta.printMenu()")
+	text := strings.ReplaceAll(string(source), "\r\n", "\n")
+	runStart := strings.Index(text, "func (a *App) run() {")
+	if runStart < 0 {
+		t.Fatal("main menu runner is missing")
+	}
+	runText := text[runStart:]
+	preflight := strings.Index(runText, "a.prepareConsoleSession()")
+	menuLoop := strings.Index(runText, "for {\n\t\ta.printMenu()")
 	if preflight < 0 || menuLoop < 0 || preflight > menuLoop {
 		t.Fatal("OpenSSH preflight must finish before the main menu loop")
+	}
+	prepareStart := strings.Index(text, "func (a *App) prepareConsoleSession() bool {")
+	if prepareStart < 0 || !strings.Contains(text[prepareStart:runStart], "a.startupOpenSSHPreflight()") {
+		t.Fatal("console-session preparation must run the OpenSSH preflight")
 	}
 	remoteSource, err := os.ReadFile("remote.go")
 	if err != nil {
@@ -406,7 +417,7 @@ func TestEveryActionAuthModeRequiresExplicitChoice(t *testing.T) {
 }
 
 func TestActionConnectionDoesNotReuseCachedVPS(t *testing.T) {
-	t.Setenv("PNA_HISTORY_PATH", filepath.Join(t.TempDir(), "empty-history.tsv"))
+	t.Setenv("TNA_HISTORY_PATH", filepath.Join(t.TempDir(), "empty-history.tsv"))
 	old := &Connection{Host: "old.example.invalid", User: "root", Port: 22, AuthMode: AuthManagedKey}
 	app := &App{
 		reader: bufio.NewReader(strings.NewReader("1\nnew.example.invalid\nroot\n22\n")),
@@ -443,14 +454,14 @@ func TestAllRemoteMenuItemsUseUniversalActionLifecycle(t *testing.T) {
 		"a.optimizeCover", "a.backupNode", "a.emergencyReport", "a.rotateSSHKey",
 		"a.uninstallRemoteToolkit",
 	} {
-		if !strings.Contains(text, "runRemoteAction("+action+")") {
+		if !strings.Contains(text, "}, "+action+")") {
 			t.Fatalf("remote menu action bypasses the universal dual-auth lifecycle: %s", action)
 		}
 	}
 }
 
 func TestTemporaryKeyCleanupPathGuard(t *testing.T) {
-	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.5-session-")
+	dir, err := os.MkdirTemp("", "TextNodeAssistant-v0.9.5-session-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +597,7 @@ func TestManagedKeyDirectoryMovesToRecoverableBackup(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("HOME", home)
-	keyPath := filepath.Join(home, ".ssh", "proxy-runbook", "example.invalid-root", "id_ed25519")
+	keyPath := filepath.Join(home, ".ssh", "text-node-assistant", "example.invalid-root", "id_ed25519")
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -599,7 +610,7 @@ func TestManagedKeyDirectoryMovesToRecoverableBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(backup, "proxy-runbook-revoked") {
+	if !strings.Contains(backup, "text-node-assistant-revoked") {
 		t.Fatalf("backup is not under the recoverable revoked-key root: %s", backup)
 	}
 	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
@@ -673,11 +684,11 @@ func TestWin32KeyscanUnsupportedKEXDetection(t *testing.T) {
 
 func TestIsolatedSSHHostKeyFallbackNeverUsesCredentialsOrPersistentTrust(t *testing.T) {
 	c := Connection{Host: "example.invalid", User: "root", Port: 2222, KeyPath: `C:\Users\Test\.ssh\proxy-runbook\example-root\id_ed25519`}
-	temporaryKnownHosts := `C:\Temp\pna-hostkey\known_hosts`
+	temporaryKnownHosts := `C:\Temp\tna-hostkey\known_hosts`
 	args := strings.Join(isolatedSSHHostKeyArgs(c, temporaryKnownHosts), "\n")
 	for _, required := range []string{
 		"StrictHostKeyChecking=accept-new",
-		"UserKnownHostsFile=C:/Temp/pna-hostkey/known_hosts",
+		"UserKnownHostsFile=C:/Temp/tna-hostkey/known_hosts",
 		"GlobalKnownHostsFile=NUL",
 		"BatchMode=yes",
 		"PubkeyAuthentication=no",
@@ -725,25 +736,25 @@ func TestOpenSSHVersionParsingAndOrdering(t *testing.T) {
 }
 
 func TestScanHostKeysIntegration(t *testing.T) {
-	host := strings.TrimSpace(os.Getenv("PNA_TEST_HOST"))
+	host := strings.TrimSpace(os.Getenv("TNA_TEST_HOST"))
 	if host == "" {
-		t.Skip("set PNA_TEST_HOST for an opt-in, public-host-key-only integration test")
+		t.Skip("set TNA_TEST_HOST for an opt-in, public-host-key-only integration test")
 	}
 	port := 22
-	if value := strings.TrimSpace(os.Getenv("PNA_TEST_PORT")); value != "" {
+	if value := strings.TrimSpace(os.Getenv("TNA_TEST_PORT")); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 1 || parsed > 65535 {
-			t.Fatalf("invalid PNA_TEST_PORT %q", value)
+			t.Fatalf("invalid TNA_TEST_PORT %q", value)
 		}
 		port = parsed
 	}
 	var paths map[string]string
-	if directory := strings.TrimSpace(os.Getenv("PNA_TEST_OPENSSH_DIR")); directory != "" {
+	if directory := strings.TrimSpace(os.Getenv("TNA_TEST_OPENSSH_DIR")); directory != "" {
 		paths = map[string]string{}
 		for _, name := range requiredOpenSSHExecutables {
 			path := filepath.Join(directory, name)
 			if !fileExists(path) {
-				t.Fatalf("PNA_TEST_OPENSSH_DIR is incomplete: %s is missing", path)
+				t.Fatalf("TNA_TEST_OPENSSH_DIR is incomplete: %s is missing", path)
 			}
 			paths[strings.ToLower(name)] = path
 		}
@@ -759,7 +770,7 @@ func TestScanHostKeysIntegration(t *testing.T) {
 	if knownHostEntryCount(keys) == 0 {
 		t.Fatalf("host-key scan returned no valid keys: %s", formatHostKeyScanAttempts(attempts))
 	}
-	if os.Getenv("PNA_EXPECT_KEYSCAN_FALLBACK") == "1" {
+	if os.Getenv("TNA_EXPECT_KEYSCAN_FALLBACK") == "1" {
 		found := false
 		for _, attempt := range attempts {
 			if attempt.Method == "isolated-ssh-fallback" && attempt.ValidKeys > 0 {
@@ -906,15 +917,15 @@ func TestFailureBranchStopsFollowOnActions(t *testing.T) {
 }
 
 func TestRunCapturedSeparatesStdoutAndStderr(t *testing.T) {
-	if os.Getenv("PNA_TEST_HELPER") == "1" {
+	if os.Getenv("TNA_TEST_HELPER") == "1" {
 		fmt.Fprint(os.Stdout, handoffBegin+"\nHANDOFF_RUN_STARTED=now\nPANEL_PORT=12345\n"+handoffEnd+"\n")
 		fmt.Fprintln(os.Stderr, "Connection to example.invalid closed.")
 		os.Exit(0)
 	}
-	if err := os.Setenv("PNA_TEST_HELPER", "1"); err != nil {
+	if err := os.Setenv("TNA_TEST_HELPER", "1"); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Unsetenv("PNA_TEST_HELPER")
+	defer os.Unsetenv("TNA_TEST_HELPER")
 	result := runCaptured(os.Args[0], []string{"-test.run=TestRunCapturedSeparatesStdoutAndStderr"}, nil, false)
 	if result.ExitCode != 0 {
 		t.Fatalf("helper failed: %#v", result)
@@ -928,15 +939,15 @@ func TestRunCapturedSeparatesStdoutAndStderr(t *testing.T) {
 }
 
 func TestRunCapturedNonzeroExit(t *testing.T) {
-	if os.Getenv("PNA_TEST_FAIL_HELPER") == "1" {
+	if os.Getenv("TNA_TEST_FAIL_HELPER") == "1" {
 		fmt.Fprintln(os.Stdout, "partial business output")
 		fmt.Fprintln(os.Stderr, "remote failure")
 		os.Exit(17)
 	}
-	if err := os.Setenv("PNA_TEST_FAIL_HELPER", "1"); err != nil {
+	if err := os.Setenv("TNA_TEST_FAIL_HELPER", "1"); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Unsetenv("PNA_TEST_FAIL_HELPER")
+	defer os.Unsetenv("TNA_TEST_FAIL_HELPER")
 	result := runCaptured(os.Args[0], []string{"-test.run=TestRunCapturedNonzeroExit"}, nil, false)
 	if result.ExitCode != 17 || result.Err == nil {
 		t.Fatalf("expected exit 17, got %#v", result)
@@ -1055,6 +1066,8 @@ func TestParseToolkitProbeUsesMarkedValidatedData(t *testing.T) {
 	input := strings.Join([]string{
 		toolkitBegin,
 		"TOOLKIT_PRESENT=1",
+		"TOOLKIT_BRAND=TNA",
+		"TOOLKIT_ROOT=/opt/text-node-assistant-current",
 		"TOOLKIT_VERSION=0.8.3",
 		"TOOLKIT_BUILD_ID=different-build",
 		"TOOLKIT_BUILD_REVISION=2",
@@ -1065,17 +1078,39 @@ func TestParseToolkitProbeUsesMarkedValidatedData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !probe.Present || !probe.Complete || probe.Version != "0.8.3" || probe.BuildID != "different-build" || probe.BuildRevision != 2 {
+	if !probe.Present || !probe.Complete || probe.Brand != "TNA" || probe.Root != remoteRoot || probe.Version != "0.8.3" || probe.BuildID != "different-build" || probe.BuildRevision != 2 {
 		t.Fatalf("unexpected probe: %#v", probe)
 	}
 	for _, invalid := range []string{
 		"TOOLKIT_PRESENT=1\nTOOLKIT_VERSION=0.8.3",
+		toolkitBegin + "\nTOOLKIT_PRESENT=1\nTOOLKIT_BRAND=PNA_LEGACY\nTOOLKIT_ROOT=/opt/text-node-assistant-current\nTOOLKIT_VERSION=0.8.3\nTOOLKIT_COMPLETE=1\n" + toolkitEnd,
 		toolkitBegin + "\nTOOLKIT_PRESENT=1\nTOOLKIT_VERSION=garbage\nTOOLKIT_COMPLETE=1\n" + toolkitEnd,
 		toolkitBegin + "\nTOOLKIT_PRESENT=1\nTOOLKIT_VERSION=0.8.3\nTOOLKIT_COMPLETE=maybe\n" + toolkitEnd,
 		toolkitBegin + "\nTOOLKIT_PRESENT=1\nTOOLKIT_VERSION=0.8.3\nTOOLKIT_BUILD_REVISION=-1\nTOOLKIT_COMPLETE=1\n" + toolkitEnd,
 	} {
 		if _, err := parseToolkitProbe(invalid); err == nil {
 			t.Fatalf("invalid toolkit probe was accepted: %q", invalid)
+		}
+	}
+}
+
+func TestLegacyIdentityBootstrapIsOneTimeAndEvidenceGated(t *testing.T) {
+	source, err := os.ReadFile("dismantle_receipt.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"MIGRATION_STATUS=COMMITTED",
+		"MIGRATION_COPIED=(ETC_STATE|ROOT_STATE)",
+		"legacy/linux/23-node-identity.sh",
+		"IDENTITY_BOOTSTRAP_STATUS=IN_PROGRESS",
+		"IDENTITY_BOOTSTRAP_STATUS=COMMITTED",
+		"TNA_LEGACY_IDENTITY_BOOTSTRAP_EVIDENCE_OK",
+		"TNA_LEGACY_IDENTITY_BOOTSTRAP_COMMITTED",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("legacy identity recovery is missing evidence/one-shot guard %q", required)
 		}
 	}
 }
@@ -1115,8 +1150,56 @@ func TestSameVersionBuildRevisionUpdatesOnlyWhenOlder(t *testing.T) {
 	}
 }
 
+func TestMenuOneRepairsIncompleteSameVersionToolkit(t *testing.T) {
+	operations, err := os.ReadFile("operations.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(operations)
+	start := strings.Index(text, "case ToolkitSameIncomplete:")
+	if start < 0 {
+		t.Fatal("incomplete same-version branch is missing")
+	}
+	end := strings.Index(text[start:], "case ToolkitNewer:")
+	if end < 0 {
+		t.Fatal("incomplete same-version branch has no boundary")
+	}
+	block := text[start : start+end]
+	for _, required := range []string{"repairSameVersionToolkit = true", "原位修复", "不会重装节点"} {
+		if !strings.Contains(block, required) {
+			t.Fatalf("menu [1] incomplete-toolkit repair is missing %q", required)
+		}
+	}
+	if strings.Contains(block, "return fmt.Errorf") || strings.Contains(block, "[13]") {
+		t.Fatal("menu [1] still hard-stops or redirects incomplete-toolkit recovery")
+	}
+
+	remote, err := os.ReadFile("remote.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteText := string(remote)
+	uploadStart := strings.Index(remoteText, "func (a *App) uploadToolkit")
+	if uploadStart < 0 {
+		t.Fatal("uploadToolkit is missing")
+	}
+	uploadEnd := strings.Index(remoteText[uploadStart:], "func toolkitPostInstallCleanupCommand")
+	if uploadEnd < 0 {
+		t.Fatal("uploadToolkit boundary is missing")
+	}
+	uploadBlock := remoteText[uploadStart : uploadStart+uploadEnd]
+	if strings.Contains(uploadBlock, "explicit uninstall via menu [13]") {
+		t.Fatal("uploadToolkit still refuses the menu [1] repair path")
+	}
+	for _, required := range []string{"rm -rf", "00-bootstrap-toolkit.sh", "if !a.toolkitInstalled(c)"} {
+		if !strings.Contains(uploadBlock, required) {
+			t.Fatalf("repair upload lacks postcondition %q", required)
+		}
+	}
+}
+
 func TestRemoteGUIConfirmationUsesFramedLineAndStripsANSI(t *testing.T) {
-	runbook, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/00-auto-install-or-optimize.sh")
+	runbook, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1125,7 +1208,7 @@ func TestRemoteGUIConfirmationUsesFramedLineAndStripsANSI(t *testing.T) {
 			t.Fatalf("remote GUI confirmation/resume contract is missing %q", required)
 		}
 	}
-	realityAPI, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/04a-reality-api.sh")
+	realityAPI, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/04a-reality-api.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1134,16 +1217,16 @@ func TestRemoteGUIConfirmationUsesFramedLineAndStripsANSI(t *testing.T) {
 			t.Fatalf("interrupted shadow resume compatibility is missing %q", required)
 		}
 	}
-	library, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/lib-gui-prompt.sh")
+	library, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/lib-gui-prompt.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"PNA_GUI_PROMPT_B64=", "PROXY_RUNBOOK_GUI_MODE", ">&2", "IFS= read -r answer"} {
+	for _, required := range []string{"TNA_GUI_PROMPT_B64=", "TNA_GUI_MODE", ">&2", "IFS= read -r answer"} {
 		if !strings.Contains(string(library), required) {
 			t.Fatalf("remote GUI prompt library is missing %q", required)
 		}
 	}
-	gui, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	gui, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1166,7 +1249,7 @@ func TestMenuMarksOneAsOnlyInstallerAndDispatchesUninstall(t *testing.T) {
 		"[13] 卸载远端内嵌包",
 		"[13] Uninstall the remote embedded toolkit",
 		`case "13":`,
-		"runRemoteAction(a.uninstallRemoteToolkit)",
+		"}, a.uninstallRemoteToolkit)",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("menu/dispatch is missing %q", required)
@@ -1177,12 +1260,12 @@ func TestMenuMarksOneAsOnlyInstallerAndDispatchesUninstall(t *testing.T) {
 func TestToolkitUninstallCommandIsScopedAndFailClosed(t *testing.T) {
 	command := toolkitUninstallCommand()
 	for _, required := range []string{
-		"PROXY_RUNBOOK_UNINSTALL_BEGIN",
-		"PROXY_RUNBOOK_UNINSTALL_END",
+		"TNA_TOOLKIT_UNINSTALL_BEGIN",
+		"TNA_TOOLKIT_UNINSTALL_END",
 		"REFUSED_UNMANAGED_CURRENT",
 		"REFUSED_UNMANAGED_LAUNCHER",
-		"/opt/proxy-runbook-current",
-		"/usr/local/sbin/proxy-node",
+		"/opt/text-node-assistant-current",
+		"/usr/local/sbin/text-node",
 	} {
 		if !strings.Contains(command, required) {
 			t.Fatalf("uninstall command is missing safety element %q", required)
@@ -1196,8 +1279,8 @@ func TestToolkitUninstallCommandIsScopedAndFailClosed(t *testing.T) {
 	for _, forbidden := range []string{
 		"rm -rf /opt",
 		"rm -rf -- /opt",
-		"/etc/proxy-runbook",
-		"/root/.config/proxy-runbook",
+		"/etc/text-node-assistant",
+		"/root/.config/text-node-assistant",
 		"/etc/x-ui",
 		"/etc/nginx",
 		"/etc/letsencrypt",
@@ -1216,10 +1299,10 @@ func TestFullDismantleIsExplicitRescueFirstAndPreservesSSH(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, required := range []string{
-		"[18] 全量拆除本工具施工并恢复原始基线",
-		"[18] Fully dismantle managed construction and restore the original baseline",
+		"[18] 拆除施工和恢复基线",
+		"[18] Dismantle construction and restore the baseline",
 		`case "18":`,
-		"runRemoteAction(a.dismantleManagedNode)",
+		"}, a.dismantleManagedNode)",
 	} {
 		if !strings.Contains(string(mainSource), required) {
 			t.Fatalf("full dismantle menu/dispatch is missing %q", required)
@@ -1235,13 +1318,13 @@ func TestFullDismantleIsExplicitRescueFirstAndPreservesSSH(t *testing.T) {
 		"RESTORE ORIGINAL",
 		"LEGACY FULL RESTORE",
 		"fileSHA256",
-		"PNA_POST_DISMANTLE_VERIFY_OK",
+		"TNA_POST_DISMANTLE_VERIFY_OK",
 	} {
 		if !strings.Contains(string(operationSource), required) {
 			t.Fatalf("rescue-first dismantle operation is missing %q", required)
 		}
 	}
-	script, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/22-dismantle-managed-node.sh")
+	script, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/22-dismantle-managed-node.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1250,12 +1333,12 @@ func TestFullDismantleIsExplicitRescueFirstAndPreservesSSH(t *testing.T) {
 		"--capture-baseline",
 		"BASELINE_MODE=EXACT",
 		"BASELINE_MODE=LEGACY_UNCERTAIN",
-		"PNA_DISMANTLE_PLAN_BEGIN",
-		"PNA_DISMANTLE_CONFIRM",
+		"TNA_DISMANTLE_PLAN_BEGIN",
+		"TNA_DISMANTLE_CONFIRM",
 		"SSH_ACCESS_PRESERVED=1",
 		"PRESERVED_SHARED_BASE_PACKAGES=1",
 		"LEGACY_MANAGED_LISTENERS_ABSENT=1",
-		"PNA_DISMANTLE_END",
+		"TNA_DISMANTLE_END",
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("dismantle safety contract is missing %q", required)
@@ -1273,14 +1356,14 @@ func TestFullDismantleIsExplicitRescueFirstAndPreservesSSH(t *testing.T) {
 			t.Fatalf("dismantle script contains forbidden broad/destructive behavior %q", forbidden)
 		}
 	}
-	auto, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/00-auto-install-or-optimize.sh")
+	auto, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(auto), "22-dismantle-managed-node.sh\" --capture-baseline") {
 		t.Fatal("the install workflow does not capture the original baseline before convergence")
 	}
-	gui, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	gui, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1315,21 +1398,21 @@ func TestManagedToolkitHistoryIncludesImmediatePredecessors(t *testing.T) {
 			t.Fatalf("upgrade/uninstall history lost immediate predecessor %s", oldVersion)
 		}
 	}
-	buildID, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/TOOLKIT_BUILD_ID")
+	buildID, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/TOOLKIT_BUILD_ID")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(buildID) != toolkitBuildID+"\n" {
 		t.Fatalf("EXE and embedded runbook build IDs differ or are not one LF-terminated line: %q vs %q", toolkitBuildID, string(buildID))
 	}
-	revision, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/TOOLKIT_BUILD_REVISION")
+	revision, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/TOOLKIT_BUILD_REVISION")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(revision) != strconv.Itoa(toolkitBuildRevision)+"\n" {
 		t.Fatalf("EXE and embedded runbook build revisions differ: %d vs %q", toolkitBuildRevision, string(revision))
 	}
-	version, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/TOOLKIT_VERSION")
+	version, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/TOOLKIT_VERSION")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1362,7 +1445,7 @@ func TestGeneratedToolkitCommandsHaveValidBashSyntax(t *testing.T) {
 }
 
 func TestRunbookAvoidsKnownInitializationSIGPIPE(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.5/linux/00-auto-install-or-optimize.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1376,7 +1459,7 @@ func TestRunbookAvoidsKnownInitializationSIGPIPE(t *testing.T) {
 }
 
 func TestCertificateIssuanceRequiresPublicACMEPreflight(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.5/linux/05-cover-bootstrap.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/05-cover-bootstrap.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1384,7 +1467,7 @@ func TestCertificateIssuanceRequiresPublicACMEPreflight(t *testing.T) {
 	text := string(source)
 	for _, required := range []string{
 		"umask 022", "install -d -m 755", "auth_basic off", "allow all", "PUBLIC_ACME_HTTP_PREFLIGHT",
-		"PUBLIC_ACME_HTTP_PREFLIGHT_OK", "--noproxy '*'", "PROXY_RUNBOOK_ACME_PUBLIC_PREFLIGHT_FAILURE",
+		"PUBLIC_ACME_HTTP_PREFLIGHT_OK", "--noproxy '*'", "TNA_ACME_PUBLIC_PREFLIGHT_FAILURE",
 		"for attempt in $(seq 1 40)", "for attempt in $(seq 1 10)", "-H 'Connection: close'",
 	} {
 		if !strings.Contains(text, required) {
@@ -1402,7 +1485,7 @@ func TestCertificateIssuanceRequiresPublicACMEPreflight(t *testing.T) {
 	if probeWrite < 0 || reload <= probeWrite || localRetry <= reload {
 		t.Fatal("ACME probe must exist before nginx reload and be retried after reload")
 	}
-	diagnosis, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/16-auto-diagnose.sh")
+	diagnosis, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/16-auto-diagnose.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1413,8 +1496,65 @@ func TestCertificateIssuanceRequiresPublicACMEPreflight(t *testing.T) {
 	}
 }
 
+func TestCdnCertificatePreparesProtectedOriginBeforeAcme(t *testing.T) {
+	path := "runbook/text-node-assistant-v0.9.5/linux/05h-ensure-cdn-certificate.sh"
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"--prepare-public-origin",
+		"bash \"$CF_LOCK\" fetch",
+		"bash \"$CF_LOCK\" apply",
+		"listen ${PUBLIC_IP}:8443;",
+		"TNA_MANAGED_ACME_ORIGIN_HTTP_V095",
+		"TNA_CDN_ACME_ORIGIN_PREPARED=1",
+		"CLOUDFLARE_FIREWALL_APPLIED=1",
+		"rm -f -- \"$acme_vhost\"",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("protected ACME origin preparation is missing %q", required)
+		}
+	}
+	prepare := strings.Index(text, "prepare_public_origin_for_acme || exit")
+	publicPreflight := strings.Index(text, "for _ in $(seq 1 12)")
+	if prepare < 0 || publicPreflight < 0 || prepare >= publicPreflight {
+		t.Fatal("protected public 8443 preparation must happen before public ACME preflight")
+	}
+	cdnSource, err := os.ReadFile("cdn_xhttp.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cdnSource), "--prepare-public-origin") {
+		t.Fatal("GUI must request protected public-origin preparation for orange/dual certificate issuance")
+	}
+	if !strings.Contains(string(cdnSource), "shQuote(publicIP)+\" --prepare-public-origin\"") {
+		t.Fatal("GUI must pass the discovered public VPS address to the protected ACME-origin preparation")
+	}
+}
+
+func TestXHTTPCreatePayloadBindsDomainForJQ(t *testing.T) {
+	path := "runbook/text-node-assistant-v0.9.5/linux/04f-xhttp-cdn-api.sh"
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, `--arg domain "$domain"`) {
+		t.Fatal("XHTTP create payload must bind the shell domain as a jq argument")
+	}
+	create := strings.Index(text, "payload=\"$(jq -nc")
+	if create < 0 {
+		t.Fatal("XHTTP create payload block is missing")
+	}
+	if strings.Index(text[create:], `--arg domain "$domain"`) < 0 {
+		t.Fatal("XHTTP create payload references $domain without binding it")
+	}
+}
+
 func TestWARPInstallerRefreshesRotatedKeyBeforeRepositoryUpdate(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.5/linux/06-warp-install.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/06-warp-install.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1423,7 +1563,7 @@ func TestWARPInstallerRefreshesRotatedKeyBeforeRepositoryUpdate(t *testing.T) {
 	for _, required := range []string{
 		"pkg.cloudflareclient.com/pubkey.gpg",
 		"CLOUDFLARE_WARP_KEYRING_REFRESHED",
-		".proxy-runbook-disabled",
+		".text-node-assistant-disabled",
 		"install -o root -g root -m 644",
 	} {
 		if !strings.Contains(text, required) {
@@ -1438,7 +1578,7 @@ func TestWARPInstallerRefreshesRotatedKeyBeforeRepositoryUpdate(t *testing.T) {
 }
 
 func TestRealityUUIDParsingAcceptsStringOrObjectAndRejectsJSONBlob(t *testing.T) {
-	library, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/lib-xui-api.sh")
+	library, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1449,8 +1589,8 @@ func TestRealityUUIDParsingAcceptsStringOrObjectAndRejectsJSONBlob(t *testing.T)
 		}
 	}
 	for _, path := range []string{
-		"runbook/proxy-runbook-v0.9.5/linux/04a-reality-api.sh",
-		"runbook/proxy-runbook-v0.9.5/linux/04d-optimize-existing-reality-shadow.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/04a-reality-api.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/04d-optimize-existing-reality-shadow.sh",
 	} {
 		source, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -1463,7 +1603,7 @@ func TestRealityUUIDParsingAcceptsStringOrObjectAndRejectsJSONBlob(t *testing.T)
 }
 
 func TestToolkitManifestIsLinuxCompatibleAndMatchesFiles(t *testing.T) {
-	root := "runbook/proxy-runbook-v0.9.5"
+	root := "runbook/text-node-assistant-v0.9.5"
 	manifestPath := filepath.Join(root, "SHA256SUMS.txt")
 	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -1498,7 +1638,7 @@ func TestToolkitManifestIsLinuxCompatibleAndMatchesFiles(t *testing.T) {
 }
 
 func TestXUIAPITokenGenerationIsLastResortOnly(t *testing.T) {
-	libraryPath := "runbook/proxy-runbook-v0.9.5/linux/lib-xui-api.sh"
+	libraryPath := "runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh"
 	source, err := os.ReadFile(libraryPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1521,8 +1661,8 @@ func TestXUIAPITokenGenerationIsLastResortOnly(t *testing.T) {
 	}
 
 	for _, path := range []string{
-		"runbook/proxy-runbook-v0.9.5/linux/03c-rotate-panel-credentials.sh",
-		"runbook/proxy-runbook-v0.9.5/linux/03d-export-panel-handoff.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/03c-rotate-panel-credentials.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/03d-export-panel-handoff.sh",
 	} {
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -1539,7 +1679,7 @@ func TestXUIAPITokenGenerationIsLastResortOnly(t *testing.T) {
 }
 
 func TestWarpRouteHasNoOpBeforeBackupAndUpdate(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.5/linux/07a-apply-warp-route-local.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/07a-apply-warp-route-local.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1570,8 +1710,8 @@ func TestWarpRouteHasNoOpBeforeBackupAndUpdate(t *testing.T) {
 
 func TestRealitySubscriptionShareAddressCannotFallBackToLocalhost(t *testing.T) {
 	paths := []string{
-		"runbook/proxy-runbook-v0.9.5/linux/04a-reality-api.sh",
-		"runbook/proxy-runbook-v0.9.5/linux/04d-optimize-existing-reality-shadow.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/04a-reality-api.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/04d-optimize-existing-reality-shadow.sh",
 	}
 	for _, path := range paths {
 		source, err := os.ReadFile(path)
@@ -1585,7 +1725,7 @@ func TestRealitySubscriptionShareAddressCannotFallBackToLocalhost(t *testing.T) 
 			}
 		}
 	}
-	apiSource, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/04a-reality-api.sh")
+	apiSource, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/04a-reality-api.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1597,19 +1737,19 @@ func TestRealitySubscriptionShareAddressCannotFallBackToLocalhost(t *testing.T) 
 }
 
 func TestSubscriptionServiceUsesLocalListenerAndCoverTLSProxy(t *testing.T) {
-	backend, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/05c-optimize-cover-backend.sh")
+	backend, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/05c-optimize-cover-backend.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	configure, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/05d-configure-subscription.sh")
+	configure, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/05d-configure-subscription.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	diagnosis, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/16-auto-diagnose.sh")
+	diagnosis, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/16-auto-diagnose.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"location ^~ /sub/", "proxy_pass http://127.0.0.1:2096;", "X-Forwarded-Proto https"} {
+	for _, required := range []string{"location ^~ /sub/", "SUB_PROXY_PORT=2097", "X-Forwarded-Proto https"} {
 		if !strings.Contains(string(backend), required) {
 			t.Fatalf("cover backend is missing %q", required)
 		}
@@ -1645,7 +1785,7 @@ func TestCoverTemplateChoiceNormalization(t *testing.T) {
 }
 
 func TestCoverTemplateLibraryHasFifteenDistinctLocalFullPages(t *testing.T) {
-	root := "runbook/proxy-runbook-v0.9.5/templates/cover-sites"
+	root := "runbook/text-node-assistant-v0.9.5/templates/cover-sites"
 	manifestData, err := os.ReadFile(filepath.Join(root, "MANIFEST.tsv"))
 	if err != nil {
 		t.Fatal(err)
@@ -1680,7 +1820,7 @@ func TestCoverTemplateLibraryHasFifteenDistinctLocalFullPages(t *testing.T) {
 		if len(body) < 2500 {
 			t.Fatalf("template %d is too short to be a full page: %d bytes", id, len(body))
 		}
-		for _, required := range []string{"proxy-runbook-cover-library-v2", "name=\"viewport\"", "{{DOMAIN}}", "{{YEAR}}", "{{UPDATED}}", "@media"} {
+		for _, required := range []string{"text-node-assistant-cover-library-v2", "name=\"viewport\"", "{{DOMAIN}}", "{{YEAR}}", "{{UPDATED}}", "@media"} {
 			if !strings.Contains(text, required) {
 				t.Fatalf("template %d is missing %q", id, required)
 			}
@@ -1700,7 +1840,7 @@ func TestCoverTemplateLibraryHasFifteenDistinctLocalFullPages(t *testing.T) {
 }
 
 func TestSignalRunnerIsAnOriginalLocalInteractiveTemplate(t *testing.T) {
-	body, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/templates/cover-sites/15-signal-runner.html")
+	body, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/templates/cover-sites/15-signal-runner.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1713,7 +1853,7 @@ func TestSignalRunnerIsAnOriginalLocalInteractiveTemplate(t *testing.T) {
 }
 
 func TestCoverTemplateSelectionIsWiredThroughDeployAndMaintenance(t *testing.T) {
-	installer, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/05b-cover-site-polished.sh")
+	installer, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/05b-cover-site-polished.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1723,18 +1863,18 @@ func TestCoverTemplateSelectionIsWiredThroughDeployAndMaintenance(t *testing.T) 
 			t.Fatalf("cover installer is missing %q", required)
 		}
 	}
-	auto, err := os.ReadFile("runbook/proxy-runbook-v0.9.5/linux/00-auto-install-or-optimize.sh")
+	auto, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(auto), "PROXY_RUNBOOK_COVER_TEMPLATE") || strings.Count(string(auto), "COVER_TEMPLATE_CHOICE") < 5 {
+	if !strings.Contains(string(auto), "TNA_COVER_TEMPLATE") || strings.Count(string(auto), "COVER_TEMPLATE_CHOICE") < 5 {
 		t.Fatal("adaptive deployment does not propagate the selected cover template through every managed-site branch")
 	}
 	operations, err := os.ReadFile("operations.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"chooseCoverTemplate(c)", "PROXY_RUNBOOK_COVER_TEMPLATE=", "1—15", "05b-cover-site-polished.sh --list"} {
+	for _, required := range []string{"chooseCoverTemplate(c)", "TNA_COVER_TEMPLATE=", "1—15", "05b-cover-site-polished.sh --list"} {
 		if !strings.Contains(string(operations), required) {
 			t.Fatalf("Windows menu integration is missing %q", required)
 		}

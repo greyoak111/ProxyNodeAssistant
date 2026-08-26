@@ -21,9 +21,9 @@ class ManagedKeyRepository(context: Context, private val vault: EncryptedVault) 
         val pair = Ed25519KeyPairGenerator().generateKeyPair()
         val privateKey = pair.private as Ed25519PrivateKey
         val publicKey = pair.public as Ed25519PublicKey
-        val privateText = OpenSSHKeyEncoder.exportOpenSSH(privateKey, publicKey, "proxy-node-assistant-android")
+        val privateText = OpenSSHKeyEncoder.exportOpenSSH(privateKey, publicKey, "text-node-assistant-android")
         val blob = Ed25519Verify.get().encodePublicKey(publicKey)
-        val publicText = "ssh-ed25519 ${Base64.encodeToString(blob, Base64.NO_WRAP)} proxy-node-assistant-android"
+        val publicText = "ssh-ed25519 ${Base64.encodeToString(blob, Base64.NO_WRAP)} text-node-assistant-android"
         return ManagedKeyRecord(targetId, privateText, publicText)
     }
 

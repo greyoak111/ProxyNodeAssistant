@@ -2,19 +2,19 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-grep -q 'CURRENT-LOGIN-CREDENTIALS.env' "$ROOT/runbook/proxy-runbook-v0.9.5/linux/lib-handoff.sh"
-grep -q 'handoff_restore_stored_login_credentials' "$ROOT/runbook/proxy-runbook-v0.9.5/linux/lib-handoff.sh"
-grep -q '完整交接表必须包含' "$ROOT/runbook/proxy-runbook-v0.9.5/linux/00-auto-install-or-optimize.sh"
-grep -q 'handoff_login_form_complete || exit 85' "$ROOT/runbook/proxy-runbook-v0.9.5/linux/00-auto-install-or-optimize.sh"
-grep -q 'xui_password_login_works' "$ROOT/runbook/proxy-runbook-v0.9.5/linux/03c-rotate-panel-credentials.sh"
-installer="$ROOT/runbook/proxy-runbook-v0.9.5/linux/00-auto-install-or-optimize.sh"
+grep -q 'CURRENT-LOGIN-CREDENTIALS.env' "$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-handoff.sh"
+grep -q 'handoff_restore_stored_login_credentials' "$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-handoff.sh"
+grep -q '完整交接表必须包含' "$ROOT/runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh"
+grep -q 'handoff_login_form_complete || exit 85' "$ROOT/runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh"
+grep -q 'xui_password_login_works' "$ROOT/runbook/text-node-assistant-v0.9.5/linux/03c-rotate-panel-credentials.sh"
+installer="$ROOT/runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh"
 source_line="$(grep -nF '. "$ROOT/linux/lib-xui-api.sh"' "$installer" | sed -n '1{s/:.*//;p}')"
 call_line="$(grep -nF 'xui_password_login_works "$PANEL_STORED_USER" "$PANEL_STORED_PASSWORD"' "$installer" | sed -n '1{s/:.*//;p}')"
 [ -n "$source_line" ] || { echo 'main installer does not source lib-xui-api.sh' >&2; exit 1; }
 [ -n "$call_line" ] || { echo 'main installer no longer validates stored panel credentials' >&2; exit 1; }
 [ "$source_line" -lt "$call_line" ] || { echo 'lib-xui-api.sh is sourced after its first use' >&2; exit 1; }
-grep -q '/csrf-token' "$ROOT/runbook/proxy-runbook-v0.9.5/linux/lib-xui-api.sh"
-grep -q 'X-CSRF-Token:' "$ROOT/runbook/proxy-runbook-v0.9.5/linux/lib-xui-api.sh"
+grep -q '/csrf-token' "$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh"
+grep -q 'X-CSRF-Token:' "$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh"
 
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
@@ -25,10 +25,10 @@ esac
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export PNA_HANDOFF_DIR="$TMP/handoff"
+export TNA_HANDOFF_DIR="$TMP/handoff"
 
 # shellcheck source=/dev/null
-. "$ROOT/runbook/proxy-runbook-v0.9.5/linux/lib-handoff.sh"
+. "$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-handoff.sh"
 
 handoff_init
 handoff_set VPS_LOGIN_USER root

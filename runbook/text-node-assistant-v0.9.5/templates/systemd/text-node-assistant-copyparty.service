@@ -1,0 +1,44 @@
+# TNA_MANAGED_COPYPARTY_SYSTEMD_V095
+[Unit]
+Description=TextNodeAssistant managed private drive (copyparty)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=copyparty
+Group=copyparty
+WorkingDirectory=/var/lib/text-node-assistant/copyparty
+Environment=PYTHONUNBUFFERED=1
+Environment=XDG_CONFIG_HOME=/var/lib/text-node-assistant/copyparty/.config
+ExecStart=/usr/bin/python3 /opt/text-node-assistant/copyparty/copyparty-sfx.py -c /etc/text-node-assistant/copyparty.conf -i 127.0.0.1 -p @LOOPBACK_PORT@ --http-only --no-crt
+ExecReload=/bin/kill -s USR1 $MAINPID
+Restart=on-failure
+RestartSec=3s
+TimeoutStartSec=45s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectProc=invisible
+LockPersonality=true
+RemoveIPC=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+# Copyparty uses netlink only to enumerate local interfaces. Without AF_NETLINK
+# Linux returns EAFNOSUPPORT and the application can fall back to a wildcard
+# listener even though the managed config requests 127.0.0.1.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadWritePaths=@DATA_ROOT@ /var/lib/text-node-assistant/copyparty /var/log/text-node-assistant/copyparty
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,6 @@
 package com.proxynodeassistant.android.remote
 
+import com.proxynodeassistant.android.core.Product
 import com.proxynodeassistant.android.model.PanelMetadata
 import com.proxynodeassistant.android.model.StableNodeIdentity
 import com.proxynodeassistant.android.model.ToolkitProbe
@@ -10,14 +11,23 @@ import java.nio.charset.StandardCharsets
 object ProtocolParsers {
     data class CdnXHttpLink(val uuid: String, val domain: String, val port: Int, val path: String, val label: String)
 
-    const val HANDOFF_BEGIN = "__PNA_HANDOFF_BEGIN__"
-    const val HANDOFF_END = "__PNA_HANDOFF_END__"
-    const val PANEL_BEGIN = "__PNA_PANEL_META_BEGIN__"
-    const val PANEL_END = "__PNA_PANEL_META_END__"
-    const val TOOLKIT_BEGIN = "__PNA_TOOLKIT_PROBE_BEGIN__"
-    const val TOOLKIT_END = "__PNA_TOOLKIT_PROBE_END__"
-	const val NODE_IDENTITY_BEGIN = "__PNA_NODE_IDENTITY_V1_BEGIN__"
-	const val NODE_IDENTITY_END = "__PNA_NODE_IDENTITY_V1_END__"
+    const val HANDOFF_BEGIN = "__TNA_HANDOFF_BEGIN__"
+    const val HANDOFF_END = "__TNA_HANDOFF_END__"
+    const val PANEL_BEGIN = "__TNA_PANEL_META_BEGIN__"
+    const val PANEL_END = "__TNA_PANEL_META_END__"
+    const val TOOLKIT_BEGIN = "__TNA_TOOLKIT_PROBE_BEGIN__"
+    const val TOOLKIT_END = "__TNA_TOOLKIT_PROBE_END__"
+	const val NODE_IDENTITY_BEGIN = "__TNA_NODE_IDENTITY_V1_BEGIN__"
+	const val NODE_IDENTITY_END = "__TNA_NODE_IDENTITY_V1_END__"
+
+    private const val LEGACY_HANDOFF_BEGIN = "__PNA_HANDOFF_BEGIN__"
+    private const val LEGACY_HANDOFF_END = "__PNA_HANDOFF_END__"
+    private const val LEGACY_PANEL_BEGIN = "__PNA_PANEL_META_BEGIN__"
+    private const val LEGACY_PANEL_END = "__PNA_PANEL_META_END__"
+    private const val LEGACY_TOOLKIT_BEGIN = "__PNA_TOOLKIT_PROBE_BEGIN__"
+    private const val LEGACY_TOOLKIT_END = "__PNA_TOOLKIT_PROBE_END__"
+    private const val LEGACY_NODE_IDENTITY_BEGIN = "__PNA_NODE_IDENTITY_V1_BEGIN__"
+    private const val LEGACY_NODE_IDENTITY_END = "__PNA_NODE_IDENTITY_V1_END__"
 
     fun markedBlock(value: String, begin: String, end: String): String {
         val lines = SshHandle.stripAnsi(value).replace("\r\n", "\n").lines()
@@ -28,6 +38,9 @@ object ProtocolParsers {
         require(finish > start) { "required end marker is missing" }
         return lines.subList(start + 1, finish).joinToString("\n").trim().also { require(it.isNotEmpty()) { "marked output is empty" } }
     }
+
+    private fun markedBlockCurrentOrLegacy(value: String, begin: String, end: String, legacyBegin: String, legacyEnd: String): String =
+        runCatching { markedBlock(value, begin, end) }.getOrElse { markedBlock(value, legacyBegin, legacyEnd) }
 
     fun kv(value: String): Map<String, String> = buildMap {
         value.replace("\r\n", "\n").lines().forEach { raw ->
@@ -40,7 +53,7 @@ object ProtocolParsers {
     }
 
     fun handoff(value: String): String {
-        val payload = markedBlock(value, HANDOFF_BEGIN, HANDOFF_END)
+        val payload = markedBlockCurrentOrLegacy(value, HANDOFF_BEGIN, HANDOFF_END, LEGACY_HANDOFF_BEGIN, LEGACY_HANDOFF_END)
         val values = kv(payload)
         require(values["HANDOFF_RUN_STARTED"].orEmpty().isNotBlank()) { "handoff run marker is missing" }
         val useful = listOf("PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_API_TOKEN", "VPS_LOGIN_PASSWORD", "UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY", "VLESS_LINK", "COVER_DOMAIN", "PUBLIC_IP_AT_HANDOFF")
@@ -67,9 +80,9 @@ object ProtocolParsers {
                 fields["FORM_PANEL_LOCAL_URL"]?.takeIf { it.isNotBlank() }?.let { append("PANEL_LOCAL_URL=$it\n") }
                 append("===== END REQUIRED LOGIN CREDENTIALS =====")
             }
-            append("\n\n===== PNA COMPLETE HANDOFF v0.9.5 =====\n")
+            append("\n\n===== TNA COMPLETE HANDOFF v0.9.5 =====\n")
             lines.filterNot { it.startsWith("FORM_") }.forEach { append(it).append('\n') }
-            append("===== END PNA COMPLETE HANDOFF v0.9.5 =====")
+            append("===== END TNA COMPLETE HANDOFF v0.9.5 =====")
         }
     }
 
@@ -120,13 +133,14 @@ object ProtocolParsers {
         exact("mode", "packet-up")
         val path = query["path"]?.singleOrNull().orEmpty()
         require(path.matches(Regex("^/[0-9a-f]{32}/$"))) { "invalid XHTTP path" }
-        val expectedLabel = if (port == 8443) "PNA-CDN-XHTTP-STAGE" else "PNA-CDN-XHTTP"
-        require(parsed.fragment == expectedLabel) { "invalid profile label" }
-        return CdnXHttpLink(uuid, domain, port, path, expectedLabel)
+        val currentLabel = if (port == 8443) "TNA-CDN-XHTTP-STAGE" else "TNA-CDN-XHTTP"
+        val legacyLabel = if (port == 8443) "PNA-CDN-XHTTP-STAGE" else "PNA-CDN-XHTTP"
+        require(parsed.fragment == currentLabel || parsed.fragment == legacyLabel) { "invalid profile label" }
+        return CdnXHttpLink(uuid, domain, port, path, parsed.fragment.orEmpty())
     }
 
     fun panel(value: String): PanelMetadata {
-        val values = kv(markedBlock(value, PANEL_BEGIN, PANEL_END))
+        val values = kv(markedBlockCurrentOrLegacy(value, PANEL_BEGIN, PANEL_END, LEGACY_PANEL_BEGIN, LEGACY_PANEL_END))
         val port = values["PANEL_PORT"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: error("invalid or empty panel port")
         var path = values["WEB_BASE_PATH"].orEmpty().trim()
         require(path.isNotBlank() && path.none { it in "\r\n\t ?#\\" }) { "unsafe or empty panel path" }
@@ -138,7 +152,7 @@ object ProtocolParsers {
     }
 
     fun toolkit(value: String): ToolkitProbe {
-        val values = kv(markedBlock(value, TOOLKIT_BEGIN, TOOLKIT_END))
+        val values = kv(markedBlockCurrentOrLegacy(value, TOOLKIT_BEGIN, TOOLKIT_END, LEGACY_TOOLKIT_BEGIN, LEGACY_TOOLKIT_END))
         when (values["TOOLKIT_PRESENT"]) {
             "0" -> return ToolkitProbe(false, false)
             "1" -> Unit
@@ -146,6 +160,9 @@ object ProtocolParsers {
         }
         val version = values["TOOLKIT_VERSION"].orEmpty().removePrefix("v")
         require(version.matches(Regex("^[0-9]+(?:\\.[0-9]+){1,3}$"))) { "invalid toolkit version" }
+        val brand = values["TOOLKIT_BRAND"].orEmpty()
+        val root = values["TOOLKIT_ROOT"].orEmpty()
+        require((brand == "TNA" && root == Product.REMOTE_ROOT) || (brand == "PNA_LEGACY" && root == Product.LEGACY_REMOTE_ROOT)) { "invalid toolkit brand/root" }
         val revision = values["TOOLKIT_BUILD_REVISION"].orEmpty().toIntOrNull() ?: 0
         require(revision in 0..1_000_000_000) { "invalid build revision" }
         val complete = when (values["TOOLKIT_COMPLETE"]) {
@@ -153,19 +170,19 @@ object ProtocolParsers {
             "1" -> true
             else -> error("invalid toolkit completeness flag")
         }
-        return ToolkitProbe(true, complete, version, values["TOOLKIT_BUILD_ID"].orEmpty(), revision)
+        return ToolkitProbe(true, complete, brand, root, version, values["TOOLKIT_BUILD_ID"].orEmpty(), revision)
     }
 
 	fun stableNodeIdentity(value: String, targetId: String): StableNodeIdentity {
-		val values = kv(markedBlock(value, NODE_IDENTITY_BEGIN, NODE_IDENTITY_END))
+		val values = kv(markedBlockCurrentOrLegacy(value, NODE_IDENTITY_BEGIN, NODE_IDENTITY_END, LEGACY_NODE_IDENTITY_BEGIN, LEGACY_NODE_IDENTITY_END))
 		val serverId = values["SERVER_ID"].orEmpty()
 		val nodeId = values["NODE_ID"].orEmpty()
 		val machine = values["MACHINE_ID_SHA256"].orEmpty()
 		val hostKey = values["SSH_HOST_KEY_SHA256"].orEmpty()
 		val firstIp = values["FIRST_KNOWN_PUBLIC_IP"].orEmpty()
 		val currentIp = values["CURRENT_PUBLIC_IP"].orEmpty()
-		require(serverId.matches(Regex("^pna-srv-[0-9a-f]{32}$"))) { "invalid SERVER_ID" }
-		require(nodeId.matches(Regex("^pna-node-[0-9a-f]{32}$"))) { "invalid NODE_ID" }
+		require(serverId.matches(Regex("^(?:tna|pna)-srv-[0-9a-f]{32}$"))) { "invalid SERVER_ID" }
+		require(nodeId.matches(Regex("^(?:tna|pna)-node-[0-9a-f]{32}$"))) { "invalid NODE_ID" }
 		require(machine.matches(Regex("^[0-9a-f]{64}$"))) { "invalid machine-id hash" }
 		require(hostKey.matches(Regex("^SHA256:[A-Za-z0-9+/]+$"))) { "invalid host-key fingerprint" }
 		require(values["MACHINE_ID_MATCH"] == "1" && values["SSH_HOST_KEY_MATCH"] == "1") { "stable node identity mismatch" }

@@ -34,6 +34,36 @@ func (r dnsProbeResult) Summary() string {
 	return fmt.Sprintf("system=%s cloudflare=%s google=%s", state(r.System), state(r.Cloudflare), state(r.Google))
 }
 
+// orangeDNSProbeResult records whether each resolver can see an IPv4 answer
+// for an orange-cloud hostname. Unlike the gray/DNS-only probe, the answer
+// must not be compared with the VPS address: Cloudflare intentionally returns
+// an Anycast edge address for a proxied record. This probe is only the DNS
+// readiness gate; the later CDN edge and real-client checks remain mandatory.
+type orangeDNSProbeResult struct {
+	System     bool
+	Cloudflare bool
+	Google     bool
+}
+
+// Accepted permits a working system resolver or either public resolver. Some
+// networks block direct HTTPS requests to 1.1.1.1/8.8.8.8 (and local TUN/DNS
+// filters can make both DoH probes time out), while the OS resolver still has
+// a fresh answer. Accepting that signal avoids a false stop; subsequent
+// Cloudflare edge validation is the authoritative orange-cloud check.
+func (r orangeDNSProbeResult) Accepted() bool {
+	return r.System || r.Cloudflare || r.Google
+}
+
+func (r orangeDNSProbeResult) Summary() string {
+	state := func(ok bool) string {
+		if ok {
+			return "MATCH"
+		}
+		return "MISS"
+	}
+	return fmt.Sprintf("system=%s cloudflare=%s google=%s", state(r.System), state(r.Cloudflare), state(r.Google))
+}
+
 type dnsProbeDependencies struct {
 	SystemLookup func(context.Context, string) ([]net.IP, error)
 	PublicLookup func(context.Context, string, string) ([]net.IP, error)
@@ -178,6 +208,73 @@ func probeDomainDNS(domain, publicIP string, deps dnsProbeDependencies) dnsProbe
 		}
 	}
 	return result
+}
+
+// probeOrangeDNS checks only for the existence of an IPv4 answer. It keeps
+// the same bounded/concurrent behavior as probeDomainDNS, but returns partial
+// observations when one or more public resolvers time out so a usable system
+// resolver is not discarded.
+func probeOrangeDNS(domain string, deps dnsProbeDependencies) orangeDNSProbeResult {
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if !validDomain(domain) || deps.SystemLookup == nil || deps.PublicLookup == nil {
+		return orangeDNSProbeResult{}
+	}
+	timeout := deps.Timeout
+	if timeout <= 0 {
+		timeout = localDNSProbeTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	type observation struct {
+		provider string
+		visible  bool
+	}
+	results := make(chan observation, 3)
+	launch := func(provider string, lookup func(context.Context) ([]net.IP, error)) {
+		go func() {
+			addresses, err := lookup(ctx)
+			results <- observation{provider: provider, visible: err == nil && hasIPv4(addresses)}
+		}()
+	}
+	launch("system", func(ctx context.Context) ([]net.IP, error) {
+		return deps.SystemLookup(ctx, domain)
+	})
+	for _, provider := range []string{"cloudflare", "google"} {
+		provider := provider
+		launch(provider, func(ctx context.Context) ([]net.IP, error) {
+			return deps.PublicLookup(ctx, provider, domain)
+		})
+	}
+
+	var result orangeDNSProbeResult
+	for received := 0; received < 3; received++ {
+		select {
+		case observation := <-results:
+			switch observation.provider {
+			case "system":
+				result.System = observation.visible
+			case "cloudflare":
+				result.Cloudflare = observation.visible
+			case "google":
+				result.Google = observation.visible
+			}
+		case <-ctx.Done():
+			// Keep observations already received. A public DoH timeout must
+			// not erase a successful system lookup.
+			return result
+		}
+	}
+	return result
+}
+
+func hasIPv4(addresses []net.IP) bool {
+	for _, address := range addresses {
+		if address != nil && address.To4() != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func domainDNSProbe(domain, publicIP string) dnsProbeResult {

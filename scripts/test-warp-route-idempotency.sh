@@ -23,7 +23,7 @@ case " $* " in
   *' -o /dev/null '*) exit 0 ;;
   *'/panel/api/xray/'*) printf '{"success":true}\n' ;;
   *)
-    printf '%s\n' "$*" > "$PNA_UNEXPECTED_CURL_MARKER"
+    printf '%s\n' "$*" > "$TNA_UNEXPECTED_CURL_MARKER"
     exit 91
     ;;
 esac
@@ -48,16 +48,16 @@ EOF
 chmod 700 "$TMP/bin/fake-xui" "$TMP/bin/curl" "$TMP/bin/jq"
 
 export PATH="$TMP/bin:$PATH"
-export PNA_XUI_BIN="$TMP/bin/fake-xui"
-export PNA_XUI_PUBLIC_FILE="$TMP/state/public.env"
-export PNA_XUI_INSTALL_RESULT_FILE="$TMP/state/install-result.env"
-export PNA_XUI_HANDOFF_FILE="$TMP/state/HANDOFF-SECRETS.txt"
-export PNA_XUI_TOKEN_CACHE_FILE="$TMP/state/XUI_API_TOKEN"
-export PNA_UNEXPECTED_CURL_MARKER="$TMP/state/unexpected-curl"
-printf 'PANEL_API_TOKEN=test-token\n' > "$PNA_XUI_HANDOFF_FILE"
+export TNA_XUI_BIN="$TMP/bin/fake-xui"
+export TNA_XUI_PUBLIC_FILE="$TMP/state/public.env"
+export TNA_XUI_INSTALL_RESULT_FILE="$TMP/state/install-result.env"
+export TNA_XUI_HANDOFF_FILE="$TMP/state/HANDOFF-SECRETS.txt"
+export TNA_XUI_TOKEN_CACHE_FILE="$TMP/state/XUI_API_TOKEN"
+export TNA_UNEXPECTED_CURL_MARKER="$TMP/state/unexpected-curl"
+printf 'PANEL_API_TOKEN=test-token\n' > "$TNA_XUI_HANDOFF_FILE"
 
-output="$(bash "$ROOT/runbook/proxy-runbook-v0.9.5/linux/07a-apply-warp-route-local.sh" 40000)"
+output="$(bash "$ROOT/runbook/text-node-assistant-v0.9.5/linux/07a-apply-warp-route-local.sh" 40000)"
 [ "$output" = 'XRAY_WARP_ROUTE_ALREADY_OPTIMAL' ]
-[ ! -e "$PNA_UNEXPECTED_CURL_MARKER" ]
+[ ! -e "$TNA_UNEXPECTED_CURL_MARKER" ]
 
 echo WARP_ROUTE_IDEMPOTENCY_TEST_OK

@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         x:Name="RootWindow"
-        Title="ProxyNodeAssistant v0.9.5"
+        Title="TextNodeAssistant v0.9.5"
         Width="1280" Height="820" MinWidth="980" MinHeight="680"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None" ResizeMode="CanResize"
@@ -138,7 +138,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type ComboBoxItem}">
                         <Border x:Name="ItemBody" Background="{TemplateBinding Background}" BorderBrush="#172931" BorderThickness="0,0,0,1">
-                            <ContentPresenter Margin="{TemplateBinding Padding}" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}" TextElement.Foreground="{TemplateBinding Foreground}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
@@ -151,6 +151,47 @@
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Foreground" Value="#4A5C65" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DarkComboBoxStyle" TargetType="{x:Type ComboBox}">
+            <Setter Property="Foreground" Value="#DDECF0" />
+            <Setter Property="Background" Value="#071116" />
+            <Setter Property="BorderBrush" Value="#28505D" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                        <Grid>
+                            <ToggleButton x:Name="DropButton" Focusable="False" ClickMode="Press" IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}}" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                                <Grid>
+                                    <ContentPresenter x:Name="SelectionContent" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}" TextElement.Foreground="{TemplateBinding Foreground}" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" />
+                                    <TextBlock Text="⌄" Foreground="#62D8E8" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,2" IsHitTestVisible="False" />
+                                </Grid>
+                            </ToggleButton>
+                            <Popup x:Name="DropPopup" AllowsTransparency="True" Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" PopupAnimation="Fade">
+                                <Border Background="#071116" BorderBrush="#28505D" BorderThickness="1" MinWidth="{Binding ActualWidth, ElementName=DropButton}">
+                                    <ScrollViewer MaxHeight="320" CanContentScroll="True">
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="DropButton" Property="BorderBrush" Value="#12CBE8" />
+                            </Trigger>
+                            <Trigger Property="IsDropDownOpen" Value="True">
+                                <Setter TargetName="DropButton" Property="BorderBrush" Value="#12CBE8" />
+                                <Setter TargetName="DropButton" Property="Background" Value="#0A2028" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="DropButton" Property="Opacity" Value="0.55" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -328,9 +369,9 @@
                         <ColumnDefinition Width="40" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <Image x:Name="BrandIcon" Width="30" Height="30" Stretch="Uniform" SnapsToDevicePixels="True" ToolTip="ProxyNodeAssistant" />
+                    <Image x:Name="BrandIcon" Width="30" Height="30" Stretch="Uniform" SnapsToDevicePixels="True" ToolTip="TextNodeAssistant" />
                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="7,0,0,0">
-                        <TextBlock Text="PNA // NODE OPS" FontFamily="Cascadia Mono, Consolas" FontSize="12" FontWeight="Bold" Foreground="#E3F6FA" />
+                        <TextBlock Text="TNA // NODE OPS" FontFamily="Cascadia Mono, Consolas" FontSize="12" FontWeight="Bold" Foreground="#E3F6FA" />
                         <TextBlock Text="BUILD 0.9.5  /  LOCAL" Foreground="#536771" FontFamily="Cascadia Mono, Consolas" FontSize="8.5" Margin="0,3,0,0" />
                     </StackPanel>
                 </Grid>
@@ -378,6 +419,7 @@
                         </Border>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+						<Button x:Name="ReturnToDriveButton" Content="&#xE8B7;  私人网盘" FontFamily="Segoe UI, Segoe MDL2 Assets" Style="{StaticResource SecondaryButtonStyle}" Height="34" Padding="13,0" Margin="0,0,8,0" />
                         <Button x:Name="LanguageButton" Content="EN" Style="{StaticResource SecondaryButtonStyle}" Height="34" Padding="13,0" Margin="0,0,8,0" />
                         <Button x:Name="MinimizeButton" Content="&#xE921;" Style="{StaticResource WindowButtonStyle}" />
                         <Button x:Name="MaximizeButton" Content="&#xE922;" Style="{StaticResource WindowButtonStyle}" />
@@ -395,7 +437,7 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock x:Name="HeroEyebrow" Text="// PNA CONTROL FABRIC  /  SESSION:LOCAL" Foreground="#26D8EF" FontFamily="Cascadia Mono, Consolas" FontSize="9" FontWeight="Bold" />
+                                <TextBlock x:Name="HeroEyebrow" Text="// TNA CONTROL FABRIC  /  SESSION:LOCAL" Foreground="#26D8EF" FontFamily="Cascadia Mono, Consolas" FontSize="9" FontWeight="Bold" />
                                 <TextBlock x:Name="HeroTitle" Text="节点基础设施控制台" FontSize="23" FontWeight="SemiBold" Margin="0,7,0,0" />
                                 <TextBlock x:Name="HeroSubtitle" Text="连接、输入、确认、进度和结果全部留在图形客户端内，不再弹出控制台。" Foreground="{StaticResource SoftText}" FontFamily="Cascadia Mono, Consolas" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" MaxWidth="720" />
                                 <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
@@ -459,7 +501,7 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock x:Name="FooterStatus" Text="就绪 · 选择一项操作开始" Foreground="#72829B" FontSize="11" VerticalAlignment="Center" />
-                    <TextBlock Grid.Column="1" Text="ProxyNodeAssistant 0.9.5" Foreground="#526078" FontSize="10" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Text="TextNodeAssistant 0.9.5" Foreground="#526078" FontSize="10" VerticalAlignment="Center" />
                 </Grid>
             </Border>
         </Grid>
@@ -535,7 +577,7 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <TextBlock x:Name="HistoryFieldLabel" Text="最近 VPS" Foreground="#8999B2" FontSize="11" VerticalAlignment="Center" Margin="2,0,12,0" />
-                                    <ComboBox x:Name="ConnectionHistory" Grid.Column="1" Height="36" Background="#071015" Foreground="#D4E4E9" BorderBrush="#29434E" Padding="9,5" FontSize="12" />
+                                    <ComboBox x:Name="ConnectionHistory" Grid.Column="1" Style="{StaticResource DarkComboBoxStyle}" Height="36" Background="#071015" Foreground="#D4E4E9" BorderBrush="#29434E" Padding="9,5" FontSize="12" />
                                     <Button x:Name="HistoryUseButton" Grid.Column="2" Content="使用" Style="{StaticResource SecondaryButtonStyle}" Height="36" Margin="8,0,0,0" Padding="14,0" />
                                     <Button x:Name="HistoryDeleteButton" Grid.Column="3" Content="删除此条" Style="{StaticResource SecondaryButtonStyle}" Height="36" Margin="8,0,0,0" Padding="14,0" />
                                     <Button x:Name="HistoryClearButton" Grid.Column="4" Content="清空全部" Style="{StaticResource SecondaryButtonStyle}" Height="36" Margin="8,0,0,0" Padding="14,0" />
@@ -562,7 +604,7 @@
                                     </StackPanel>
                                     <StackPanel Grid.Column="3">
                                         <TextBlock x:Name="AuthFieldLabel" Text="本次 SSH 登录方式" Foreground="#8999B2" FontSize="11" Margin="2,0,0,6" />
-                                        <ComboBox x:Name="ConnectionAuthMode" SelectedIndex="0" Height="40" Background="#071015" Foreground="#D4E4E9" BorderBrush="#29434E" Padding="9,6" FontSize="12">
+                                        <ComboBox x:Name="ConnectionAuthMode" Style="{StaticResource DarkComboBoxStyle}" SelectedIndex="0" Height="40" Background="#071015" Foreground="#D4E4E9" BorderBrush="#29434E" Padding="9,6" FontSize="12">
                                             <ComboBoxItem Content="请选择登录方式…" Tag="" IsEnabled="False" />
                                             <ComboBoxItem Content="临时密码（操作后撤销一次性 key）" Tag="1" />
                                             <ComboBoxItem Content="节点长期 key（没有时询问是否绑定）" Tag="2" />
@@ -650,6 +692,232 @@
                 </Border>
             </Grid>
         </Border>
+
+		<Border x:Name="DriveShell" Grid.ColumnSpan="2" Background="#020609" Visibility="Visible" Panel.ZIndex="80">
+			<Grid>
+				<Grid.RowDefinitions>
+					<RowDefinition Height="64" />
+					<RowDefinition Height="*" />
+					<RowDefinition Height="34" />
+				</Grid.RowDefinitions>
+				<Border Background="#040A0E" BorderBrush="#1A3440" BorderThickness="0,0,0,1">
+					<Grid Margin="26,0,12,0">
+						<Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+						<StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+							<Image Source="TextNodeAssistant.AppIcon.png" Width="30" Height="30" Stretch="Uniform" />
+							<StackPanel Margin="13,0,0,0" VerticalAlignment="Center">
+							<TextBlock x:Name="DriveTopTitle" Text="TNA // PRIVATE VAULT / SIGN-IN" FontFamily="Cascadia Mono, Consolas" FontSize="13" FontWeight="Bold" Foreground="#DFF7FA" />
+								<TextBlock x:Name="DriveTopStatus" Text="LOCAL-FIRST / SSH LOOPBACK / NO PUBLIC DRIVE PORT" FontFamily="Cascadia Mono, Consolas" FontSize="8.5" Foreground="#48CFE6" Margin="0,3,0,0" />
+							</StackPanel>
+						</StackPanel>
+						<StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+							<Button x:Name="DriveLanguageButton" Content="EN" Style="{StaticResource SecondaryButtonStyle}" Height="34" Padding="13,0" Margin="0,0,8,0" />
+							<Button x:Name="DriveMinimizeButton" Content="&#xE921;" Style="{StaticResource WindowButtonStyle}" />
+							<Button x:Name="DriveMaximizeButton" Content="&#xE922;" Style="{StaticResource WindowButtonStyle}" />
+							<Button x:Name="DriveCloseButton" Content="&#xE8BB;" Style="{StaticResource WindowButtonStyle}" />
+						</StackPanel>
+					</Grid>
+				</Border>
+
+				<Grid x:Name="DriveLoginView" Grid.Row="1" Margin="42,28">
+					<Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+					<StackPanel>
+						<TextBlock Text="// 01 / TRUSTED DEVICE SIGN-IN" Foreground="#2AD7EE" FontFamily="Cascadia Mono, Consolas" FontSize="9" FontWeight="Bold" />
+						<TextBlock x:Name="DriveLoginTitle" Text="登录私人文件空间" FontSize="29" FontWeight="SemiBold" Margin="0,11,0,0" />
+						<TextBlock x:Name="DriveLoginDescription" Text="先验证当前设备，再进入外层文件空间。网盘不暴露公网端口，只通过 SSH 回环隧道工作。" Foreground="#91A8B5" FontSize="12" Margin="0,8,0,0" TextWrapping="Wrap" />
+					</StackPanel>
+					<Grid Grid.Row="1" Margin="0,24,0,20">
+						<Grid.ColumnDefinitions><ColumnDefinition Width="1.35*" /><ColumnDefinition Width="0.82*" /></Grid.ColumnDefinitions>
+						<Border Background="#050D12" BorderBrush="#1D5361" BorderThickness="1" Padding="28,25" Margin="0,0,14,0">
+							<StackPanel>
+								<TextBlock Text="SPACE CREDENTIALS" Foreground="#58DDEC" FontFamily="Cascadia Mono, Consolas" FontSize="9" FontWeight="Bold" />
+								<TextBlock x:Name="DriveNodeLabel" Text="节点 / VPS" Foreground="#83A2B1" FontSize="11" Margin="0,22,0,7" />
+								<Grid>
+									<Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                    <ComboBox x:Name="DriveNodeSelector" Style="{StaticResource DarkComboBoxStyle}" Height="42" Background="#071116" Foreground="#DDECF0" BorderBrush="#28505D" Padding="10,7" />
+									<Button x:Name="DriveRefreshNodesButton" Grid.Column="1" Content="刷新" Style="{StaticResource SecondaryButtonStyle}" Height="42" Margin="9,0,0,0" />
+								</Grid>
+								<Border x:Name="DriveNoNodeBanner" Background="#151109" BorderBrush="#715421" BorderThickness="1" Padding="12,10" Margin="0,10,0,0" Visibility="Collapsed">
+									<TextBlock x:Name="DriveNoNodeText" Text="尚未找到已绑定节点。先进入高级控制台施工新 VPS、恢复 key，或响应 controller 邀请。" Foreground="#F2C66D" TextWrapping="Wrap" FontSize="11" />
+								</Border>
+								<TextBlock x:Name="DriveUserLabel" Text="账号" Foreground="#83A2B1" FontSize="11" Margin="0,16,0,7" />
+								<TextBox x:Name="DriveUsernameInput" Height="42" Background="#071116" Foreground="#E5F0F3" BorderBrush="#28505D" Padding="11,9" FontFamily="Cascadia Mono, Consolas" />
+								<TextBlock x:Name="DrivePasswordLabel" Text="密码" Foreground="#83A2B1" FontSize="11" Margin="0,13,0,7" />
+								<PasswordBox x:Name="DrivePasswordInput" Height="42" Background="#071116" Foreground="#E5F0F3" BorderBrush="#28505D" Padding="11,9" FontFamily="Cascadia Mono, Consolas" />
+								<TextBlock x:Name="DriveLoginHint" Text="普通账号使用节点网盘密码；admin 使用本机 admin 密码，绝不会发送到 VPS。" Foreground="#637E8C" FontSize="10.5" Margin="0,8,0,0" TextWrapping="Wrap" />
+								<TextBlock x:Name="DriveLoginStatus" Text="就绪" Foreground="#54CBE1" FontFamily="Cascadia Mono, Consolas" FontSize="9.5" Margin="0,8,0,0" TextWrapping="Wrap" />
+								<Button x:Name="DriveLoginButton" Content="验证设备并登录  →" Style="{StaticResource PrimaryButtonStyle}" Height="44" Margin="0,18,0,0" />
+								<Grid Margin="0,10,0,0">
+									<Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+									<Button x:Name="DriveRegisterButton" Content="注册普通账号" Style="{StaticResource SecondaryButtonStyle}" Height="39" Margin="0,0,5,0" />
+									<Button x:Name="DriveRecoverAdminButton" Grid.Column="1" Content="恢复本机 admin" Style="{StaticResource SecondaryButtonStyle}" Height="39" Margin="5,0,0,0" />
+								</Grid>
+							</StackPanel>
+						</Border>
+						<StackPanel Grid.Column="1" Margin="14,0,0,0">
+							<Border Background="#061116" BorderBrush="#1B3D49" BorderThickness="1" Padding="22,20">
+								<StackPanel>
+									<TextBlock Text="SESSION GATE" Foreground="#58DDEC" FontFamily="Cascadia Mono, Consolas" FontSize="9" FontWeight="Bold" />
+									<TextBlock Text="外层文件空间" FontSize="19" FontWeight="SemiBold" Margin="0,10,0,0" />
+									<TextBlock Text="普通账号和本机 admin 都从这里进入；登录成功后才会显示文件、传输、挂载等外层功能。" Foreground="#8FA6B3" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="18" />
+									<Border Background="#071A20" BorderBrush="#155366" BorderThickness="1" Padding="10,9" Margin="0,16,0,0">
+										<TextBlock Text="AUTH  →  SSH LOOPBACK  →  PRIVATE SPACE" Foreground="#68E5F5" FontFamily="Cascadia Mono, Consolas" FontSize="9" TextWrapping="Wrap" />
+									</Border>
+								</StackPanel>
+							</Border>
+							<Border Background="#050D12" BorderBrush="#173742" BorderThickness="1" Padding="22,20" Margin="0,14,0,0">
+								<StackPanel>
+									<TextBlock Text="本机设置" FontSize="16" FontWeight="SemiBold" />
+									<TextBlock Text="首次使用先创建本机 admin；忘记密码时从恢复包恢复。这里不连接 VPS。" Foreground="#8FA6B3" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="18" />
+									<Button x:Name="DriveShowSetupButton" Content="打开本机设置" Style="{StaticResource SecondaryButtonStyle}" Height="40" Margin="0,16,0,0" />
+									<Button x:Name="DriveOpenAdvancedButton" Content="打开高级运维控制台" Style="{StaticResource SecondaryButtonStyle}" Height="40" Margin="0,9,0,0" />
+								</StackPanel>
+							</Border>
+						</StackPanel>
+					</Grid>
+					<Border Grid.Row="2" Background="#061116" BorderBrush="#18333C" BorderThickness="1" Padding="12,9">
+						<TextBlock Text="登录只验证当前受信设备和空间账号；本机 admin 永远只在本机使用，不会发送到 VPS。" Foreground="#AAB8CA" FontSize="11" TextWrapping="Wrap" />
+					</Border>
+				</Grid>
+
+				<Grid x:Name="DriveSetupView" Grid.Row="1" Margin="42,24" Visibility="Collapsed">
+					<Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+					<Grid>
+						<Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+						<Button x:Name="DriveSetupBackButton" Content="&#xE72B;  返回登录" FontFamily="Segoe UI, Segoe MDL2 Assets" Style="{StaticResource SecondaryButtonStyle}" Height="36" Margin="0" Padding="14,0" />
+						<StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+							<TextBlock Text="// LOCAL CONTROL / SETUP" Foreground="#2AD7EE" FontFamily="Cascadia Mono, Consolas" FontSize="9" FontWeight="Bold" />
+							<TextBlock Text="本机设置与安全模型" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,0" />
+						</StackPanel>
+					</Grid>
+					<ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,18,0,0">
+						<StackPanel Width="760" HorizontalAlignment="Center">
+							<Border x:Name="DriveAdminSetupPanel" Background="#061116" BorderBrush="#1E6877" BorderThickness="1" Padding="26,24">
+								<StackPanel>
+									<TextBlock Text="LOCAL ADMIN / FIRST RUN" Foreground="#36DDF4" FontFamily="Cascadia Mono, Consolas" FontSize="9" FontWeight="Bold" />
+									<TextBlock x:Name="DriveAdminSetupTitle" Text="创建本机 admin" FontSize="20" FontWeight="SemiBold" Margin="0,10,0,0" />
+									<TextBlock x:Name="DriveAdminSetupDescription" Text="admin 密码只保护这台电脑。程序写入 Windows 凭据管理器，并生成可恢复的加密 .tna 包。" Foreground="#91A8B5" FontSize="11" Margin="0,7,0,0" TextWrapping="Wrap" LineHeight="18" />
+									<TextBlock Text="新密码（至少 14 位）" Foreground="#83A2B1" FontSize="11" Margin="0,18,0,6" />
+									<PasswordBox x:Name="DriveAdminNewPassword" Height="40" Background="#071116" Foreground="#E5F0F3" BorderBrush="#28505D" Padding="10,8" />
+									<TextBlock Text="再次输入新密码" Foreground="#83A2B1" FontSize="11" Margin="0,12,0,6" />
+									<PasswordBox x:Name="DriveAdminConfirmPassword" Height="40" Background="#071116" Foreground="#E5F0F3" BorderBrush="#28505D" Padding="10,8" />
+									<Button x:Name="DriveCreateAdminButton" Content="创建并生成恢复包" Style="{StaticResource PrimaryButtonStyle}" Height="42" Margin="0,15,0,0" />
+								</StackPanel>
+							</Border>
+							<Border Background="#050D12" BorderBrush="#173742" BorderThickness="1" Padding="26,22" Margin="0,14,0,0">
+								<StackPanel>
+									<TextBlock x:Name="DriveSafetyTitle" Text="安全模型" FontSize="17" FontWeight="SemiBold" />
+									<TextBlock x:Name="DriveSafetyBody" Text="• 文件只经 SSH 隧道传输，VPS 公网不监听网盘端口。&#x0a;• 普通账号是节点空间账号，可在该节点所有受信设备使用。&#x0a;• 文件保存在 VPS 磁盘，并非端到端加密；VPS root/宿主方可能读取。&#x0a;• 未配置异机备份时，全部数据仍可能随 VPS 丢失。" Foreground="#8FA6B3" FontSize="11.5" Margin="0,10,0,0" TextWrapping="Wrap" LineHeight="20" />
+									<Border Background="#071A20" BorderBrush="#155366" BorderThickness="1" Padding="11,10" Margin="0,17,0,0">
+										<TextBlock Text="高危操作（安装、拆除、恢复基线、凭据轮换）仍需进入高级控制台，并可按本机 admin 门禁设置拦截。" Foreground="#68E5F5" FontSize="10.5" TextWrapping="Wrap" />
+									</Border>
+								</StackPanel>
+							</Border>
+						</StackPanel>
+					</ScrollViewer>
+				</Grid>
+
+				<Grid x:Name="DriveWorkspaceView" Grid.Row="1" Visibility="Collapsed">
+					<Grid.ColumnDefinitions><ColumnDefinition Width="238" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+					<Border Background="#040B0F" BorderBrush="#18313A" BorderThickness="0,0,1,0" Padding="18,20">
+						<StackPanel>
+							<TextBlock Text="// ACTIVE SPACE" Foreground="#36DDF4" FontFamily="Cascadia Mono, Consolas" FontSize="9" FontWeight="Bold" />
+							<TextBlock x:Name="DriveSessionAccount" Text="account" FontFamily="Cascadia Mono, Consolas" FontSize="14" FontWeight="Bold" Margin="0,10,0,0" />
+							<TextBlock x:Name="DriveSessionNode" Text="node" Foreground="#6F8794" FontFamily="Cascadia Mono, Consolas" FontSize="9.5" Margin="0,4,0,0" TextWrapping="Wrap" />
+							<Button x:Name="DriveFilesNavButton" Content="[01]  文件" Style="{StaticResource NavButtonStyle}" Tag="active" Margin="0,24,0,0" />
+							<Button x:Name="DriveTransfersNavButton" Content="[02]  传输任务" Style="{StaticResource NavButtonStyle}" />
+							<Button x:Name="DriveAccountNavButton" Content="[03]  账号与安全" Style="{StaticResource NavButtonStyle}" />
+							<Button x:Name="DriveMountNavButton" Content="[04]  挂载与节点" Style="{StaticResource NavButtonStyle}" />
+							<Button x:Name="DriveAdvancedNavButton" Content="[05]  高级运维" Style="{StaticResource NavButtonStyle}" />
+							<Button x:Name="DriveLogoutButton" Content="退出当前空间" Style="{StaticResource SecondaryButtonStyle}" Height="39" Margin="0,25,0,0" />
+						</StackPanel>
+					</Border>
+					<Grid x:Name="DriveFilesPanel" Grid.Column="1" Margin="22,18,22,16">
+						<Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+						<Grid>
+							<Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+							<StackPanel>
+								<TextBlock x:Name="DriveFilesTitle" Text="私人文件" FontSize="22" FontWeight="SemiBold" />
+								<TextBlock x:Name="DriveCurrentPath" Text="/" Foreground="#54CBE1" FontFamily="Cascadia Mono, Consolas" FontSize="10" Margin="0,5,0,0" />
+							</StackPanel>
+							<Button x:Name="DriveWorkspaceRefreshButton" Grid.Column="1" Content="刷新" Style="{StaticResource SecondaryButtonStyle}" Height="36" />
+						</Grid>
+						<StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,15,0,11">
+							<Button x:Name="DriveUpButton" Content="← 上一级" Style="{StaticResource SecondaryButtonStyle}" Height="36" />
+							<Button x:Name="DriveNewFolderButton" Content="新建目录" Style="{StaticResource SecondaryButtonStyle}" Height="36" />
+							<Button x:Name="DriveUploadButton" Content="上传" Style="{StaticResource PrimaryButtonStyle}" Height="36" />
+							<Button x:Name="DriveDownloadButton" Content="下载" Style="{StaticResource SecondaryButtonStyle}" Height="36" />
+							<Button x:Name="DriveRenameButton" Content="重命名" Style="{StaticResource SecondaryButtonStyle}" Height="36" />
+							<Button x:Name="DriveDeleteButton" Content="移入回收区" Style="{StaticResource SecondaryButtonStyle}" Height="36" />
+						</StackPanel>
+						<DataGrid x:Name="DriveFileGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Background="#03080B" Foreground="#D7E7EB" BorderBrush="#19343E" RowBackground="#050D12" AlternatingRowBackground="#061116" HorizontalGridLinesBrush="#132A32">
+							<DataGrid.Columns>
+								<DataGridTextColumn Header="名称" Binding="{Binding Name}" Width="*" />
+								<DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="120" />
+								<DataGridTextColumn Header="大小" Binding="{Binding SizeText}" Width="120" />
+								<DataGridTextColumn Header="修改时间" Binding="{Binding Modified}" Width="185" />
+							</DataGrid.Columns>
+						</DataGrid>
+						<Border Grid.Row="3" Background="#061116" BorderBrush="#18333C" BorderThickness="1" Padding="11,8" Margin="0,10,0,0">
+							<TextBlock x:Name="DriveWorkspaceStatus" Text="安全隧道已建立。未配置异机备份：全部数据可能丢失。" Foreground="#D3AA55" FontSize="10.5" TextWrapping="Wrap" />
+						</Border>
+					</Grid>
+					<Grid x:Name="DriveMountPanel" Grid.Column="1" Margin="22,18,22,16" Visibility="Collapsed">
+						<Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+						<Grid>
+							<Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+							<StackPanel>
+								<TextBlock x:Name="DriveMountTitle" Text="挂载与节点" FontSize="22" FontWeight="SemiBold" />
+								<TextBlock x:Name="DriveMountSubtitle" Text="固定校验 rclone + WinFsp · 每台 VPS 独立盘符" Foreground="#54CBE1" FontFamily="Cascadia Mono, Consolas" FontSize="10" Margin="0,5,0,0" />
+							</StackPanel>
+							<Button x:Name="DriveMountRefreshButton" Grid.Column="1" Content="刷新状态" Style="{StaticResource SecondaryButtonStyle}" Height="36" />
+						</Grid>
+						<Grid Grid.Row="1" Margin="0,17,0,13">
+							<Grid.ColumnDefinitions><ColumnDefinition Width="1.15*" /><ColumnDefinition Width="0.85*" /></Grid.ColumnDefinitions>
+							<Border Background="#061116" BorderBrush="#1A3B46" BorderThickness="1" Padding="16,14" Margin="0,0,7,0">
+								<StackPanel>
+									<TextBlock x:Name="DriveMountDependencyTitle" Text="01 // 本机依赖" FontFamily="Cascadia Mono, Consolas" Foreground="#36DDF4" FontWeight="Bold" />
+									<TextBlock x:Name="DriveMountDependencyStatus" Text="正在校验固定版本…" Foreground="#91A8B5" TextWrapping="Wrap" Margin="0,9,0,0" />
+									<Button x:Name="DriveMountInstallButton" Content="安装 / 验证 WinFsp 与 rclone" Style="{StaticResource SecondaryButtonStyle}" Height="38" Margin="0,13,0,0" />
+								</StackPanel>
+							</Border>
+							<Border Grid.Column="1" Background="#061116" BorderBrush="#1A3B46" BorderThickness="1" Padding="16,14" Margin="7,0,0,0">
+								<StackPanel>
+									<TextBlock x:Name="DriveMountModeTitle" Text="02 // 新建挂载" FontFamily="Cascadia Mono, Consolas" Foreground="#36DDF4" FontWeight="Bold" />
+									<StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+										<TextBlock x:Name="DriveMountLetterLabel" Text="盘符" Foreground="#8FA6B3" VerticalAlignment="Center" Margin="0,0,8,0" />
+										<ComboBox x:Name="DriveMountLetter" Style="{StaticResource DarkComboBoxStyle}" Width="78" Height="31" />
+									</StackPanel>
+									<RadioButton x:Name="DriveMountReadOnly" Content="只读浏览盘（推荐）" IsChecked="True" Foreground="#D7E7EB" Margin="0,11,0,0" />
+									<RadioButton x:Name="DriveMountReadWrite" Content="小文件读写盘（有缓存风险）" Foreground="#F2C66D" Margin="0,7,0,0" />
+									<Button x:Name="DriveMountStartButton" Content="挂载当前已登录节点" Style="{StaticResource PrimaryButtonStyle}" Height="38" Margin="0,12,0,0" />
+								</StackPanel>
+							</Border>
+						</Grid>
+						<DataGrid x:Name="DriveMountGrid" Grid.Row="2" AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single" HeadersVisibility="Column" GridLinesVisibility="Horizontal" Background="#03080B" Foreground="#D7E7EB" BorderBrush="#19343E" RowBackground="#050D12" AlternatingRowBackground="#061116" HorizontalGridLinesBrush="#132A32">
+							<DataGrid.Columns>
+								<DataGridTextColumn Header="盘符" Binding="{Binding Letter}" Width="90" />
+								<DataGridTextColumn Header="节点" Binding="{Binding Node}" Width="*" />
+								<DataGridTextColumn Header="模式" Binding="{Binding Mode}" Width="160" />
+								<DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="180" />
+							</DataGrid.Columns>
+						</DataGrid>
+						<Border Grid.Row="3" Background="#061116" BorderBrush="#18333C" BorderThickness="1" Padding="11,9" Margin="0,10,0,0">
+							<Grid>
+								<Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+								<TextBlock x:Name="DriveMountStatus" Text="默认只读。大文件请使用传输队列，不要从资源管理器长时间写入。" Foreground="#D3AA55" FontSize="10.5" TextWrapping="Wrap" VerticalAlignment="Center" />
+								<Button x:Name="DriveMountOpenButton" Grid.Column="1" Content="打开盘符" Style="{StaticResource SecondaryButtonStyle}" Height="36" Margin="10,0,0,0" />
+								<Button x:Name="DriveUnmountButton" Grid.Column="2" Content="安全卸载所选" Style="{StaticResource SecondaryButtonStyle}" Height="36" Margin="8,0,0,0" />
+							</Grid>
+						</Border>
+					</Grid>
+				</Grid>
+
+				<Border Grid.Row="2" Background="#040A0E" BorderBrush="#1A3440" BorderThickness="0,1,0,0">
+					<Grid Margin="24,0"><TextBlock x:Name="DriveFooter" Text="TNA 0.9.5 · 零遥测 · 网盘仅监听 VPS 127.0.0.1" Foreground="#56707C" FontFamily="Cascadia Mono, Consolas" FontSize="9" VerticalAlignment="Center" /></Grid>
+				</Border>
+			</Grid>
+		</Border>
 
         <Grid x:Name="AskPassOverlay" Grid.ColumnSpan="2" Background="#D0000000" Visibility="Collapsed" Panel.ZIndex="100">
             <Border Width="450" Background="#050C10" BorderBrush="#1A9AB1" BorderThickness="1" Padding="24,22" HorizontalAlignment="Center" VerticalAlignment="Center">

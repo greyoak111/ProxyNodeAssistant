@@ -81,8 +81,8 @@ if ($goCommand -and $gofmtCommand -and (Test-GoPair $goCommand.Source $gofmtComm
 $cmdParent = Split-Path -Parent ([IO.Path]::GetFullPath($CmdFile))
 if ($cmdParent) { New-Item -ItemType Directory -Force -Path $cmdParent | Out-Null }
 $cmd = @(
-    "set `"PNA_GO_EXE=$goExe`"",
-    "set `"PNA_GOFMT_EXE=$gofmtExe`""
+    "set `"TNA_GO_EXE=$goExe`"",
+    "set `"TNA_GOFMT_EXE=$gofmtExe`""
 ) -join "`r`n"
 [IO.File]::WriteAllText($CmdFile, ($cmd + "`r`n"), [Text.Encoding]::ASCII)
 Write-Host (& $goExe version)

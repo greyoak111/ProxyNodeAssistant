@@ -15,14 +15,9 @@ import (
 	"sync"
 )
 
-const version = "0.9.5"
-
 var errInputClosed = errors.New("interactive input was closed")
 
-const guiPromptPrefix = "PNA_GUI_PROMPT_B64="
-const guiSecretPromptPrefix = "PNA_GUI_SECRET_B64="
-
-//go:embed assets/proxy-runbook-toolkit-v0.9.5.tar.gz
+//go:embed assets/text-node-assistant-toolkit-v0.9.5.tar.gz
 var embeddedToolkit []byte
 
 type Lang string
@@ -45,18 +40,16 @@ type App struct {
 	tempCleanupMu    sync.Mutex
 	tunnels          []*exec.Cmd
 	inputClosed      bool
+	currentOperation operationSpec
+	activeOperation  *nodeOperationLease
 }
 
 func settingsPath() (string, error) {
-	base := os.Getenv("APPDATA")
-	if base == "" {
-		var err error
-		base, err = os.UserConfigDir()
-		if err != nil {
-			return "", err
-		}
+	base, err := productConfigRoot()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(base, "ProxyNodeAssistant", "settings.json"), nil
+	return filepath.Join(base, "settings.json"), nil
 }
 
 func (a *App) loadLanguage() {
@@ -110,7 +103,7 @@ func (a *App) prompt(label string) string {
 	if a.inputClosed {
 		return ""
 	}
-	if os.Getenv("PNA_GUI_MODE") == "1" {
+	if guiModeEnabled() {
 		fmt.Println(guiPromptFrame(label))
 	} else {
 		fmt.Print(label + ": ")
@@ -127,7 +120,7 @@ func (a *App) secretPrompt(label string) string {
 		return ""
 	}
 	var restore func()
-	if os.Getenv("PNA_GUI_MODE") == "1" {
+	if guiModeEnabled() {
 		fmt.Println(guiSecretPromptFrame(label))
 	} else {
 		fmt.Print(label + ": ")
@@ -152,7 +145,7 @@ func (a *App) secretPromptExact(label string) string {
 		return ""
 	}
 	var restore func()
-	if os.Getenv("PNA_GUI_MODE") == "1" {
+	if guiModeEnabled() {
 		fmt.Println(guiSecretPromptFrame(label))
 	} else {
 		fmt.Print(label + ": ")
@@ -216,7 +209,7 @@ func (a *App) toggleLanguage() {
 
 func (a *App) banner() {
 	a.println("============================================================")
-	a.println(" ProxyNodeAssistant v" + version)
+	a.println(" " + productName + " v" + version)
 	a.println(a.msg(" 隐私优先 · 中英双语 · 失败不连锁", " Privacy-first · bilingual · fail-closed"))
 	a.println("============================================================")
 	a.println(a.msg("共享 EXE 不内置任何真实 VPS IP、域名、账户或密钥。", "The shared EXE contains no real VPS IP, domain, account, or key."))
@@ -244,15 +237,18 @@ func (a *App) printMenu() {
 		a.println("[15] 清理远端多余备份 + 仅备份当前配置（只保留一份）")
 		a.println("[16] 自适应性能档位：检测 / 低配 / 标准 / 高配 / 回滚")
 		a.println("[17] SSH/vnStat 流量估算与 70/85/95% 预警")
-		a.println("[18] 全量拆除本工具施工并恢复原始基线（高风险，先下载救援包）")
+		a.println("[18] 拆除施工和恢复基线（可仅拆代理保留强制网盘；高风险，先下载救援包）")
 		a.println("[19] 访问与封禁日志（聚合元数据 / 受管 Fail2ban）")
 		a.println("[20] 设备准入：独立 VLESS / 单次邀请 / 暂停与吊销")
-		a.println("[21] 私人网盘：copyparty 本地回源 / 凭据 / 配额 / 拆除")
-		a.println("[22] CDN/XHTTP 双模式：回环预装 / Cloudflare-only 8443 / 橙云验收 / 可回滚热切换")
+		a.println("[21] 强制网盘：本机 SSH 隧道 / admin 能力 / 普通账号 / 配额")
+		a.println("[22] 线路拓扑只读状态（施工/互切/拆除只允许从 [1] 执行）")
 		a.println("[23] 更换 VPS 公网 IP 后安全重绑定（复用原 key；身份不符即停止）")
 		a.println("[T] 服务商流量中心：KiwiVM 精确 API / 兼容 API / 凭据管理器")
 		a.println("[K] 管理已绑定 key：查看 / 恢复 / 全部转入备份态并清空绑定位置")
 		a.println("[H] 管理 VPS 登录历史：查看 / 删除单条 / 清空全部")
+		a.println("[J] 新设备加入已有节点：无需先登录 VPS，响应 controller 邀请并完成首次 key 核验")
+		a.println("[A] 内层专用：修改本机 admin 密码并重建恢复包")
+		a.println("[B] 内层专用：高级控制台 admin 门禁开关与会话超时")
 		a.println("[L] English / 中文")
 		a.println("[C] 清空当前选择和隧道（不删除已绑定 key）")
 		a.println("[0] 退出")
@@ -275,15 +271,18 @@ func (a *App) printMenu() {
 		a.println("[15] Prune redundant remote backups + keep one current-config backup")
 		a.println("[16] Adaptive performance: detect / low / standard / high / rollback")
 		a.println("[17] SSH/vnStat traffic estimate with 70/85/95% warnings")
-		a.println("[18] Fully dismantle managed construction and restore the original baseline (high risk; rescue first)")
+		a.println("[18] Dismantle construction and restore the baseline (proxy-only removal may keep the mandatory drive; rescue first)")
 		a.println("[19] Access and ban events (aggregated metadata / managed Fail2ban)")
 		a.println("[20] Device admission: per-device VLESS / one-time invitation / pause and revoke")
-		a.println("[21] Private drive: copyparty loopback origin / credentials / quota / removal")
-		a.println("[22] CDN/XHTTP dual mode: loopback stage / Cloudflare-only 8443 / edge validation / rollback-safe hot switch")
+		a.println("[21] Mandatory drive: local SSH tunnel / admin capability / ordinary accounts / quota")
+		a.println("[22] Read-only link-topology status (construct/switch/remove only through [1])")
 		a.println("[23] Safely rebind a changed VPS public IP (reuse the original key; stop on identity mismatch)")
 		a.println("[T] Provider traffic center: exact KiwiVM API / compatible API / Credential Manager")
 		a.println("[K] Manage bound keys: inspect / restore / archive all and empty bound positions")
 		a.println("[H] Manage VPS login history: inspect / delete one / clear all")
+		a.println("[J] Join an existing node: no prior VPS login; answer a controller invitation and prove the new key")
+		a.println("[A] Inner-console only: change local admin password and rebuild its recovery package")
+		a.println("[B] Inner-console only: advanced-console admin gate and session timeout")
 		a.println("[L] English / 中文")
 		a.println("[C] Clear the current selection and tunnels (keep bound keys)")
 		a.println("[0] Exit")
@@ -329,11 +328,11 @@ func (a *App) extractEmbeddedTar() (string, error) {
 	if len(embeddedToolkit) < 128 {
 		return "", fmt.Errorf("embedded toolkit is unexpectedly empty")
 	}
-	dir := filepath.Join(os.TempDir(), "ProxyNodeAssistant-v0.9.5")
+	dir := filepath.Join(os.TempDir(), "TextNodeAssistant-v0.9.5")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "proxy-runbook-toolkit-v0.9.5.tar.gz")
+	path := filepath.Join(dir, "text-node-assistant-toolkit-v0.9.5.tar.gz")
 	if err := os.WriteFile(path, embeddedToolkit, 0600); err != nil {
 		return "", err
 	}
@@ -343,57 +342,63 @@ func (a *App) extractEmbeddedTar() (string, error) {
 func (a *App) executeActionChoice(choice string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(choice)) {
 	case "1":
-		return true, a.runRemoteAction(a.deployOptimize)
+		return true, a.runRemoteOperation(operationSpec{Type: "install-upgrade", Mutating: true}, a.deployOptimize)
 	case "2":
-		return true, a.runRemoteAction(a.openPanel)
+		return true, a.runRemoteOperation(operationSpec{Type: "open-panel", Mutating: false}, a.openPanel)
 	case "3":
-		return true, a.runRemoteAction(a.diagnose)
+		return true, a.runRemoteOperation(operationSpec{Type: "diagnose-repair", Mutating: true}, a.diagnose)
 	case "4":
-		return true, a.runRemoteAction(a.safeRepair)
+		return true, a.runRemoteOperation(operationSpec{Type: "safe-repair", Mutating: true}, a.safeRepair)
 	case "5":
-		return true, a.runRemoteAction(a.rotateVPSPassword)
+		return true, a.runRemoteOperation(operationSpec{Type: "rotate-vps-password", Mutating: true}, a.rotateVPSPassword)
 	case "6":
-		return true, a.runRemoteAction(a.rotatePanelCredentials)
+		return true, a.runRemoteOperation(operationSpec{Type: "rotate-panel-credentials", Mutating: true}, a.rotatePanelCredentials)
 	case "7":
-		return true, a.runRemoteAction(a.showHandoff)
+		return true, a.runRemoteOperation(operationSpec{Type: "show-handoff", Mutating: false}, a.showHandoff)
 	case "8":
-		return true, a.runRemoteAction(a.optimizeCover)
+		return true, a.runRemoteOperation(operationSpec{Type: "optimize-cover", Mutating: true}, a.optimizeCover)
 	case "9":
-		return true, a.runRemoteAction(a.backupNode)
+		return true, a.runRemoteOperation(operationSpec{Type: "backup-node", Mutating: true}, a.backupNode)
 	case "10":
-		return true, a.runRemoteAction(a.emergencyReport)
+		return true, a.runRemoteOperation(operationSpec{Type: "emergency-report", Mutating: false}, a.emergencyReport)
 	case "11":
-		return true, a.runRemoteAction(a.rotateSSHKey)
+		return true, a.runRemoteOperation(operationSpec{Type: "rotate-ssh-key", Mutating: true}, a.rotateSSHKey)
 	case "12":
 		return true, a.clearClipboard()
 	case "13":
-		return true, a.runRemoteAction(a.uninstallRemoteToolkit)
+		return true, a.runRemoteOperation(operationSpec{Type: "uninstall-toolkit", Mutating: true}, a.uninstallRemoteToolkit)
 	case "14":
 		return true, a.manageLocalProxy()
 	case "15":
-		return true, a.runRemoteAction(a.pruneBackupsAndBackupCurrentConfig)
+		return true, a.runRemoteOperation(operationSpec{Type: "prune-backups", Mutating: true}, a.pruneBackupsAndBackupCurrentConfig)
 	case "16":
-		return true, a.runRemoteAction(a.performanceProfiles)
+		return true, a.runRemoteOperation(operationSpec{Type: "performance-profile", Mutating: true}, a.performanceProfiles)
 	case "17":
-		return true, a.runRemoteAction(a.trafficEstimate)
+		return true, a.runRemoteOperation(operationSpec{Type: "traffic-estimate", Mutating: true}, a.trafficEstimate)
 	case "18":
-		return true, a.runRemoteAction(a.dismantleManagedNode)
+		return true, a.runRemoteOperation(operationSpec{Type: "restore-baseline", Mutating: true}, a.dismantleManagedNode)
 	case "19":
-		return true, a.runRemoteAction(a.manageSecurityEvents)
+		return true, a.runRemoteOperation(operationSpec{Type: "security-management", Mutating: true}, a.manageSecurityEvents)
 	case "20":
-		return true, a.runRemoteAction(a.manageDeviceAdmission)
+		return true, a.runRemoteOperation(operationSpec{Type: "device-admission", Mutating: true}, a.manageDeviceAdmission)
 	case "21":
-		return true, a.runRemoteAction(a.managePrivateDrive)
+		return true, a.runRemoteOperation(operationSpec{Type: "drive-management", Mutating: true}, a.managePrivateDrive)
 	case "22":
-		return true, a.runRemoteAction(a.manageCDNXHTTPPrototype)
+		return true, a.runRemoteOperation(operationSpec{Type: "topology-management", Mutating: true}, a.manageCDNXHTTPPrototype)
 	case "23":
-		return true, a.rebindPublicIP()
+		return true, a.runRemoteOperation(operationSpec{Type: "rebind-public-ip", Mutating: true}, a.rebindPublicIP)
 	case "t":
 		return true, a.providerTrafficCenter()
 	case "k":
 		return true, a.manageBoundKeys()
 	case "h":
 		return true, a.manageRecentTargets()
+	case "j":
+		return true, a.joinDeviceWithInvitation()
+	case "a":
+		return true, a.changeLocalAdminInteractive()
+	case "b":
+		return true, a.manageLocalAdminGate()
 	default:
 		return false, nil
 	}
@@ -401,6 +406,13 @@ func (a *App) executeActionChoice(choice string) (bool, error) {
 
 func (a *App) prepareConsoleSession() bool {
 	a.banner()
+	if migration, err := migrateLegacyLocalState(); err != nil {
+		a.println(a.msg("旧版本地状态迁移失败；为避免丢失节点或密钥，本次停止：", "Legacy local-state migration failed; this run is stopped to avoid losing nodes or keys:") + " " + err.Error())
+		return false
+	} else if len(migration.Copied) > 0 {
+		a.println(a.msg("已复制旧版本地状态到 TextNodeAssistant；旧数据仍保留，可恢复。", "Legacy local state was copied into TextNodeAssistant; the legacy copy remains recoverable."))
+		a.loadLanguage()
+	}
 	if err := a.startupOpenSSHPreflight(); err != nil {
 		a.println()
 		a.println(a.msg("Windows OpenSSH 准备失败，程序不会反复安装或进入远端菜单：", "Windows OpenSSH setup failed. The program will not retry in a loop or enter the remote menu:") + " " + err.Error())
@@ -562,7 +574,7 @@ func (a *App) runPromptSequenceSmoke() int {
 	if answer != "y" && answer != "yes" && answer != "是" {
 		return 4
 	}
-	a.println("PNA_GUI_PROMPT_SEQUENCE_OK")
+	a.println("TNA_GUI_PROMPT_SEQUENCE_OK")
 	return 0
 }
 
@@ -575,12 +587,29 @@ func (a *App) runTunnelCloseSmoke() int {
 	if answer != "" {
 		return 6
 	}
-	a.println("PNA_GUI_TUNNEL_CLOSE_ACK")
+	a.println("TNA_GUI_TUNNEL_CLOSE_ACK")
 	return 0
 }
 
 func main() {
 	setUTF8Console()
+	if command := requestedLocalAdminCommand(os.Args[1:]); command != "" {
+		// The GUI invokes local-admin commands as short-lived embedded CLI
+		// processes. Run the copy-first legacy migration before the command so
+		// upgraded ProxyNodeAssistant installs can still find their verifier,
+		// recovery package metadata and Credential Manager entry.
+		if _, err := migrateLegacyLocalState(); err != nil {
+			fmt.Fprintln(os.Stderr, "TNA_LOCAL_ADMIN_ERROR=MIGRATION_FAILED")
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(10)
+		}
+		if err := migrateLegacyLocalAdminState(); err != nil {
+			fmt.Fprintln(os.Stderr, "TNA_LOCAL_ADMIN_ERROR=LOCAL_ADMIN_MIGRATION_FAILED")
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(10)
+		}
+		os.Exit(runLocalAdminCommand(command, os.Stdin))
+	}
 	app := &App{reader: bufio.NewReader(os.Stdin)}
 	app.loadLanguage()
 	defer app.killTunnels()
@@ -593,8 +622,14 @@ func main() {
 		app.killTunnels()
 		os.Exit(130)
 	}()
+	if requestedDriveSession(os.Args[1:]) {
+		os.Exit(app.runDriveSession(os.Stdin))
+	}
+	if action := requestedDriveTransaction(os.Args[1:]); action != "" {
+		os.Exit(app.runDriveTransaction(action, os.Stdin))
+	}
 	if requestedInputCloseSmoke(os.Args[1:]) {
-		if _, err := app.required("PNA_INPUT_CLOSE_SMOKE_REQUIRED"); !errors.Is(err, errInputClosed) {
+		if _, err := app.required("TNA_INPUT_CLOSE_SMOKE_REQUIRED"); !errors.Is(err, errInputClosed) {
 			fmt.Fprintln(os.Stderr, "input-close smoke did not observe EOF")
 			os.Exit(2)
 		}
