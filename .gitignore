@@ -2,6 +2,7 @@
 .build-tools/
 .android-tools/
 dist/
+outputs/
 package-stage-*/
 
 # Android local state and build products

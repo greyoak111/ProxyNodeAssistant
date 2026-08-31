@@ -166,6 +166,10 @@ func (a *App) deployOptimize() error {
 	if err != nil {
 		return fmt.Errorf(a.msg("SSH 初始化失败：%w", "SSH setup failed: %w"), err)
 	}
+
+	// Everything before confirmInstallPlan is read-only apart from the SSH
+	// authentication setup explicitly selected by the user.  In particular,
+	// the embedded toolkit is not uploaded before the full plan is reviewed.
 	probe, err := a.remoteToolkitProbe(c)
 	if err != nil {
 		return fmt.Errorf(a.msg("远端工具包版本检测失败：%w。没有上传任何东西。", "Remote toolkit version detection failed: %w. Nothing was uploaded."), err)
@@ -175,6 +179,7 @@ func (a *App) deployOptimize() error {
 		return fmt.Errorf(a.msg("远端工具包版本无法安全识别：%w。没有上传任何东西。", "The remote toolkit version could not be safely classified: %w. Nothing was uploaded."), err)
 	}
 	updateSameVersionBuild := false
+	legacyV095Audit := probe.Present && probe.Version == toolkitVersion && probe.BuildRevision > 0 && probe.BuildRevision < toolkitBuildRevision
 	switch relation {
 	case ToolkitSameComplete:
 		switch compareToolkitBuild(probe, toolkitBuildID, toolkitBuildRevision) {
@@ -187,10 +192,15 @@ func (a *App) deployOptimize() error {
 			return fmt.Errorf(a.msg("远端同版本构建比当前 EXE 新；禁止降级，请换用更新的 EXE", "The remote same-version build is newer than this EXE; downgrade is blocked. Use a newer EXE"))
 		}
 	case ToolkitSameIncomplete:
-		return fmt.Errorf(a.msg(
-			"远端已有同版本 v%s，但文件不完整；为防止循环重装，本次拒绝覆盖。请先运行 [13]，确认卸载后再回 [1]",
-			"Remote toolkit v%s matches this EXE but is incomplete; overwrite is refused to prevent reinstall loops. Run [13], confirm uninstall, then return to [1]",
-		), toolkitVersion)
+		if legacyV095Audit {
+			updateSameVersionBuild = true
+			a.println(a.msg("检测到旧产品线 v0.9.5 的不完整构建；其内部修订低于重置线，将允许一次受控替换并退役设备门限/网盘。", "An incomplete build from the old v0.9.5 product line was detected; its internal revision predates the reset line, so one controlled replacement and feature retirement is allowed."))
+		} else {
+			return fmt.Errorf(a.msg(
+				"远端已有重置线同版本 v%s，但文件不完整；为防止循环重装，本次拒绝覆盖。请先运行 [13]，确认卸载后再回 [1]",
+				"The reset-line toolkit v%s matches this EXE but is incomplete; overwrite is refused to prevent reinstall loops. Run [13], confirm uninstall, then return to [1]",
+			), toolkitVersion)
+		}
 	case ToolkitNewer:
 		return fmt.Errorf(a.msg(
 			"远端工具包 v%s 比当前 EXE v%s 新；本次禁止降级，也不会继续施工。请换用 v%s 或更新版本的 EXE",
@@ -201,40 +211,53 @@ func (a *App) deployOptimize() error {
 	case ToolkitMissing:
 		a.println(a.msg("远端未安装工具包；菜单 [1] 将安装当前内嵌版本。", "No remote toolkit is installed; menu [1] will install the embedded version."))
 	}
+
+	existingNode, err := a.existingNodeInstalled(c)
+	if err != nil {
+		return fmt.Errorf(a.msg("无法只读识别现有节点状态：%w。没有上传任何东西。", "Could not inspect the existing-node state read-only: %w. Nothing was uploaded."), err)
+	}
+	if existingNode {
+		a.println(a.msg("检测到已有 x-ui 节点：可选择 [0] 保持线路；任何变更都先备份。", "An existing x-ui node was detected: route [0] is available, and every change is backed up first."))
+	} else {
+		a.println(a.msg("未检测到已安装节点：必须明确选择灰云、橙云或双路之一。", "No installed node was detected: explicitly choose gray, orange, or dual."))
+	}
+	plan, err := a.collectInstallPlan(existingNode)
+	if err != nil {
+		return err
+	}
+	if err := a.confirmInstallPlan(plan); err != nil {
+		if errors.Is(err, errInstallCancelled) {
+			return nil
+		}
+		return err
+	}
+	if err := a.prepareInstallPrerequisites(c, plan); err != nil {
+		return err
+	}
+
+	// Only non-sensitive preferences are persisted, and only after APPLY.
+	a.installPrefs = plan.Preferences
+	a.saveLanguage()
+
 	if relation == ToolkitOlder || relation == ToolkitMissing || updateSameVersionBuild {
 		if err := a.uploadToolkit(c); err != nil {
 			return fmt.Errorf(a.msg("工具包按需安装/升级失败：%w", "On-demand toolkit install/upgrade failed: %w"), err)
 		}
 	}
-	domain, email, inputErr := a.askDomainEmail()
-	if inputErr != nil {
-		return inputErr
+	if err := a.retireLegacyDeviceDriveIfPresent(c, legacyV095Audit); err != nil {
+		return err
 	}
-	coverTemplate, templateErr := a.chooseCoverTemplate(c)
-	if templateErr != nil {
-		return templateErr
-	}
-	publicIP, err := a.remotePublicIP(c)
+	inputPath, err := a.writeInstallAutoInput(c, plan)
 	if err != nil {
 		return err
 	}
-	if !a.waitForDNS(domain, publicIP) {
-		return errors.New(a.msg("已在证书/REALITY 施工前停止。", "Stopped before certificate/REALITY work."))
-	}
-	if err := a.writeAutoInput(c, domain, email); err != nil {
-		return err
-	}
-	a.println(a.msg("开始自适应施工。推荐的安全/幂等项自动采用默认值；24443 真机验货仍会强制确认。", "Starting adaptive convergence. Safe/idempotent recommendations use defaults; real 24443 verification still requires confirmation."))
+	defer a.removeInstallAutoInput(c, inputPath)
+	a.println(a.msg("开始按预览方案施工；24443 真机验货仍会强制停下确认，任何失败都不会连锁。", "Starting the reviewed plan; real 24443 validation still requires explicit confirmation, and failures do not chain."))
 	remoteGUIMode := "0"
 	if os.Getenv("PNA_GUI_MODE") == "1" {
 		remoteGUIMode = "1"
 	}
-	command := "PROXY_RUNBOOK_LOGIN_USER=" + shQuote(c.User) +
-		" PROXY_RUNBOOK_SSH_KEY_INSTALLED=1 PROXY_RUNBOOK_ASSUME_DEFAULTS=1" +
-		" PROXY_RUNBOOK_GUI_MODE=" + shQuote(remoteGUIMode) +
-		" PROXY_RUNBOOK_LANG=" + shQuote(string(a.lang)) +
-		" PROXY_RUNBOOK_COVER_TEMPLATE=" + shQuote(coverTemplate) +
-		" PROXY_RUNBOOK_AUTO_INPUT=/tmp/proxy-runbook-auto-input" +
+	command := a.installEnvironment(c, plan, inputPath, remoteGUIMode) +
 		" bash " + remoteRoot + "/linux/00-auto-install-or-optimize.sh"
 	result := a.runRootInteractive(c, command)
 	if !shouldContinueAfterWizard(result.ExitCode) {
@@ -258,6 +281,18 @@ func (a *App) deployOptimize() error {
 		return fmt.Errorf(a.msg("远端向导返回非零状态 %d", "remote wizard returned non-zero status %d"), result.ExitCode)
 	}
 
+	// Core input is intentionally one-use.  CDN reconciliation gets a fresh
+	// random 0600 input instead of relying on a fixed or already-consumed path.
+	cdnInputPath, err := a.writeInstallAutoInput(c, plan)
+	if err != nil {
+		return err
+	}
+	defer a.removeInstallAutoInput(c, cdnInputPath)
+	if err := a.reconcileCDNRoute(c, plan, cdnInputPath); err != nil {
+		a.println(a.msg("线路拓扑未通过最终收敛；不会复制交接单、清理备份或打开面板。", "Route topology did not pass final reconciliation; no handoff, backup pruning, or panel opening will follow."))
+		return err
+	}
+
 	handoff, handoffErr := a.fetchHandoff(c)
 	if handoffErr != nil {
 		a.println(a.msg("施工成功，但交接单未通过完整性校验：", "Convergence succeeded, but the handoff failed integrity checks:") + " " + handoffErr.Error())
@@ -265,17 +300,14 @@ func (a *App) deployOptimize() error {
 	} else if err := a.secretHandoff("CREDENTIAL HANDOFF", handoff); err != nil {
 		a.println(err.Error())
 	}
-	if a.yes(a.msg(
-		"是否在打开面板前整理远端多余备份，并只保留一份新验证的当前配置备份？",
-		"Before opening the panel, prune redundant remote backups and retain one newly verified current-config backup?",
-	), false) {
+	if plan.Preferences.PruneAfterSuccess {
 		if err := a.pruneBackupsAndBackupCurrentConfigWithConn(c, false); err != nil {
 			return fmt.Errorf(a.msg("远端备份整理失败；为避免继续连锁操作，本次不打开面板：%w", "Remote backup cleanup failed; the panel will not be opened to avoid chained actions: %w"), err)
 		}
 	} else {
 		a.println(a.msg("已跳过远端备份整理；现有备份保持不动。", "Remote backup cleanup was skipped; existing backups were left unchanged."))
 	}
-	if a.yes(a.msg("现在无感打开 3x-ui 面板？", "Open the 3x-ui panel seamlessly now?"), true) {
+	if plan.Preferences.OpenPanelOnSuccess {
 		return a.openPanelWithConn(c)
 	}
 	return nil
@@ -287,12 +319,12 @@ func (a *App) uninstallRemoteToolkit() error {
 		return err
 	}
 	a.println(a.msg(
-		"此操作只卸载 ProxyNodeAssistant 上传的远端工具包程序。",
-		"This removes only the remote toolkit program uploaded by ProxyNodeAssistant.",
+		"此操作只卸载 TextNodeAssistant 上传的远端工具包程序。",
+		"This removes only the remote toolkit program uploaded by TextNodeAssistant.",
 	))
 	a.println(a.msg(
-		"会删除：/opt 下已知 v0.5—v0.9.0 工具包、proxy-runbook-current、proxy-node 命令和 /tmp 上传残留。",
-		"It removes: known v0.5-v0.9.0 toolkit directories under /opt, proxy-runbook-current, the proxy-node command, and /tmp upload remnants.",
+		"会删除：/opt 下已知旧版及重置版 v0.9.5 工具包、兼容链接、text-node/proxy-node 命令和对应 /tmp 上传残留。",
+		"It removes known legacy and reset-v0.9.5 toolkit directories under /opt, compatibility links, text-node/proxy-node launchers, and matching /tmp upload remnants.",
 	))
 	a.println(a.msg(
 		"不会删除：x-ui/Xray、Nginx、WARP、节点配置、凭据、证书或灾备。卸载后只有菜单 [1] 可以重新安装内嵌包。",
@@ -348,7 +380,7 @@ func (a *App) downloadDismantleRescue(c Connection, remotePath string) (string, 
 	if err != nil {
 		return "", err
 	}
-	downloadDir := filepath.Join(home, "Downloads", "ProxyNodeAssistant-Rescue")
+	downloadDir := filepath.Join(home, "Downloads", "TextNodeAssistant-Rescue")
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
 		return "", err
 	}
@@ -430,7 +462,7 @@ func (a *App) dismantleManagedNode() error {
 	if !backup.OK() || !strings.Contains(backup.Stdout, "BACKUP_OK\n") {
 		return fmt.Errorf("pre-dismantle backup failed (exit %d): %s", backup.ExitCode, processFailureDetail(backup))
 	}
-	archivePattern := regexp.MustCompile(`/root/proxy-node-backup-[0-9]{8}-[0-9]{6}\.tar\.gz`)
+	archivePattern := regexp.MustCompile(`/root/(?:text-node|proxy-node)-backup-[0-9]{8}-[0-9]{6}\.tar\.gz`)
 	remoteArchive := archivePattern.FindString(backup.Stdout)
 	if remoteArchive == "" {
 		return errors.New(a.msg("备份返回成功，但没有识别到安全归档路径；拒绝拆除。", "The backup reported success but no safe archive path was recognized; refusing to dismantle."))
@@ -455,7 +487,7 @@ func (a *App) dismantleManagedNode() error {
 			return fmt.Errorf("remote dismantle returned success but marker %s is missing; rescue=%s", marker, localArchive)
 		}
 	}
-	verify := a.rootCapture(c, "set -e; test ! -e /opt/proxy-runbook-current; test ! -e /etc/proxy-runbook; test ! -e /root/.config/proxy-runbook; printf 'PNA_POST_DISMANTLE_VERIFY_OK\\n'")
+	verify := a.rootCapture(c, "set -e; test ! -e /opt/text-node-assistant-current; test ! -e /opt/proxy-runbook-current; test ! -e /etc/proxy-runbook; test ! -e /root/.config/proxy-runbook; printf 'PNA_POST_DISMANTLE_VERIFY_OK\\n'")
 	if !verify.OK() || !strings.Contains(verify.Stdout, "PNA_POST_DISMANTLE_VERIFY_OK") {
 		return fmt.Errorf(a.msg("拆除脚本已结束，但独立复核失败；救援包位于 %s", "The dismantle script ended, but independent verification failed; rescue archive: %s"), localArchive)
 	}
@@ -772,7 +804,7 @@ func (a *App) pruneBackupsAndBackupCurrentConfigWithConn(c Connection, requireTy
 			return fmt.Errorf("remote cleanup returned success but marker %s is missing", marker)
 		}
 	}
-	archivePattern := regexp.MustCompile(`/root/proxy-node-current-config-[0-9]{8}-[0-9]{6}\.tar\.gz`)
+	archivePattern := regexp.MustCompile(`/root/(?:text-node|proxy-node)-current-config-[0-9]{8}-[0-9]{6}\.tar\.gz`)
 	archive := archivePattern.FindString(result.Stdout)
 	if archive == "" {
 		return errors.New(a.msg("清理完成标记存在，但没有识别到唯一当前配置备份路径。", "Cleanup markers were present, but the current-config archive path was not recognized."))
@@ -810,7 +842,7 @@ func (a *App) emergencyReport() error {
 	if err != nil {
 		return err
 	}
-	downloadDir := filepath.Join(home, "Downloads", "ProxyNodeAssistant-Reports")
+	downloadDir := filepath.Join(home, "Downloads", "TextNodeAssistant-Reports")
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
 		return err
 	}

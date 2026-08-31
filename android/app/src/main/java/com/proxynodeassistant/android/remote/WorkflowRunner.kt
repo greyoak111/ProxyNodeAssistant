@@ -156,41 +156,257 @@ class WorkflowRunner(
     private suspend fun deploy(handle: SshHandle): Boolean {
         val probe = probe(handle)
         val comparison = if (probe.installed) ProtocolParsers.compareVersions(probe.version, VERSION) else -1
-        when {
-            !probe.installed -> { log("TOOLKIT_MISSING; installing v$VERSION"); uploadToolkit(handle) }
+        val needsUpload = when {
+            !probe.installed -> true
             comparison > 0 -> error(tr("远端工具包 v${probe.version} 更新，请改用同版或更新的 Android 客户端", "Remote toolkit v${probe.version} is newer; use a matching or newer Android client"))
             comparison == 0 && !probe.complete -> error(tr("远端 v$VERSION 工具包不完整，请先执行 [13] 卸载，再重新安装", "Remote v$VERSION is incomplete. Explicitly uninstall with action 13 before reinstalling"))
             comparison == 0 && (probe.buildRevision > BUILD_REVISION || (probe.buildRevision == BUILD_REVISION && probe.buildId != BUILD_ID)) -> error(tr("远端 v$VERSION 构建更新或不同，已拒绝降级", "Remote v$VERSION build is newer or different; downgrade refused"))
-            comparison == 0 && probe.buildRevision == BUILD_REVISION && probe.buildId == BUILD_ID -> log("TOOLKIT_SAME_BUILD; upload and bootstrap skipped")
-            else -> { log("TOOLKIT_UPGRADE ${probe.version.ifBlank { "missing" }} -> $VERSION"); uploadToolkit(handle) }
+            comparison == 0 && probe.buildRevision == BUILD_REVISION && probe.buildId == BUILD_ID -> false
+            else -> true
         }
+        val existingNode = detectExistingNode(handle)
+        val plan = collectInstallPlan(existingNode)
+        plan.validate(existingNode)
+        val review = plan.reviewLines().joinToString("\n")
+        val apply = prompts.ask(
+            tr("施工计划最终确认", "Final install-plan confirmation"),
+            tr("请逐项核对。只有输入大写 APPLY 才会上传或修改 VPS：\n$review", "Review every item. No toolkit is uploaded and the VPS is not changed unless you type uppercase APPLY:\n$review"),
+            PromptKind.EXACT_CONFIRMATION,
+            placeholder = "APPLY",
+            danger = true,
+        ).trim()
+        if (apply != "APPLY") throw CancellationException("install plan not applied")
 
-        val domain = required(tr("伪装站域名", "Cover domain"), tr("请本人输入域名；没有默认值，也不会读取历史秘密", "Type the cover domain yourself (no default)")) { Validation.validDomain(it) }.lowercase()
-        val email = required(tr("Let's Encrypt 邮箱", "Let's Encrypt email"), tr("请本人输入证书邮箱；没有默认值", "Type the certificate email yourself (no default)")) { Validation.validEmail(it) }
-        val templates = checked(handle, "bash $REMOTE_ROOT/linux/05b-cover-site-polished.sh --list", emit = false)
-        log(templates.stdout.trim())
-        val template = required(tr("伪装站模板", "Cover template"), tr("R=随机，A=按域名稳定选择，或输入 1—15 指定模板", "R=random, A=stable per domain, or 1-15"), "R") { Validation.normalizeTemplate(it) != null }
-        val normalizedTemplate = requireNotNull(Validation.normalizeTemplate(template))
         val publicIpResult = checked(handle, "ip=\$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true); [ -n \"\$ip\" ] || ip=\$(hostname -I | awk '{print \$1}'); printf '%s\\n' \"\$ip\"", emit = false)
         val publicIp = publicIpResult.stdout.lines().map { it.trim() }.firstOrNull { runCatching { InetAddress.getByName(it) is Inet4Address }.getOrDefault(false) }
             ?: error(tr("无法确定 VPS 公网 IPv4", "Could not determine the VPS public IPv4"))
-        waitForDns(domain, publicIp)
+        when (plan.routeMode) {
+            InstallRouteMode.GRAY -> waitForDns(plan.gray.domain, publicIp)
+            InstallRouteMode.DUAL -> {
+                waitForDns(plan.gray.domain, publicIp)
+                waitForOrangeDns(plan.orange.domain, publicIp)
+            }
+            InstallRouteMode.ORANGE -> waitForOrangeDns(plan.orange.domain, publicIp)
+            InstallRouteMode.KEEP -> Unit
+        }
 
-        val autoInput = "DOMAIN_B64=${Base64.encodeToString(domain.toByteArray(), Base64.NO_WRAP)}\n" +
-            "EMAIL_B64=${Base64.encodeToString(email.toByteArray(), Base64.NO_WRAP)}\nLANG=zh\n"
-        handle.upload(autoInput.toByteArray(), "proxy-runbook-auto-input", "/tmp", "0600")
-        val command = "PROXY_RUNBOOK_LOGIN_USER=${SshHandle.shellQuote(handle.target.user)} PROXY_RUNBOOK_SSH_KEY_INSTALLED=1 PROXY_RUNBOOK_ASSUME_DEFAULTS=1 PROXY_RUNBOOK_GUI_MODE=1 PROXY_RUNBOOK_LANG=zh PROXY_RUNBOOK_COVER_TEMPLATE=${SshHandle.shellQuote(normalizedTemplate)} PROXY_RUNBOOK_AUTO_INPUT=/tmp/proxy-runbook-auto-input bash $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh"
-        val result = checked(handle, command, interactive = true)
-        check(result.ok) { "remote convergence returned ${result.exitCode}" }
+        if (needsUpload) {
+            log(if (probe.installed) "TOOLKIT_UPGRADE ${probe.version.ifBlank { "missing" }} -> $VERSION" else "TOOLKIT_MISSING; installing v$VERSION")
+            uploadToolkit(handle)
+        } else {
+            log("TOOLKIT_SAME_BUILD; upload and bootstrap skipped")
+        }
+
+        val oneRunName = "text-node-assistant-auto-input-${randomToken()}.env"
+        val oneRunPath = "/tmp/$oneRunName"
+        handle.upload(installAutoInput(plan).toByteArray(), oneRunName, "/tmp", "0600")
+        try {
+            val command = installEnvironment(handle, plan, oneRunPath) + " bash $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh"
+            checked(handle, command, interactive = true)
+        } finally {
+            runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(oneRunPath)}", root = true) }
+        }
+        reconcileRoute(handle, plan, publicIp)
         showHandoff(handle)
-        if (confirmYes(tr("打开面板前是否整理冗余备份，并只保留一份已验证的当前配置备份？", "Prune redundant remote backups and retain one verified current-config backup before opening the panel?"), false, allowNo = true)) {
+        if (plan.pruneAfterSuccess) {
             pruneBackups(handle, exactConfirmation = false)
         }
-        return if (confirmYes(tr("现在通过本机 SSH 隧道打开 3x-ui 面板？", "Open the 3x-ui panel through a localhost SSH tunnel now?"), true, allowNo = true)) openPanel(handle) else false
+        return if (plan.openPanelOnSuccess) openPanel(handle) else false
     }
 
+    private suspend fun detectExistingNode(handle: SshHandle): Boolean {
+        val result = checked(
+            handle,
+            "existing=0; if systemctl is-active --quiet x-ui 2>/dev/null || [ -x /usr/local/x-ui/x-ui ] || [ -s /etc/x-ui/x-ui.db ]; then existing=1; fi; printf 'TNA_EXISTING_NODE=%s\\n' \"\$existing\"",
+            emit = false,
+        )
+        return result.stdout.lineSequence().any { it.trim() == "TNA_EXISTING_NODE=1" }
+    }
+
+    private suspend fun collectInstallPlan(existingNode: Boolean): AndroidInstallPlan {
+        val routeMessage = if (existingNode) {
+            tr(
+                "必须选择：0=保持现有链路，1=仅灰云直连，2=仅橙云 CDN/XHTTP，3=双路。留空无效。",
+                "Choose explicitly: 0=keep current route, 1=gray/direct only, 2=orange CDN/XHTTP only, 3=dual route. Blank is invalid.",
+            )
+        } else {
+            tr(
+                "必须选择：1=仅灰云直连，2=仅橙云 CDN/XHTTP，3=双路。全新节点不能选 0，留空无效。",
+                "Choose explicitly: 1=gray/direct only, 2=orange CDN/XHTTP only, 3=dual route. A fresh node cannot use 0; blank is invalid.",
+            )
+        }
+        val allowedRoutes = if (existingNode) setOf("0", "1", "2", "3") else setOf("1", "2", "3")
+        val route = when (required(tr("选择链路模式", "Select route mode"), routeMessage) { it in allowedRoutes }) {
+            "0" -> InstallRouteMode.KEEP
+            "1" -> InstallRouteMode.GRAY
+            "2" -> InstallRouteMode.ORANGE
+            else -> InstallRouteMode.DUAL
+        }
+
+        val gray = if (route == InstallRouteMode.GRAY || route == InstallRouteMode.DUAL) {
+            InstallRouteIdentity(
+                domain = required(tr("灰云域名", "Gray/DNS-only hostname"), tr("输入 DNS-only 子域名；没有默认值。", "Enter the DNS-only hostname; there is no default.")) { Validation.validDomain(it) }.lowercase(),
+                email = required(tr("灰云证书邮箱", "Gray-route certificate email"), tr("输入本人证书邮箱；不会写入设置或日志。", "Enter the certificate email; it is not written to settings or logs.")) { Validation.validEmail(it) },
+            )
+        } else InstallRouteIdentity()
+
+        val orange = if (route == InstallRouteMode.ORANGE || route == InstallRouteMode.DUAL) {
+            InstallRouteIdentity(
+                domain = required(tr("橙云域名", "Orange/Proxied hostname"), tr("输入 Cloudflare Proxied 子域名；没有默认值。", "Enter the Cloudflare Proxied hostname; there is no default.")) { Validation.validDomain(it) }.lowercase(),
+                email = required(tr("橙云源站证书邮箱", "Orange-route origin-certificate email"), tr("输入本人证书邮箱；不会写入设置或日志。", "Enter the origin-certificate email; it is not written to settings or logs.")) { Validation.validEmail(it) },
+            )
+        } else InstallRouteIdentity()
+
+        val coverChoice = if (route == InstallRouteMode.KEEP) {
+            "preserve"
+        } else {
+            val options = buildString {
+                appendLine(tr("必须选择伪装模板：R=每次随机，A=按域名稳定选择，1—15=指定模板。", "Choose a cover template explicitly: R=random, A=stable per hostname, 1-15=exact template."))
+                if (existingNode) appendLine(tr("0=保留当前伪装（仅已有节点）。", "0=preserve current cover (existing node only)."))
+                append(COVER_TEMPLATE_CATALOG)
+            }
+            val raw = required(tr("选择伪装模板", "Select cover template"), options) { answer ->
+                answer.isNotBlank() && ((existingNode && answer == "0") || Validation.normalizeTemplate(answer) != null)
+            }
+            if (raw == "0") "preserve" else requireNotNull(Validation.normalizeTemplate(raw))
+        }
+
+        val performanceAllowed = if (existingNode) setOf("0", "1", "2", "3", "4") else setOf("1", "2", "3", "4")
+        val performance = when (required(
+            tr("性能档位", "Performance profile"),
+            tr(
+                (if (existingNode) "必须选择：0=保留，" else "必须选择：") + "1=自动，2=低配，3=标准，4=高吞吐。留空无效。",
+                (if (existingNode) "Choose explicitly: 0=preserve, " else "Choose explicitly: ") + "1=auto, 2=low, 3=standard, 4=high. Blank is invalid.",
+            ),
+        ) { it in performanceAllowed }) {
+            "0" -> InstallPerformanceMode.PRESERVE
+            "1" -> InstallPerformanceMode.AUTO
+            "2" -> InstallPerformanceMode.LOW
+            "3" -> InstallPerformanceMode.STANDARD
+            else -> InstallPerformanceMode.HIGH
+        }
+
+        val warpAllowed = if (existingNode) setOf("0", "1") else setOf("1")
+        val warp = when (required(
+            tr("WARP 策略", "WARP policy"),
+            tr(
+                if (existingNode) "必须选择：0=保留当前状态，1=确保开启。留空无效。" else "全新节点必须输入 1=确保开启；留空无效。",
+                if (existingNode) "Choose explicitly: 0=preserve current state, 1=ensure enabled. Blank is invalid." else "A fresh node requires 1=ensure enabled; blank is invalid.",
+            ),
+        ) { it in warpAllowed }) {
+            "0" -> InstallWarpMode.PRESERVE
+            else -> InstallWarpMode.ENSURE_ON
+        }
+
+        val prune = confirmYes(tr("成功后清理冗余备份，仅保留一份已验证的当前配置备份？", "After success, prune redundant backups and retain one verified current-config backup?"), false, allowNo = true)
+        val openPanel = confirmYes(tr("成功后通过本机 SSH 隧道打开 3x-ui 面板？", "After success, open the 3x-ui panel through a localhost SSH tunnel?"), true, allowNo = true)
+        return AndroidInstallPlan(route, coverChoice, performance, warp, gray, orange, prune, openPanel)
+    }
+
+    private fun installAutoInput(plan: AndroidInstallPlan): String = buildString {
+        appendLine("GRAY_DOMAIN_B64=${b64(plan.gray.domain)}")
+        appendLine("GRAY_EMAIL_B64=${b64(plan.gray.email)}")
+        appendLine("ORANGE_DOMAIN_B64=${b64(plan.orange.domain)}")
+        appendLine("ORANGE_EMAIL_B64=${b64(plan.orange.email)}")
+        appendLine("LANG=${if (language == Language.ZH) "zh" else "en"}")
+    }
+
+    private fun installEnvironment(handle: SshHandle, plan: AndroidInstallPlan, inputPath: String): String =
+        plan.environmentValues(handle.target.user, if (language == Language.ZH) "zh" else "en", inputPath)
+            .entries.joinToString(" ") { (key, value) -> "$key=${SshHandle.shellQuote(value)}" }
+
+    private suspend fun reconcileRoute(handle: SshHandle, plan: AndroidInstallPlan, publicIp: String) {
+        when (plan.routeMode) {
+            InstallRouteMode.KEEP -> return
+            InstallRouteMode.GRAY -> {
+                val result = checked(handle, "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --to-gray ${SshHandle.shellQuote(plan.gray.domain)}", interactive = true)
+                require("TNA_TOPOLOGY_RECONCILED=1" in result.stdout && "TOPOLOGY_MODE=gray" in result.stdout) { "gray topology reconciliation markers missing" }
+            }
+            InstallRouteMode.ORANGE, InstallRouteMode.DUAL -> reconcileOrangeRoute(handle, plan, publicIp)
+        }
+    }
+
+    private suspend fun reconcileOrangeRoute(handle: SshHandle, plan: AndroidInstallPlan, publicIp: String) {
+        val token = randomToken()
+        val tempName = "text-node-assistant-cdn-route-$token.env"
+        val tempPath = "/tmp/$tempName"
+        val runtimePath = "/root/.config/text-node-assistant/runtime-input/cdn-route-$token.env"
+        val routeInput = buildString {
+            appendLine("TNA_CDN_ROUTE_INPUT_VERSION=1")
+            appendLine("ROUTE_MODE_B64=${b64(plan.routeMode.wireValue)}")
+            appendLine("PUBLIC_IPV4_B64=${b64(publicIp)}")
+            appendLine("ORANGE_DOMAIN_B64=${b64(plan.orange.domain)}")
+            appendLine("ORANGE_EMAIL_B64=${b64(plan.orange.email)}")
+            appendLine("GRAY_DOMAIN_B64=${b64(plan.gray.domain)}")
+        }
+        handle.upload(routeInput.toByteArray(), tempName, "/tmp", "0600")
+        var completed = false
+        try {
+            checked(
+                handle,
+                "install -d -m 700 /root/.config/text-node-assistant/runtime-input; install -o root -g root -m 600 ${SshHandle.shellQuote(tempPath)} ${SshHandle.shellQuote(runtimePath)}; rm -f -- ${SshHandle.shellQuote(tempPath)}",
+                emit = false,
+            )
+            val staged = checked(handle, "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --apply-input ${SshHandle.shellQuote(runtimePath)}", interactive = true)
+            require("TNA_TOPOLOGY_STAGED=1" in staged.stdout) { "CDN topology staging marker missing" }
+            val linkOutput = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(plan.orange.domain)} 8443", emit = false).stdout
+            val link = Regex("vless://[^\\s]+", RegexOption.IGNORE_CASE).find(linkOutput)?.value
+                ?: error(tr("远端没有生成可测试的 CDN/XHTTP 链接", "The server did not produce a testable CDN/XHTTP link"))
+            _state.update { it.copy(secretHandoff = link) }
+            val answer = prompts.ask(
+                tr("真实浏览验收", "Real browse verification"),
+                tr(
+                    "临时 CDN/XHTTP 链接已显示在秘密交接面板。请导入同机客户端并真实浏览；确认可用后输入大写 REAL BROWSE OK。输入其他内容将回滚本次橙云拓扑。\n$link",
+                    "The staged CDN/XHTTP link is shown in the protected handoff panel. Import it into a client and really browse; only then type uppercase REAL BROWSE OK. Any other value rolls back this orange-route transaction.\n$link",
+                ),
+                PromptKind.EXACT_CONFIRMATION,
+                placeholder = "REAL BROWSE OK",
+                danger = true,
+            ).trim()
+            if (answer != "REAL BROWSE OK") throw CancellationException("CDN client verification declined")
+            checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh --confirm-client ${SshHandle.shellQuote(plan.orange.domain)}", interactive = true)
+            val finalized = checked(handle, "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --finalize", interactive = true)
+            require("TNA_TOPOLOGY_RECONCILED=1" in finalized.stdout && "TOPOLOGY_MODE=${plan.routeMode.wireValue}" in finalized.stdout) {
+                "CDN topology finalization markers missing"
+            }
+            completed = true
+        } finally {
+            if (!completed) runCatching { handle.exec("bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --rollback-pending", root = true) }
+            runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(tempPath)} ${SshHandle.shellQuote(runtimePath)}", root = true) }
+        }
+    }
+
+    private suspend fun waitForOrangeDns(domain: String, publicIp: String) {
+        listOf(
+            tr("[1/4] 确认 $domain 的 A 记录已开启 Cloudflare 橙云 Proxied。确认后按 Enter；输入 q 取消。", "[1/4] Confirm that the A record for $domain is Cloudflare Proxied. Press Enter to confirm or q to cancel."),
+            tr("[2/4] 确认 SSL/TLS 为 Full (strict)，且 Universal SSL 已激活。确认后按 Enter；输入 q 取消。", "[2/4] Confirm SSL/TLS Full (strict) and active Universal SSL. Press Enter or q to cancel."),
+            tr("[3/4] 客户端将使用 $domain:8443；免费计划无需且不应创建 443→8443 的全局 Origin Rule。确认后按 Enter；输入 q 取消。", "[3/4] The client will use $domain:8443. The free plan needs no global 443-to-8443 Origin Rule. Press Enter or q to cancel."),
+            tr("[4/4] 确认该 hostname 绕过缓存，且没有 Access、Turnstile、质询、重定向或 Worker。确认后按 Enter；输入 q 取消。", "[4/4] Confirm cache bypass and no Access, Turnstile, challenge, redirect, or Worker on this hostname. Press Enter or q to cancel."),
+        ).forEach { instruction ->
+            val answer = prompts.ask(tr("Cloudflare 人工门禁", "Cloudflare manual gate"), instruction, PromptKind.TEXT)
+            if (answer.trim().equals("q", true)) throw CancellationException("Cloudflare setup cancelled")
+        }
+        while (true) {
+            val addresses = runCatching { InetAddress.getAllByName(domain).toList() }.getOrDefault(emptyList())
+            if (addresses.isNotEmpty() && addresses.none { it.hostAddress == publicIp }) {
+                log("ORANGE_DNS_READY; proxied hostname does not expose origin IPv4")
+                return
+            }
+            val answer = prompts.ask(
+                tr("橙云 DNS 尚未就绪", "Orange DNS not ready"),
+                tr("公网解析仍为空或暴露源站 IPv4。检查橙云并等待传播；按 Enter 重试，输入 q 取消。", "Public DNS is empty or still exposes the origin IPv4. Check Proxied status and propagation; press Enter to retry or q to cancel."),
+                PromptKind.TEXT,
+            )
+            if (answer.trim().equals("q", true)) throw CancellationException("Orange DNS verification cancelled")
+        }
+    }
+
+    private fun b64(value: String): String = Base64.encodeToString(value.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+
+    private fun randomToken(): String = newOneRunToken()
+
     private suspend fun uploadToolkit(handle: SshHandle) {
-        log("Uploading embedded proxy-runbook v$VERSION...")
+        log("Uploading embedded TextNodeAssistant toolkit v$VERSION...")
         val bytes = context.assets.open(TOOLKIT_ASSET).use { it.readBytes() }
         require(bytes.size > 128) { tr("APK 内嵌工具包为空", "embedded toolkit is empty") }
         handle.upload(bytes, TOOLKIT_ARCHIVE, "/tmp", "0600")
@@ -206,12 +422,18 @@ class WorkflowRunner(
     private suspend fun probe(handle: SshHandle): ToolkitProbe {
         val command = """
             printf '%s\n' '${ProtocolParsers.TOOLKIT_BEGIN}'
+            root=''
             if [ -r $REMOTE_ROOT/TOOLKIT_VERSION ]; then
-              version=${'$'}(head -n1 $REMOTE_ROOT/TOOLKIT_VERSION | tr -d '\r')
-              build=${'$'}(head -n1 $REMOTE_ROOT/TOOLKIT_BUILD_ID 2>/dev/null | tr -d '\r' || true)
-              revision=${'$'}(head -n1 $REMOTE_ROOT/TOOLKIT_BUILD_REVISION 2>/dev/null | tr -d '\r' || true)
+              root=$REMOTE_ROOT
+            elif [ -r $LEGACY_REMOTE_ROOT/TOOLKIT_VERSION ]; then
+              root=$LEGACY_REMOTE_ROOT
+            fi
+            if [ -n "${'$'}root" ]; then
+              version=${'$'}(head -n1 "${'$'}root/TOOLKIT_VERSION" | tr -d '\r')
+              build=${'$'}(head -n1 "${'$'}root/TOOLKIT_BUILD_ID" 2>/dev/null | tr -d '\r' || true)
+              revision=${'$'}(head -n1 "${'$'}root/TOOLKIT_BUILD_REVISION" 2>/dev/null | tr -d '\r' || true)
               complete=0
-              test -x $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh && test -x $REMOTE_ROOT/linux/18-panel-metadata.sh && test -x $REMOTE_ROOT/linux/22-dismantle-managed-node.sh && test -s $REMOTE_ROOT/templates/cover-sites/MANIFEST.tsv && complete=1
+              test -x "${'$'}root/linux/00-auto-install-or-optimize.sh" && test -x "${'$'}root/linux/18-panel-metadata.sh" && test -x "${'$'}root/linux/22-dismantle-managed-node.sh" && test -s "${'$'}root/templates/cover-sites/MANIFEST.tsv" && complete=1
               printf 'TOOLKIT_PRESENT=1\nTOOLKIT_VERSION=%s\nTOOLKIT_BUILD_ID=%s\nTOOLKIT_BUILD_REVISION=%s\nTOOLKIT_COMPLETE=%s\n' "${'$'}version" "${'$'}build" "${'$'}revision" "${'$'}complete"
             else
               printf 'TOOLKIT_PRESENT=0\n'
@@ -326,11 +548,12 @@ class WorkflowRunner(
         check(confirmation == "UNINSTALL")
         val command = """
             set -Eeuo pipefail
-            dirs=(/opt/proxy-runbook-v0.5 /opt/proxy-runbook-v0.6 /opt/proxy-runbook-v0.6.1 /opt/proxy-runbook-v0.6.2 /opt/proxy-runbook-v0.6.5 /opt/proxy-runbook-v0.6.6 /opt/proxy-runbook-v0.7.1 /opt/proxy-runbook-v0.7.4 /opt/proxy-runbook-v0.8.2 /opt/proxy-runbook-v0.8.4 /opt/proxy-runbook-v0.8.5 /opt/proxy-runbook-v0.8.6 /opt/proxy-runbook-v0.9.0)
+            dirs=(/opt/text-node-assistant-v0.9.5 /opt/proxy-runbook-v0.5 /opt/proxy-runbook-v0.6 /opt/proxy-runbook-v0.6.1 /opt/proxy-runbook-v0.6.2 /opt/proxy-runbook-v0.6.5 /opt/proxy-runbook-v0.6.6 /opt/proxy-runbook-v0.7.1 /opt/proxy-runbook-v0.7.4 /opt/proxy-runbook-v0.8.2 /opt/proxy-runbook-v0.8.4 /opt/proxy-runbook-v0.8.5 /opt/proxy-runbook-v0.8.6 /opt/proxy-runbook-v0.9.0)
             for target in "${'$'}{dirs[@]}"; do [ ! -e "${'$'}target" ] || { [ -d "${'$'}target" ] && [ ! -L "${'$'}target" ]; } || exit 61; done
             [ ! -e /opt/proxy-runbook-current ] || [ -L /opt/proxy-runbook-current ] || exit 62
+            [ ! -e /opt/text-node-assistant-current ] || [ -L /opt/text-node-assistant-current ] || exit 63
             printf 'PROXY_RUNBOOK_UNINSTALL_BEGIN\n'
-            rm -f /opt/proxy-runbook-current /usr/local/sbin/proxy-node /tmp/proxy-runbook-toolkit-v*.tar.gz
+            rm -f /opt/text-node-assistant-current /opt/proxy-runbook-current /usr/local/sbin/text-node /usr/local/sbin/proxy-node /tmp/text-node-assistant-toolkit-v*.tar.gz /tmp/proxy-runbook-toolkit-v*.tar.gz
             for target in "${'$'}{dirs[@]}"; do [ ! -d "${'$'}target" ] || rm -rf -- "${'$'}target"; done
             printf 'PRESERVED=NODE_SERVICES_AND_CONFIG\nPROXY_RUNBOOK_UNINSTALL_END\n'
         """.trimIndent()
@@ -436,12 +659,20 @@ class WorkflowRunner(
     private fun tr(zh: String, en: String): String = if (language == Language.ZH) zh else en
 
     companion object {
-        const val VERSION = "0.9.0"
-        const val BUILD_ID = "20260822-full-dismantle-v5"
-        const val BUILD_REVISION = 5
-        const val REMOTE_ROOT = "/opt/proxy-runbook-current"
-        const val INSTALL_ROOT = "/opt/proxy-runbook-v0.9.0"
-        const val TOOLKIT_ASSET = "proxy-runbook-toolkit-v0.9.0.tgz"
-        const val TOOLKIT_ARCHIVE = "proxy-runbook-toolkit-v0.9.0.tar.gz"
+        const val VERSION = "0.9.5"
+        const val BUILD_ID = "20260831-v095-reset-from-v090-r100"
+        const val BUILD_REVISION = 100
+        const val REMOTE_ROOT = "/opt/text-node-assistant-current"
+        const val LEGACY_REMOTE_ROOT = "/opt/proxy-runbook-current"
+        const val INSTALL_ROOT = "/opt/text-node-assistant-v0.9.5"
+        const val TOOLKIT_ASSET = "text-node-assistant-toolkit-v0.9.5.tgz"
+        const val TOOLKIT_ARCHIVE = "text-node-assistant-toolkit-v0.9.5.tar.gz"
+        val COVER_TEMPLATE_CATALOG = """
+            1 atlas-journal   2 northstar-studio   3 cedar-stone
+            4 field-lab       5 harbor-weather     6 local-library
+            7 ember-cafe      8 trail-guide        9 signal-status
+            10 mono-docs      11 analog-radio      12 city-calendar
+            13 pixel-gallery  14 quiet-finance     15 signal-runner
+        """.trimIndent()
     }
 }

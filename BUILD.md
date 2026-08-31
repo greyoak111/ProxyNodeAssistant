@@ -1,57 +1,224 @@
-# 构建与验证
+# TextNodeAssistant v0.9.5 构建、验证与发行
 
-需要 Go 1.23 或更新版本、Windows 自带 `tar.exe`，以及 .NET Framework 4.x 的 64 位 C# 编译器和 WPF 程序集。Windows 10/11 的系统 .NET Framework 通常已经提供后两项。
+本文只描述当前的 **v0.9.5 精简重置线**。它以 v0.9.0 的可靠 SSH 运维主链路为基础，已经退役旧过度版 v0.9.5 的设备准入、controller、邀请、网盘和本机 admin。构建产物不得重新暴露这些入口。
 
-只构建默认 x64，在本目录运行：
+## 1. 版本与目录基线
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1
-```
+- 产品名：`TextNodeAssistant`
+- 对外版本：`0.9.5`
+- Windows GUI：`dist/TextNodeAssistant-v0.9.5-*.exe`
+- Linux 工具包目录：`runbook/text-node-assistant-v0.9.5`
+- Linux 工具包归档：`assets/text-node-assistant-toolkit-v0.9.5.tar.gz`
+- Android APK：`android/dist/TextNodeAssistant-v0.9.5-android-universal.apk`
 
-一次构建全部 Windows PC 架构，双击：
+应用、内嵌工具包、Android 资产和发行说明必须同时来自同一次源码状态。不要用旧 v0.9.0 EXE、旧过度版 v0.9.5 工具包或手工替换过的归档拼装发行包。
+
+## 2. Windows 构建环境
+
+需要：
+
+- Windows 10/11；
+- PowerShell 5.1 或更新版本；
+- Go 1.23 或更新版本；
+- Windows 自带 `tar.exe`；
+- .NET Framework 4.x 的 C# 编译器和 WPF 程序集；
+- Git Bash 或其他可运行 Bash 的环境，用于 Shell 静态测试；
+- 构建 Android 时还需要 JDK 17、Gradle 和 Android SDK。加 `-Provision` 后，Android 脚本会在项目内的 `.android-tools` 中准备受控工具链。
+
+`scripts/ensure-go.ps1` 可用于查找或准备 Go。构建脚本也支持现有的 `PNA_GO_EXE`、`PNA_GOFMT_EXE`、`PNA_BASH_EXE` 和 `PNA_CSC_EXE` 环境覆盖；这些 `PNA_*` 名称仅是兼容实现细节，不是产品名。
+
+## 3. 推荐：一次构建全部正式产物
+
+在仓库根目录运行或双击：
 
 ```text
 build-all-pc.bat
 ```
 
-它依次生成 x64、x86 和 ARM64 三个单文件 GUI。x64/x86 在兼容构建机上执行运行时冒烟测试；ARM64 在非 ARM64 构建机上交叉编译并做静态校验，不会伪报为已原生运行。
+它按顺序完成：
 
-构建脚本会依次：
+1. 构建并完整验证 Windows x64；
+2. 构建并验证 Windows x86；
+3. 交叉编译 Windows ARM64，并在非 ARM64 构建机上只做静态校验；
+4. 构建、对齐、签名并验证 Android 通用 APK；
+5. 运行 `package.ps1`，生成便携包、源码包、说明书和 SHA-256 清单。
 
-1. 重建内嵌 runbook tar.gz。
-2. 格式化 Go 源码。
-3. 执行 `go test ./...`。
-4. 执行 `go vet ./...`。
-5. 以 `CGO_ENABLED=0`、`GOOS=windows`、目标 `GOARCH` 和 `-trimpath` 构建隐藏工作流核心。
-6. 构建无控制台 AskPass 辅助程序；它只通过当前用户专用随机命名管道接收一次密码请求。
-7. 将工作流核心、AskPass 和 XAML 作为资源封装进单文件 WPF GUI EXE，并写入包含 16—256 像素图层的原生 Windows ICO。
-8. 离屏渲染首页和操作工作区，并检查两张预览都不是空图。
-9. 在 GUI 内实际跑通纯本地操作流程。
-10. 启动内嵌核心的必填输入冒烟流程，关闭其标准输入，验证 5 秒内退出且提示只输出一次。
-11. 执行带用户访问控制的 AskPass 命名管道冒烟测试。
-12. 启动专用隐藏操作核心进入真实面板隧道等待点，实际触发 WPF“关闭面板隧道”按钮点击；必须收到后端确认、进程以 0 退出、GUI 清除隧道状态，同时验证普通输入隐藏且 Y/N 禁用。
-13. 用隔离历史文件验证 GUI 的保存、自动回填、删除与清空路径。
-14. 输出最终 GUI EXE 的 SHA-256。
-
-构建结果位于 `dist`：
+默认正式发行目录是：
 
 ```text
-ProxyNodeAssistant-v0.9.0-win64.exe       默认发布的单文件 GUI
-ProxyNodeAssistant-v0.9.0-win32.exe       Windows 10 x86 单文件 GUI
-ProxyNodeAssistant-v0.9.0-win-arm64.exe   Windows 10/11 ARM64 单文件 GUI
-ProxyNodeAssistant-v0.9.0-cli-win*.exe    构建中间件/高级调试核心
-ProxyNodeAssistant-v0.9.0-askpass-win*.exe 构建中间件/受限命名管道辅助程序
-ProxyNodeAssistant-v0.9.0-gui-preview.png 界面渲染验证图
-ProxyNodeAssistant-v0.9.0-workflow-preview.png 操作工作区渲染验证图
+outputs/TextNodeAssistant-v0.9.5-official
 ```
 
-应用图标源文件位于 `gui/ProxyNodeAssistant-v0.9.0-app-icon.png`，Windows 多尺寸资源位于 `gui/ProxyNodeAssistant-v0.9.0.ico`。Windows 应用与内嵌 Linux runbook 均为 v0.9.0；构建会重新生成 runbook 的 `SHA256SUMS.txt`，并把性能/流量脚本与 15 套伪装站模板一并打入归档。
+批处理标题和目标文件必须明确显示 `TextNodeAssistant v0.9.5 reset line`。如果本地还有写着 `ProxyNodeAssistant v0.9.0` 的旧批处理副本，不要使用。
 
-Linux Shell 静态语法可在 Git Bash 中执行：
+## 4. 分架构构建
 
-```bash
-find runbook/proxy-runbook-v0.9.0/linux -name '*.sh' -print0 | xargs -0 -n1 bash -n
-scripts/test-xui-api-context.sh
-scripts/test-warp-route-idempotency.sh
+需要逐项排障时，在仓库根目录运行：
+
+```powershell
+# Windows x64：执行公共验证和本机运行时冒烟
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Architecture amd64
+
+# Windows x86：复用已完成的公共验证，仍执行可运行的本机冒烟
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Architecture 386 -SkipCommonValidation
+
+# Windows ARM64：在 x64 构建机上交叉编译和静态校验
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Architecture arm64 -SkipCommonValidation -SkipRuntimeSmoke
 ```
 
+x86 二进制可在兼容的 x64 Windows 上真实运行验证。ARM64 二进制只有在 ARM64 Windows 上执行才算运行时验证；x64 构建机不得把交叉编译报告成“已原生跑通”。
+
+## 5. `build.ps1` 的验证内容
+
+首次架构构建会：
+
+1. 重建 `runbook/text-node-assistant-v0.9.5/SHA256SUMS.txt`；
+2. 重建 `assets/text-node-assistant-toolkit-v0.9.5.tar.gz`；
+3. 执行以下 Bash 校验：
+
+   ```text
+   scripts/validate-shell.sh
+   scripts/test-diagnosis-protocol.sh
+   scripts/test-xui-api-context.sh
+   scripts/test-warp-route-idempotency.sh
+   scripts/test-gui-remote-prompt.sh
+   ```
+
+4. 执行以下 PowerShell 静态校验：
+
+   ```text
+   scripts/test-feature-retirement-static.ps1
+   scripts/test-reset-core-install-modes-static.ps1
+   scripts/test-android-reset-static.ps1
+   ```
+
+5. 对根目录 Go 源码执行 `gofmt`；
+6. 执行 `go test ./...` 和 `go vet ./...`；
+7. 以 `CGO_ENABLED=0`、`GOOS=windows`、目标 `GOARCH` 和 `-trimpath` 构建核心与 AskPass；
+8. 通过当前用户专用随机命名管道验证 AskPass；
+9. 将核心、AskPass、XAML 和图标封装进单文件 WPF GUI；
+10. 执行首页/工作区离屏渲染、工作流、输入关闭、面板隧道生命周期和历史记录冒烟测试；
+11. 输出 GUI EXE 的 SHA-256。
+
+构建失败必须原样处理为失败；不要通过删除测试、吞掉退出码或复制旧产物绕过。
+
+## 6. Windows 构建结果
+
+结果位于 `dist`：
+
+```text
+TextNodeAssistant-v0.9.5-win64.exe
+TextNodeAssistant-v0.9.5-win32.exe
+TextNodeAssistant-v0.9.5-win-arm64.exe
+TextNodeAssistant-v0.9.5-cli-win64.exe
+TextNodeAssistant-v0.9.5-cli-win32.exe
+TextNodeAssistant-v0.9.5-cli-win-arm64.exe
+TextNodeAssistant-v0.9.5-askpass-win64.exe
+TextNodeAssistant-v0.9.5-askpass-win32.exe
+TextNodeAssistant-v0.9.5-askpass-win-arm64.exe
+TextNodeAssistant-v0.9.5-gui-preview.png
+TextNodeAssistant-v0.9.5-workflow-preview.png
+```
+
+对外发布前三个 GUI EXE；`cli` 和 `askpass` 是构建/高级排障中间件，不作为普通用户入口。
+
+图标源文件：
+
+```text
+gui/TextNodeAssistant-v0.9.5-app-icon.png
+gui/TextNodeAssistant-v0.9.5.ico
+```
+
+## 7. Android 构建与签名
+
+在仓库根目录运行：
+
+```powershell
+# 单元测试/调试构建
+powershell -NoProfile -ExecutionPolicy Bypass -File .\android\build-android.ps1 -Task Test -Provision
+powershell -NoProfile -ExecutionPolicy Bypass -File .\android\build-android.ps1 -Task Debug -Provision
+
+# 正式签名 APK
+powershell -NoProfile -ExecutionPolicy Bypass -File .\android\build-signed-release.ps1 -Provision
+```
+
+正式结果：
+
+```text
+android/dist/TextNodeAssistant-v0.9.5-android-universal.apk
+```
+
+Android 构建会核对内嵌工具包版本、内部 revision、顶层目录、必要安装入口和归档 SHA-256，避免 APK 携带旧工具包。
+
+### Android 签名兼容边界
+
+以下旧名称必须原样保留：
+
+```text
+%LOCALAPPDATA%\ProxyNodeAssistant\android-signing
+pna-release-v1.jks
+pna-release-v1
+既有证书 DN
+pna-v0.9.0-vault
+```
+
+它们仅是 Android 原位升级签名和旧加密数据解密的兼容边界，不代表当前产品仍叫 ProxyNodeAssistant。改名、删除或重建签名身份会使已安装 APK 无法原位升级；改动 vault alias 会使旧加密数据不可读。应离线备份 keystore 及其 DPAPI 密码文件，不得提交仓库。
+
+## 8. 发行打包
+
+先完成三种 Windows GUI 与已签名 Android APK，再运行：
+
+```powershell
+$env:PNA_PACKAGE_OUTPUT = (Join-Path $PWD 'outputs\TextNodeAssistant-v0.9.5-official')
+powershell -NoProfile -ExecutionPolicy Bypass -File .\package.ps1
+Remove-Item Env:PNA_PACKAGE_OUTPUT
+```
+
+`package.ps1` 会拒绝缺少 EXE、APK、工具包、预览图、图标或说明书的半成品发行。正式目录包含：
+
+```text
+TextNodeAssistant-v0.9.5-win64.exe
+TextNodeAssistant-v0.9.5-win32.exe
+TextNodeAssistant-v0.9.5-win-arm64.exe
+TextNodeAssistant-v0.9.5-android-universal.apk
+text-node-assistant-toolkit-v0.9.5.tar.gz
+TextNodeAssistant-v0.9.5-便携包.zip
+TextNodeAssistant-v0.9.5-source.zip
+TextNodeAssistant-v0.9.5-完整使用说明书.md
+TextNodeAssistant-v0.9.5-从零部署教程.md
+TextNodeAssistant-v0.9.5-更新说明.md
+TextNodeAssistant-v0.9.5-android-manual-zh-CN.md
+TextNodeAssistant-v0.9.5-gui-preview.png
+TextNodeAssistant-v0.9.5-workflow-preview.png
+TextNodeAssistant-v0.9.5-app-icon.png
+TextNodeAssistant-v0.9.5.ico
+SHA256SUMS-v0.9.5.txt
+SHA256SUMS-GITHUB-v0.9.5.txt
+```
+
+GitHub 发布时，中文文件会使用 `portable.zip`、`release-notes-zh-CN.md`、`beginner-guide-zh-CN.md` 和 `manual-zh-CN.md` 等 ASCII 映射；以 `SHA256SUMS-GITHUB-v0.9.5.txt` 为准。
+
+## 9. 旧内部名称
+
+源码仍可能出现以下兼容实现名：
+
+- WPF 内嵌资源键 `ProxyNodeAssistant.*`；
+- Go module 名 `proxynodeassistant`；
+- `PNA_*` 环境变量；
+- 上述 Android 签名目录、alias、DN 与 vault alias。
+
+这些不是对外产品名，也不表示旧功能仍存在。资源键和标识符只有在确认不会破坏资源装载、升级签名、既有密钥或旧加密数据后才能迁移。用户可见标题、文件名、目录、说明书和新远端工具包必须统一为 `TextNodeAssistant v0.9.5`。
+
+## 10. 发行前检查表
+
+- [ ] `go test ./...`、`go vet ./...` 和全部静态脚本通过；
+- [ ] x64/x86 运行时冒烟通过，ARM64 的验证范围如实标注；
+- [ ] Android 单元测试、签名和 `apksigner verify` 通过；
+- [ ] APK 内工具包和独立工具包来自同一 revision；
+- [ ] GUI/Android 不再显示设备准入、controller、邀请、网盘或本机 admin；
+- [ ] 菜单 `[1]` 是唯一施工入口，并保留每项 SSH 临时密码/绑定 key 双模式；
+- [ ] 安装模式必须显式选择：已有节点才允许 `0 keep`，以及 `1 灰云 / 2 橙云 / 3 双路`；
+- [ ] 预览后必须输入精确 `APPLY` 才能上传或改远端；
+- [ ] 无任何真实 VPS IP、域名、邮箱、密码、私钥、API key 或本机运行态凭据进入源码和发行包；
+- [ ] `SHA256SUMS-v0.9.5.txt` 与 `SHA256SUMS-GITHUB-v0.9.5.txt` 都能校验对应文件；
+- [ ] 在干净目录解压便携包和源码包，再做一次名称、隐私和启动抽查。

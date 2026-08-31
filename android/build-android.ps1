@@ -10,6 +10,9 @@ $toolsRoot = Join-Path $projectRoot ".android-tools"
 $jdkRoot = Join-Path $toolsRoot "jdk-17"
 $sdkRoot = Join-Path $toolsRoot "sdk"
 $gradleRoot = Join-Path $toolsRoot "gradle-9.5.0"
+$toolkitSource = Join-Path $projectRoot "assets\text-node-assistant-toolkit-v0.9.5.tar.gz"
+$toolkitAssetDirectory = Join-Path $PSScriptRoot "app\src\main\assets"
+$toolkitAsset = Join-Path $toolkitAssetDirectory "text-node-assistant-toolkit-v0.9.5.tgz"
 
 function Get-VerifiedFile {
     param([string]$Uri, [string]$Destination, [string]$ExpectedSha256 = "")
@@ -76,6 +79,44 @@ if ($Provision) {
 
 foreach ($required in @((Join-Path $jdkRoot "bin\java.exe"), (Join-Path $gradleRoot "bin\gradle.bat"), (Join-Path $sdkRoot "platforms\android-37.0\android.jar"))) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Missing Android build dependency: $required. Run with -Provision once." }
+}
+
+if (-not (Test-Path -LiteralPath $toolkitSource)) {
+    throw "Missing current TextNodeAssistant toolkit archive: $toolkitSource. Run the repository build first."
+}
+if ((Get-Item -LiteralPath $toolkitSource).Length -le 128) {
+    throw "Current TextNodeAssistant toolkit archive is unexpectedly empty: $toolkitSource"
+}
+$toolkitEntries = @(& tar -tzf $toolkitSource)
+if ($LASTEXITCODE -ne 0 -or $toolkitEntries.Count -eq 0) {
+    throw "Could not inspect the current TextNodeAssistant toolkit archive"
+}
+if ($toolkitEntries | Where-Object { $_ -notlike "text-node-assistant-v0.9.5/*" }) {
+    throw "Current toolkit archive has a stale or unexpected top-level directory; rebuild the repository archive first"
+}
+$requiredToolkitEntries = @(
+    "text-node-assistant-v0.9.5/TOOLKIT_VERSION",
+    "text-node-assistant-v0.9.5/TOOLKIT_BUILD_ID",
+    "text-node-assistant-v0.9.5/TOOLKIT_BUILD_REVISION",
+    "text-node-assistant-v0.9.5/linux/00-bootstrap-toolkit.sh",
+    "text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh",
+    "text-node-assistant-v0.9.5/linux/28-topology-reconcile.sh"
+)
+foreach ($entry in $requiredToolkitEntries) {
+    if ($toolkitEntries -notcontains $entry) {
+        throw "Current toolkit archive is missing an Android fresh-install entry: $entry"
+    }
+}
+$archiveVersion = (& tar -xOf $toolkitSource "text-node-assistant-v0.9.5/TOOLKIT_VERSION" | Out-String).Trim()
+$archiveBuildId = (& tar -xOf $toolkitSource "text-node-assistant-v0.9.5/TOOLKIT_BUILD_ID" | Out-String).Trim()
+$archiveBuildRevision = (& tar -xOf $toolkitSource "text-node-assistant-v0.9.5/TOOLKIT_BUILD_REVISION" | Out-String).Trim()
+if ($archiveVersion -ne "0.9.5" -or $archiveBuildId -ne "20260831-v095-reset-from-v090-r100" -or $archiveBuildRevision -ne "100") {
+    throw "Current toolkit archive metadata is not the exact TextNodeAssistant v0.9.5 revision-100 build"
+}
+New-Item -ItemType Directory -Force -Path $toolkitAssetDirectory | Out-Null
+Copy-Item -LiteralPath $toolkitSource -Destination $toolkitAsset -Force
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $toolkitSource).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $toolkitAsset).Hash) {
+    throw "Embedded Android toolkit asset does not match the current repository archive"
 }
 
 $env:JAVA_HOME = $jdkRoot

@@ -11,8 +11,10 @@ android {
         applicationId = "com.proxynodeassistant.android"
         minSdk = 24
         targetSdk = 36
-        versionCode = 902
-        versionName = "0.9.0"
+        // Keep the applicationId stable for in-place upgrades. The code is
+        // monotonically above every pre-reset 0.9.x Android build.
+        versionCode = 950100
+        versionName = "0.9.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

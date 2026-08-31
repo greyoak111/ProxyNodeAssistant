@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ProxyNodeAssistantAndroid"
+rootProject.name = "TextNodeAssistantAndroid"
 include(":app")

@@ -116,7 +116,7 @@ data class ActionSpec(
 
 object ActionCatalog {
     val all = listOf(
-        ActionSpec("1", "安装 / 升级 / 自适应优化", "Install / upgrade / adaptive optimize", "唯一安装入口；识别远端版本后安装、升级或只收敛配置。", "The only install entry; version-aware install, upgrade, or convergence.", ActionGroup.INSTALL),
+        ActionSpec("1", "安装 / 升级 / 自适应优化", "Install / upgrade / adaptive optimize", "唯一安装入口；必须明确选路线、模板、性能和 WARP，预览后输入 APPLY 才上传或施工。", "The only install entry. Explicitly select route, cover, performance, and WARP; upload or changes begin only after an APPLY review.", ActionGroup.INSTALL),
         ActionSpec("2", "打开 3x-ui 面板", "Open 3x-ui panel", "通过 Android 本机 127.0.0.1 SSH 隧道访问。", "Access through an Android localhost SSH tunnel.", ActionGroup.ACCESS),
         ActionSpec("3", "自动体检与排障", "Diagnose", "结构化检查 SSH、x-ui、Nginx、WARP、订阅和端口。", "Structured SSH, x-ui, Nginx, WARP, subscription, and port checks.", ActionGroup.MAINTENANCE),
         ActionSpec("4", "安全自动修复", "Safe repair", "先备份，只修复可确定性问题。", "Back up first and repair deterministic issues only.", ActionGroup.MAINTENANCE),

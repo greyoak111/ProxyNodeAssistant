@@ -56,7 +56,7 @@ export PNA_XUI_TOKEN_CACHE_FILE="$TMP/state/XUI_API_TOKEN"
 export PNA_UNEXPECTED_CURL_MARKER="$TMP/state/unexpected-curl"
 printf 'PANEL_API_TOKEN=test-token\n' > "$PNA_XUI_HANDOFF_FILE"
 
-output="$(bash "$ROOT/runbook/proxy-runbook-v0.9.0/linux/07a-apply-warp-route-local.sh" 40000)"
+output="$(bash "$ROOT/runbook/text-node-assistant-v0.9.5/linux/07a-apply-warp-route-local.sh" 40000)"
 [ "$output" = 'XRAY_WARP_ROUTE_ALREADY_OPTIMAL' ]
 [ ! -e "$PNA_UNEXPECTED_CURL_MARKER" ]
 

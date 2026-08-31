@@ -21,12 +21,13 @@ import (
 )
 
 const (
-	remoteRoot           = "/opt/proxy-runbook-current"
-	toolkitVersion       = "0.9.0"
-	toolkitBuildID       = "20260822-full-dismantle-v5"
-	toolkitBuildRevision = 5
-	toolkitInstallDir    = "/opt/proxy-runbook-v0.9.0"
-	toolkitArchive       = "proxy-runbook-toolkit-v0.9.0.tar.gz"
+	remoteRoot           = "/opt/text-node-assistant-current"
+	legacyRemoteRoot     = "/opt/proxy-runbook-current"
+	toolkitVersion       = "0.9.5"
+	toolkitBuildID       = "20260831-v095-reset-from-v090-r100"
+	toolkitBuildRevision = 100
+	toolkitInstallDir    = "/opt/text-node-assistant-v0.9.5"
+	toolkitArchive       = "text-node-assistant-toolkit-v0.9.5.tar.gz"
 )
 
 var managedToolkitDirs = []string{
@@ -52,6 +53,7 @@ var managedToolkitDirs = []string{
 	"/opt/proxy-runbook-v0.8.2",
 	"/opt/proxy-runbook-v0.8.3",
 	"/opt/proxy-runbook-v0.9.0",
+	"/opt/text-node-assistant-v0.9.5",
 }
 
 var managedToolkitArchives = []string{
@@ -77,6 +79,7 @@ var managedToolkitArchives = []string{
 	"/tmp/proxy-runbook-toolkit-v0.8.2.tar.gz",
 	"/tmp/proxy-runbook-toolkit-v0.8.3.tar.gz",
 	"/tmp/proxy-runbook-toolkit-v0.9.0.tar.gz",
+	"/tmp/text-node-assistant-toolkit-v0.9.5.tar.gz",
 }
 
 var requiredOpenSSHExecutables = []string{
@@ -1871,11 +1874,12 @@ func (a *App) readyConn() (Connection, error) {
 
 func (a *App) remoteToolkitProbe(c Connection) (ToolkitProbe, error) {
 	command := "printf '%s\\n' " + shQuote(toolkitBegin) + "; " +
-		"if [ -r " + remoteRoot + "/TOOLKIT_VERSION ]; then " +
-		"version=''; IFS= read -r version < " + remoteRoot + "/TOOLKIT_VERSION || true; version=${version%$'\\r'}; " +
-		"build=''; if [ -r " + remoteRoot + "/TOOLKIT_BUILD_ID ]; then IFS= read -r build < " + remoteRoot + "/TOOLKIT_BUILD_ID || true; build=${build%$'\\r'}; fi; " +
-		"revision=''; if [ -r " + remoteRoot + "/TOOLKIT_BUILD_REVISION ]; then IFS= read -r revision < " + remoteRoot + "/TOOLKIT_BUILD_REVISION || true; revision=${revision%$'\\r'}; fi; " +
-		"complete=0; test -x " + remoteRoot + "/linux/00-auto-install-or-optimize.sh && test -x " + remoteRoot + "/linux/18-panel-metadata.sh && test -x " + remoteRoot + "/linux/19-prune-backups-current-config.sh && test -x " + remoteRoot + "/linux/20-adaptive-performance.sh && test -x " + remoteRoot + "/linux/21-traffic-status.sh && test -x " + remoteRoot + "/linux/22-dismantle-managed-node.sh && test -s " + remoteRoot + "/templates/cover-sites/MANIFEST.tsv && test -s " + remoteRoot + "/templates/cover-sites/15-signal-runner.html && test -s " + remoteRoot + "/TOOLKIT_BUILD_ID && complete=1; " +
+		"probe_root=" + shQuote(remoteRoot) + "; [ -r \"$probe_root/TOOLKIT_VERSION\" ] || probe_root=" + shQuote(legacyRemoteRoot) + "; " +
+		"if [ -r \"$probe_root/TOOLKIT_VERSION\" ]; then " +
+		"version=''; IFS= read -r version < \"$probe_root/TOOLKIT_VERSION\" || true; version=${version%$'\\r'}; " +
+		"build=''; if [ -r \"$probe_root/TOOLKIT_BUILD_ID\" ]; then IFS= read -r build < \"$probe_root/TOOLKIT_BUILD_ID\" || true; build=${build%$'\\r'}; fi; " +
+		"revision=''; if [ -r \"$probe_root/TOOLKIT_BUILD_REVISION\" ]; then IFS= read -r revision < \"$probe_root/TOOLKIT_BUILD_REVISION\" || true; revision=${revision%$'\\r'}; fi; " +
+		"complete=0; test -x \"$probe_root/linux/00-auto-install-or-optimize.sh\" && test -x \"$probe_root/linux/18-panel-metadata.sh\" && test -x \"$probe_root/linux/19-prune-backups-current-config.sh\" && test -x \"$probe_root/linux/20-adaptive-performance.sh\" && test -x \"$probe_root/linux/21-traffic-status.sh\" && test -x \"$probe_root/linux/22-dismantle-managed-node.sh\" && test -s \"$probe_root/templates/cover-sites/MANIFEST.tsv\" && test -s \"$probe_root/templates/cover-sites/15-signal-runner.html\" && test -s \"$probe_root/TOOLKIT_BUILD_ID\" && complete=1; " +
 		"printf 'TOOLKIT_PRESENT=1\\nTOOLKIT_VERSION=%s\\nTOOLKIT_BUILD_ID=%s\\nTOOLKIT_BUILD_REVISION=%s\\nTOOLKIT_COMPLETE=%s\\n' \"$version\" \"$build\" \"$revision\" \"$complete\"; " +
 		"else printf 'TOOLKIT_PRESENT=0\\n'; fi; " +
 		"printf '%s\\n' " + shQuote(toolkitEnd)
@@ -1949,7 +1953,12 @@ func (a *App) uploadToolkit(c Connection) error {
 			return fmt.Errorf("remote toolkit v%s build revision %d is newer than EXE build revision %d; downgrade refused", probe.Version, probe.BuildRevision, toolkitBuildRevision)
 		}
 	case ToolkitSameIncomplete:
-		return fmt.Errorf("same-version toolkit v%s is incomplete; explicit uninstall via menu [13] is required before reinstall", toolkitVersion)
+		// The retired, over-scoped v0.9.5 line used lower internal revisions.
+		// Allow that recognized line to be replaced once by this reset build;
+		// an incomplete reset-line build still requires explicit uninstall.
+		if probe.BuildRevision <= 0 || probe.BuildRevision >= toolkitBuildRevision {
+			return fmt.Errorf("same-version reset-line toolkit v%s is incomplete; explicit uninstall via menu [13] is required before reinstall", toolkitVersion)
+		}
 	case ToolkitNewer:
 		return fmt.Errorf("remote toolkit v%s is newer than EXE v%s; downgrade refused", probe.Version, toolkitVersion)
 	}
@@ -2034,8 +2043,10 @@ func toolkitUninstallCommand() string {
 	}
 	script.WriteString(" )\n")
 	script.WriteString(`
-current_link='/opt/proxy-runbook-current'
-launcher='/usr/local/sbin/proxy-node'
+current_link='/opt/text-node-assistant-current'
+legacy_link='/opt/proxy-runbook-current'
+launcher='/usr/local/sbin/text-node'
+legacy_launcher='/usr/local/sbin/proxy-node'
 
 # Complete ownership/type validation happens before the first deletion.
 for target in "${toolkit_dirs[@]}"; do
@@ -2048,29 +2059,37 @@ for target in "${toolkit_archives[@]}"; do
     [ -f "$target" ] && [ ! -L "$target" ] || { printf 'REFUSED_UNEXPECTED_ARCHIVE=%s\n' "$target" >&2; exit 62; }
   fi
 done
-if [ -e "$current_link" ] || [ -L "$current_link" ]; then
-  [ -L "$current_link" ] || { printf 'REFUSED_CURRENT_NOT_SYMLINK\n' >&2; exit 63; }
-  current_target="$(readlink -f "$current_link" 2>/dev/null || true)"
+for link in "$current_link" "$legacy_link"; do
+if [ -e "$link" ] || [ -L "$link" ]; then
+  [ -L "$link" ] || { printf 'REFUSED_CURRENT_NOT_SYMLINK=%s\n' "$link" >&2; exit 63; }
+  current_target="$(readlink -f "$link" 2>/dev/null || true)"
   target_allowed=false
   for target in "${toolkit_dirs[@]}"; do
     [ "$current_target" = "$target" ] && target_allowed=true
   done
   $target_allowed || { printf 'REFUSED_UNMANAGED_CURRENT=%s\n' "$current_target" >&2; exit 64; }
 fi
-if [ -e "$launcher" ] || [ -L "$launcher" ]; then
-  [ -f "$launcher" ] && [ ! -L "$launcher" ] || { printf 'REFUSED_UNEXPECTED_LAUNCHER\n' >&2; exit 65; }
-  grep -qF '/opt/proxy-runbook-current/linux/13-maintenance-menu.sh' "$launcher" || { printf 'REFUSED_UNMANAGED_LAUNCHER\n' >&2; exit 66; }
+done
+for command_path in "$launcher" "$legacy_launcher"; do
+if [ -e "$command_path" ] || [ -L "$command_path" ]; then
+  [ -f "$command_path" ] && [ ! -L "$command_path" ] || { printf 'REFUSED_UNEXPECTED_LAUNCHER=%s\n' "$command_path" >&2; exit 65; }
+  if [ "$command_path" = "$launcher" ]; then
+    grep -qF '/opt/text-node-assistant-current/linux/13-maintenance-menu.sh' "$command_path" || { printf 'REFUSED_UNMANAGED_LAUNCHER=%s\n' "$command_path" >&2; exit 66; }
+  else
+    # The compatibility launcher is an intentionally tiny forwarding wrapper.
+    # Accept only the exact managed target; never remove an arbitrary user script.
+    grep -qF 'exec /usr/local/sbin/text-node "$@"' "$command_path" || { printf 'REFUSED_UNMANAGED_LAUNCHER=%s\n' "$command_path" >&2; exit 66; }
+  fi
 fi
+done
 
 printf 'PROXY_RUNBOOK_UNINSTALL_BEGIN\n'
-if [ -L "$current_link" ]; then
-  rm -f -- "$current_link"
-  printf 'REMOVED=%s\n' "$current_link"
-fi
-if [ -f "$launcher" ]; then
-  rm -f -- "$launcher"
-  printf 'REMOVED=%s\n' "$launcher"
-fi
+for link in "$current_link" "$legacy_link"; do
+  if [ -L "$link" ]; then rm -f -- "$link"; printf 'REMOVED=%s\n' "$link"; fi
+done
+for command_path in "$launcher" "$legacy_launcher"; do
+  if [ -f "$command_path" ]; then rm -f -- "$command_path"; printf 'REMOVED=%s\n' "$command_path"; fi
+done
 for target in "${toolkit_dirs[@]}"; do
   if [ -d "$target" ]; then
     rm -rf -- "$target"
@@ -2085,7 +2104,9 @@ for target in "${toolkit_archives[@]}"; do
 done
 
 [ ! -e "$current_link" ] && [ ! -L "$current_link" ]
+[ ! -e "$legacy_link" ] && [ ! -L "$legacy_link" ]
 [ ! -e "$launcher" ] && [ ! -L "$launcher" ]
+[ ! -e "$legacy_launcher" ] && [ ! -L "$legacy_launcher" ]
 for target in "${toolkit_dirs[@]}" "${toolkit_archives[@]}"; do
   [ ! -e "$target" ] && [ ! -L "$target" ] || { printf 'UNINSTALL_VERIFY_FAILED=%s\n' "$target" >&2; exit 67; }
 done
@@ -2096,17 +2117,6 @@ printf 'PRESERVED=BACKUP_ARCHIVES\n'
 printf 'PROXY_RUNBOOK_UNINSTALL_END\n'
 `)
 	return script.String()
-}
-
-func (a *App) writeAutoInput(c Connection, domain, email string) error {
-	content := "DOMAIN_B64=" + base64.StdEncoding.EncodeToString([]byte(domain)) + "\n" +
-		"EMAIL_B64=" + base64.StdEncoding.EncodeToString([]byte(email)) + "\n" +
-		"LANG=" + string(a.lang) + "\n"
-	result := a.rootCaptureWithInput(c, "umask 077; cat > /tmp/proxy-runbook-auto-input; chmod 600 /tmp/proxy-runbook-auto-input", []byte(content))
-	if !result.OK() {
-		return fmt.Errorf("failed to write one-run input (exit %d): %s", result.ExitCode, processFailureDetail(result))
-	}
-	return nil
 }
 
 func (a *App) fetchHandoff(c Connection) (string, error) {

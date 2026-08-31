@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LIB="$ROOT/runbook/proxy-runbook-v0.9.0/linux/lib-gui-prompt.sh"
+LIB="$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-gui-prompt.sh"
 ERR="$(mktemp)"
 trap 'rm -f "$ERR"' EXIT
 

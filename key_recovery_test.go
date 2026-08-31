@@ -85,19 +85,19 @@ func TestMoveManagedKeyDirectoryToBackupLeavesBoundPositionEmpty(t *testing.T) {
 	}
 }
 
-func TestDeployCleanupPromptIsBetweenHandoffAndPanel(t *testing.T) {
+func TestDeployFinalizationKeepsHandoffCleanupPanelOrder(t *testing.T) {
 	source, err := os.ReadFile("operations.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
 	handoff := strings.Index(text, `a.secretHandoff("CREDENTIAL HANDOFF", handoff)`)
-	cleanup := strings.Index(text, `"是否在打开面板前整理远端多余备份`)
-	panel := strings.Index(text, `"现在无感打开 3x-ui 面板？`)
+	cleanup := strings.Index(text, "if plan.Preferences.PruneAfterSuccess")
+	panel := strings.Index(text, "if plan.Preferences.OpenPanelOnSuccess")
 	if handoff < 0 || cleanup < 0 || panel < 0 || !(handoff < cleanup && cleanup < panel) {
 		t.Fatalf("unexpected deploy finalization order: handoff=%d cleanup=%d panel=%d", handoff, cleanup, panel)
 	}
 	if !strings.Contains(text[cleanup:panel], "pruneBackupsAndBackupCurrentConfigWithConn(c, false)") {
-		t.Fatal("deploy cleanup does not use the already-authenticated connection with y/n confirmation")
+		t.Fatal("deploy cleanup does not use the already-authenticated connection selected in the reviewed plan")
 	}
 }

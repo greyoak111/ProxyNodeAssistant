@@ -1,16 +1,18 @@
-# ProxyNodeAssistant v0.9.0 Android 完整使用说明
+# TextNodeAssistant v0.9.5 Android 完整使用说明
 
 ## 1. 这是什么
 
-Android 版是原生 Kotlin + Jetpack Compose 应用，不是网页壳、Termux 脚本或远程桌面。它在手机内完成 SSH 认证、Host Key 校验、SCP 传输、交互提示、日志、凭据交接和 127.0.0.1 面板隧道，远端施工继续复用与 Windows 正式版完全相同的 `proxy-runbook v0.9.0`。
+Android 版是原生 Kotlin + Jetpack Compose 应用，不是网页壳、Termux 脚本或远程桌面。它在手机内完成 SSH 认证、Host Key 校验、SCP 传输、交互提示、日志、凭据交接和 127.0.0.1 面板隧道，远端施工继续复用与 Windows 正式版完全相同的 `TextNodeAssistant v0.9.5` 工具包。
 
-最低 Android 7.0（API 24），面向 Android 16（target API 36）。APK 是 universal 包，可安装在常见 ARM64、ARMv7 和 x86_64 Android 设备上；SSH 部分为纯 Java/Kotlin，不要求 root。本次更新仍显示版本 `0.9.0`，内部 `versionCode=902`，可直接覆盖安装先前的 0.9.0 安卓构建。
+最低 Android 7.0（API 24），面向 Android 16（target API 36）。APK 是 universal 包，可安装在常见 ARM64、ARMv7 和 x86_64 Android 设备上；SSH 部分为纯 Java/Kotlin，不要求 root。本次重置版显示版本 `0.9.5`、内部构建修订 `100`、`versionCode=950100`，并保持原 applicationId 与原发布签名，可直接覆盖安装先前 Android 正式构建。
+
+本分支以稳定的 v0.9.0 Android 功能面为基线：不包含后来试验性的设备准入/controller/邀请、网盘或本机 admin。普通的“按 VPS 绑定 SSH 登录 key”仍保留，它只是登录凭据管理，不是设备准入系统。
 
 ## 2. 安装
 
-1. 把 `ProxyNodeAssistant-v0.9.0-android-universal.apk` 传到手机。
+1. 把 `TextNodeAssistant-v0.9.5-android-universal.apk` 传到手机。
 2. 在系统设置中仅为当前文件管理器或浏览器临时允许“安装未知应用”。
-3. 安装 APK，启动 `PNA // NODE OPS`。
+3. 安装 APK，启动 `TNA // NODE OPS`。
 4. Android 13 及以上会询问通知权限。允许后，面板 SSH 隧道可通过前台服务稳定保持，并在通知中提供停止按钮；拒绝通知不会给应用读取联系人、短信或相册的权限。
 
 APK 不要求存储权限。报告、救援包和加密密钥备份通过 Android 系统文件选择器导出，应用只能访问本人明确选择的目标。
@@ -34,7 +36,7 @@ APK 不要求存储权限。报告、救援包和加密密钥备份通过 Androi
 
 | 编号 | Android 图形功能 | 行为 |
 |---|---|---|
-| 1 | 安装/升级/自适应优化 | 唯一安装入口；缺失则安装、旧版则升级、同一完整构建跳过上传，新于客户端则拒绝降级；随后手填域名和邮箱、选 1—15/R/A 模板、校验 DNS、执行施工、验证交接单，可选整理备份和打开面板。 |
+| 1 | 安装/升级/自适应优化 | 唯一安装入口；缺失则从 APK 上传并安装完整工具包，旧版则升级，同一完整构建跳过上传，新于客户端则拒绝降级。必须显式选择 0/保持（仅已有节点）、1/灰云、2/橙云、3/双路，并选伪装模板、性能档和 WARP 策略；核对预览后输入大写 `APPLY` 才会上传或修改 VPS。 |
 | 2 | 打开 3x-ui | 读取结构化面板端口/路径，建立 Android 本机 `127.0.0.1` 随机端口隧道，浏览器不暴露公网面板。 |
 | 3 | 自动体检 | 检查 SSH、x-ui、Nginx、WARP、订阅、端口和关键配置。 |
 | 4 | 安全修复 | 先备份，只处理脚本能够确定的问题。 |
@@ -55,6 +57,19 @@ APK 不要求存储权限。报告、救援包和加密密钥备份通过 Androi
 | T | 服务商流量中心 | KiwiVM `VEID + API Key` 真实查询、阈值预警；其他无统一 API 的厂商回退到 SSH/vnStat。 |
 | K | 密钥仓 | 查看绑定/多代备份、全部转备份态、恢复指定一代、删除指定备份、加密导出/导入。 |
 | H | 节点历史 | 查看和删除非秘密目标历史。 |
+
+### 操作 `[1]` 的完整施工计划
+
+Android 不会替使用者猜域名或套用默认施工。连接成功后依次要求：
+
+1. 选择路线：已有节点可选 `0` 保持、`1` 灰云、`2` 橙云、`3` 双路；全新 VPS 必须选 `1`—`3`。
+2. 对应路线的域名和证书邮箱必须本人输入；双路必须使用两个不同子域名。
+3. 选择伪装模板：`R` 每次随机、`A` 按域名稳定选择、`1`—`15` 指定；已有节点可选 `0` 保留。
+4. 选择性能档与 WARP 策略，再选是否整理备份和打开面板。
+5. 最终预览会显示路线、隐去部分的邮箱、模板、性能、WARP 和固定端口：Reality `443`、验货 `24443`、CDN 源站 `8443`、WARP 本地 `40000`。
+6. 只有输入大写 `APPLY` 才会上传工具包或修改 VPS；其他输入一律取消。
+
+施工参数写入每次随机命名的 `/tmp/text-node-assistant-*.env`，权限固定为 `0600`，远端读取后立即删除，失败或取消也会清理。客户端不设置 `PROXY_RUNBOOK_ASSUME_DEFAULTS=1`，也不使用固定的共享输入路径。橙云/双路在最终切换前还必须完成 Cloudflare 人工确认和真实客户端浏览验货，验货拒绝或失败会回滚待提交拓扑。
 
 ## 5. 面板隧道
 
@@ -145,9 +160,21 @@ KiwiVM 页面只需要每台实例自己的 `VEID` 和 Private API Key，不要�
 口令用当前 Windows 用户的 DPAPI 保护。以后 APK 更新必须使用同一 keystore；请把这两个文件一并安全备份。输出位于：
 
 ```text
-android\dist\ProxyNodeAssistant-v0.9.0-android-universal.apk
+android\dist\TextNodeAssistant-v0.9.5-android-universal.apk
 ```
 
 ## 12. 隐私发布检查
 
-发布 APK 和源码不得包含真实 VPS IP、域名、邮箱、密码、API Key、Token 或私钥。APK 内资产名固定为 `proxy-runbook-toolkit-v0.9.0.tgz`（上传到远端时恢复标准 `.tar.gz` 名），构建前应校验其 SHA-256 与正式 Windows 包一致，并对源码、解包 APK 和内嵌 tar 做二次扫描。
+发布 APK 和源码不得包含真实 VPS IP、域名、邮箱、密码、API Key、Token 或私钥。APK 内资产名固定为 `text-node-assistant-toolkit-v0.9.5.tgz`（上传到远端时恢复标准 `.tar.gz` 名），构建脚本会校验它与仓库当前正式工具包 SHA-256 完全一致；发布前还应对源码、解包 APK 和内嵌 tar 做二次扫描。
+
+## 13. 升级兼容性（不要改名迁移）
+
+为了让旧版可以原地升级并继续读取本机数据，以下内部标识有意保留旧值：
+
+- applicationId / namespace：`com.proxynodeassistant.android`
+- 发布 keystore 目录：`%LOCALAPPDATA%\ProxyNodeAssistant\android-signing`
+- 发布 key alias：`pna-release-v1`
+- Android Keystore 加密仓别名：`pna-v0.9.0-vault`
+- 既有 SharedPreferences、已绑定 SSH key、Host Key 固定记录和加密备份协议
+
+这些属于不可见兼容标识，不代表产品仍叫旧名称。修改任何一项都可能导致无法覆盖安装、无法读取旧密钥或无法恢复旧备份。

@@ -26,7 +26,6 @@ func TestPromptMarksClosedInput(t *testing.T) {
 		t.Fatal("EOF must be marked so the menu exits instead of busy-looping")
 	}
 }
-
 func TestGUIPromptFrameRoundTripsUnicodeAndIsLineSafe(t *testing.T) {
 	label := "输入备份编号；0 取消"
 	frame := guiPromptFrame(label)
@@ -57,7 +56,7 @@ func TestDomainEmailPromptDoesNotBusyLoopOnClosedInput(t *testing.T) {
 }
 
 func TestGUIRejectsBlankRequiredInputAndSerializesSubmissions(t *testing.T) {
-	source, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	source, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +223,7 @@ func TestEveryEntryPointHoldsCreatedPanelTunnels(t *testing.T) {
 }
 
 func TestGUIActionMapMatchesConsoleActions(t *testing.T) {
-	guiSource, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	guiSource, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +319,7 @@ func TestRemoteBackupCleanupMenuUsesStandardActionWrapper(t *testing.T) {
 }
 
 func TestCurrentConfigBackupValidatesBeforeLimitedCleanup(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.0/linux/19-prune-backups-current-config.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/19-prune-backups-current-config.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +351,7 @@ func TestCurrentConfigBackupValidatesBeforeLimitedCleanup(t *testing.T) {
 		}
 	}
 
-	fullBackup, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/01-safe-backup.sh")
+	fullBackup, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/01-safe-backup.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1038,7 +1037,7 @@ func TestToolkitClassificationCoversInstallAndNoDowngrade(t *testing.T) {
 		{ToolkitProbe{Present: true, Version: "0.6.4", Complete: true}, ToolkitOlder},
 		{ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: "different-build", Complete: true}, ToolkitSameComplete},
 		{ToolkitProbe{Present: true, Version: toolkitVersion, Complete: false}, ToolkitSameIncomplete},
-		{ToolkitProbe{Present: true, Version: "0.9.1", Complete: true}, ToolkitNewer},
+		{ToolkitProbe{Present: true, Version: "0.9.6", Complete: true}, ToolkitNewer},
 	}
 	for _, test := range tests {
 		got, err := classifyToolkit(test.probe, toolkitVersion)
@@ -1116,16 +1115,16 @@ func TestSameVersionBuildRevisionUpdatesOnlyWhenOlder(t *testing.T) {
 }
 
 func TestRemoteGUIConfirmationUsesFramedLineAndStripsANSI(t *testing.T) {
-	runbook, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/00-auto-install-or-optimize.sh")
+	runbook, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"lib-gui-prompt.sh", "proxy_runbook_read_answer", "EXISTING_24443_SHADOW_REUSED", "show-shadow 24443"} {
+	for _, required := range []string{"lib-gui-prompt.sh", "proxy_runbook_read_answer", "EXISTING_${REALITY_SHADOW_PORT}_SHADOW_REUSED", "show-shadow \"$REALITY_SHADOW_PORT\"", "human_yesq"} {
 		if !strings.Contains(string(runbook), required) {
 			t.Fatalf("remote GUI confirmation/resume contract is missing %q", required)
 		}
 	}
-	realityAPI, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/04a-reality-api.sh")
+	realityAPI, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/04a-reality-api.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1134,7 +1133,7 @@ func TestRemoteGUIConfirmationUsesFramedLineAndStripsANSI(t *testing.T) {
 			t.Fatalf("interrupted shadow resume compatibility is missing %q", required)
 		}
 	}
-	library, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/lib-gui-prompt.sh")
+	library, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/lib-gui-prompt.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1143,7 +1142,7 @@ func TestRemoteGUIConfirmationUsesFramedLineAndStripsANSI(t *testing.T) {
 			t.Fatalf("remote GUI prompt library is missing %q", required)
 		}
 	}
-	gui, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	gui, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1241,7 +1240,7 @@ func TestFullDismantleIsExplicitRescueFirstAndPreservesSSH(t *testing.T) {
 			t.Fatalf("rescue-first dismantle operation is missing %q", required)
 		}
 	}
-	script, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/22-dismantle-managed-node.sh")
+	script, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/22-dismantle-managed-node.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1273,14 +1272,14 @@ func TestFullDismantleIsExplicitRescueFirstAndPreservesSSH(t *testing.T) {
 			t.Fatalf("dismantle script contains forbidden broad/destructive behavior %q", forbidden)
 		}
 	}
-	auto, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/00-auto-install-or-optimize.sh")
+	auto, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(auto), "22-dismantle-managed-node.sh\" --capture-baseline") {
 		t.Fatal("the install workflow does not capture the original baseline before convergence")
 	}
-	gui, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	gui, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1315,21 +1314,21 @@ func TestManagedToolkitHistoryIncludesImmediatePredecessors(t *testing.T) {
 			t.Fatalf("upgrade/uninstall history lost immediate predecessor %s", oldVersion)
 		}
 	}
-	buildID, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/TOOLKIT_BUILD_ID")
+	buildID, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/TOOLKIT_BUILD_ID")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(buildID) != toolkitBuildID+"\n" {
 		t.Fatalf("EXE and embedded runbook build IDs differ or are not one LF-terminated line: %q vs %q", toolkitBuildID, string(buildID))
 	}
-	revision, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/TOOLKIT_BUILD_REVISION")
+	revision, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/TOOLKIT_BUILD_REVISION")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(revision) != strconv.Itoa(toolkitBuildRevision)+"\n" {
 		t.Fatalf("EXE and embedded runbook build revisions differ: %d vs %q", toolkitBuildRevision, string(revision))
 	}
-	version, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/TOOLKIT_VERSION")
+	version, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/TOOLKIT_VERSION")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1362,7 +1361,7 @@ func TestGeneratedToolkitCommandsHaveValidBashSyntax(t *testing.T) {
 }
 
 func TestRunbookAvoidsKnownInitializationSIGPIPE(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.0/linux/00-auto-install-or-optimize.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1376,7 +1375,7 @@ func TestRunbookAvoidsKnownInitializationSIGPIPE(t *testing.T) {
 }
 
 func TestCertificateIssuanceRequiresPublicACMEPreflight(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.0/linux/05-cover-bootstrap.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/05-cover-bootstrap.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1402,7 +1401,7 @@ func TestCertificateIssuanceRequiresPublicACMEPreflight(t *testing.T) {
 	if probeWrite < 0 || reload <= probeWrite || localRetry <= reload {
 		t.Fatal("ACME probe must exist before nginx reload and be retried after reload")
 	}
-	diagnosis, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/16-auto-diagnose.sh")
+	diagnosis, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/16-auto-diagnose.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1414,7 +1413,7 @@ func TestCertificateIssuanceRequiresPublicACMEPreflight(t *testing.T) {
 }
 
 func TestWARPInstallerRefreshesRotatedKeyBeforeRepositoryUpdate(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.0/linux/06-warp-install.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/06-warp-install.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1438,7 +1437,7 @@ func TestWARPInstallerRefreshesRotatedKeyBeforeRepositoryUpdate(t *testing.T) {
 }
 
 func TestRealityUUIDParsingAcceptsStringOrObjectAndRejectsJSONBlob(t *testing.T) {
-	library, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/lib-xui-api.sh")
+	library, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1449,8 +1448,8 @@ func TestRealityUUIDParsingAcceptsStringOrObjectAndRejectsJSONBlob(t *testing.T)
 		}
 	}
 	for _, path := range []string{
-		"runbook/proxy-runbook-v0.9.0/linux/04a-reality-api.sh",
-		"runbook/proxy-runbook-v0.9.0/linux/04d-optimize-existing-reality-shadow.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/04a-reality-api.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/04d-optimize-existing-reality-shadow.sh",
 	} {
 		source, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -1463,7 +1462,7 @@ func TestRealityUUIDParsingAcceptsStringOrObjectAndRejectsJSONBlob(t *testing.T)
 }
 
 func TestToolkitManifestIsLinuxCompatibleAndMatchesFiles(t *testing.T) {
-	root := "runbook/proxy-runbook-v0.9.0"
+	root := "runbook/text-node-assistant-v0.9.5"
 	manifestPath := filepath.Join(root, "SHA256SUMS.txt")
 	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -1498,7 +1497,7 @@ func TestToolkitManifestIsLinuxCompatibleAndMatchesFiles(t *testing.T) {
 }
 
 func TestXUIAPITokenGenerationIsLastResortOnly(t *testing.T) {
-	libraryPath := "runbook/proxy-runbook-v0.9.0/linux/lib-xui-api.sh"
+	libraryPath := "runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh"
 	source, err := os.ReadFile(libraryPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1521,8 +1520,8 @@ func TestXUIAPITokenGenerationIsLastResortOnly(t *testing.T) {
 	}
 
 	for _, path := range []string{
-		"runbook/proxy-runbook-v0.9.0/linux/03c-rotate-panel-credentials.sh",
-		"runbook/proxy-runbook-v0.9.0/linux/03d-export-panel-handoff.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/03c-rotate-panel-credentials.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/03d-export-panel-handoff.sh",
 	} {
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -1539,7 +1538,7 @@ func TestXUIAPITokenGenerationIsLastResortOnly(t *testing.T) {
 }
 
 func TestWarpRouteHasNoOpBeforeBackupAndUpdate(t *testing.T) {
-	path := "runbook/proxy-runbook-v0.9.0/linux/07a-apply-warp-route-local.sh"
+	path := "runbook/text-node-assistant-v0.9.5/linux/07a-apply-warp-route-local.sh"
 	source, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1570,8 +1569,8 @@ func TestWarpRouteHasNoOpBeforeBackupAndUpdate(t *testing.T) {
 
 func TestRealitySubscriptionShareAddressCannotFallBackToLocalhost(t *testing.T) {
 	paths := []string{
-		"runbook/proxy-runbook-v0.9.0/linux/04a-reality-api.sh",
-		"runbook/proxy-runbook-v0.9.0/linux/04d-optimize-existing-reality-shadow.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/04a-reality-api.sh",
+		"runbook/text-node-assistant-v0.9.5/linux/04d-optimize-existing-reality-shadow.sh",
 	}
 	for _, path := range paths {
 		source, err := os.ReadFile(path)
@@ -1585,7 +1584,7 @@ func TestRealitySubscriptionShareAddressCannotFallBackToLocalhost(t *testing.T) 
 			}
 		}
 	}
-	apiSource, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/04a-reality-api.sh")
+	apiSource, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/04a-reality-api.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1597,15 +1596,15 @@ func TestRealitySubscriptionShareAddressCannotFallBackToLocalhost(t *testing.T) 
 }
 
 func TestSubscriptionServiceUsesLocalListenerAndCoverTLSProxy(t *testing.T) {
-	backend, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/05c-optimize-cover-backend.sh")
+	backend, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/05c-optimize-cover-backend.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	configure, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/05d-configure-subscription.sh")
+	configure, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/05d-configure-subscription.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	diagnosis, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/16-auto-diagnose.sh")
+	diagnosis, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/16-auto-diagnose.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1645,7 +1644,7 @@ func TestCoverTemplateChoiceNormalization(t *testing.T) {
 }
 
 func TestCoverTemplateLibraryHasFifteenDistinctLocalFullPages(t *testing.T) {
-	root := "runbook/proxy-runbook-v0.9.0/templates/cover-sites"
+	root := "runbook/text-node-assistant-v0.9.5/templates/cover-sites"
 	manifestData, err := os.ReadFile(filepath.Join(root, "MANIFEST.tsv"))
 	if err != nil {
 		t.Fatal(err)
@@ -1700,7 +1699,7 @@ func TestCoverTemplateLibraryHasFifteenDistinctLocalFullPages(t *testing.T) {
 }
 
 func TestSignalRunnerIsAnOriginalLocalInteractiveTemplate(t *testing.T) {
-	body, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/templates/cover-sites/15-signal-runner.html")
+	body, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/templates/cover-sites/15-signal-runner.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1713,7 +1712,7 @@ func TestSignalRunnerIsAnOriginalLocalInteractiveTemplate(t *testing.T) {
 }
 
 func TestCoverTemplateSelectionIsWiredThroughDeployAndMaintenance(t *testing.T) {
-	installer, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/05b-cover-site-polished.sh")
+	installer, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/05b-cover-site-polished.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1723,7 +1722,7 @@ func TestCoverTemplateSelectionIsWiredThroughDeployAndMaintenance(t *testing.T) 
 			t.Fatalf("cover installer is missing %q", required)
 		}
 	}
-	auto, err := os.ReadFile("runbook/proxy-runbook-v0.9.0/linux/00-auto-install-or-optimize.sh")
+	auto, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1734,9 +1733,18 @@ func TestCoverTemplateSelectionIsWiredThroughDeployAndMaintenance(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"chooseCoverTemplate(c)", "PROXY_RUNBOOK_COVER_TEMPLATE=", "1—15", "05b-cover-site-polished.sh --list"} {
+	for _, required := range []string{"collectInstallPlan(existingNode)", "confirmInstallPlan(plan)"} {
 		if !strings.Contains(string(operations), required) {
 			t.Fatalf("Windows menu integration is missing %q", required)
+		}
+	}
+	flow, err := os.ReadFile("install_flow.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"TNA_COVER_TEMPLATE=", "chooseLocalCoverTemplate", "1—15"} {
+		if !strings.Contains(string(flow), required) {
+			t.Fatalf("install-plan template integration is missing %q", required)
 		}
 	}
 	remote, err := os.ReadFile("remote.go")

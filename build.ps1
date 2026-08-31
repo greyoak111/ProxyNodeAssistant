@@ -15,19 +15,19 @@ $architectureInfo = switch ($Architecture) {
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RunbookRoot = Join-Path $Root "runbook"
-$Archive = Join-Path $Root "assets\proxy-runbook-toolkit-v0.9.0.tar.gz"
+$Archive = Join-Path $Root "assets\text-node-assistant-toolkit-v0.9.5.tar.gz"
 $Dist = Join-Path $Root "dist"
-$CliExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-cli-$($architectureInfo.Suffix).exe"
-$AskPassExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-askpass-$($architectureInfo.Suffix).exe"
-$GuiExe = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-$($architectureInfo.Suffix).exe"
-$GuiPreview = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-gui-preview.png"
-$OperationPreview = Join-Path $Dist "ProxyNodeAssistant-v0.9.0-workflow-preview.png"
-$GuiSource = Join-Path $Root "gui\ProxyNodeAssistant.Gui.cs"
-$AskPassSource = Join-Path $Root "gui\ProxyNodeAssistant.AskPass.cs"
+$CliExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-cli-$($architectureInfo.Suffix).exe"
+$AskPassExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-askpass-$($architectureInfo.Suffix).exe"
+$GuiExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-$($architectureInfo.Suffix).exe"
+$GuiPreview = Join-Path $Dist "TextNodeAssistant-v0.9.5-gui-preview.png"
+$OperationPreview = Join-Path $Dist "TextNodeAssistant-v0.9.5-workflow-preview.png"
+$GuiSource = Join-Path $Root "gui\TextNodeAssistant.Gui.cs"
+$AskPassSource = Join-Path $Root "gui\TextNodeAssistant.AskPass.cs"
 $GuiXaml = Join-Path $Root "gui\MainWindow.xaml"
 $GuiManifest = Join-Path $Root "gui\app.manifest"
-$GuiIcon = Join-Path $Root "gui\ProxyNodeAssistant-v0.9.0.ico"
-$GuiIconPng = Join-Path $Root "gui\ProxyNodeAssistant-v0.9.0-app-icon.png"
+$GuiIcon = Join-Path $Root "gui\TextNodeAssistant-v0.9.5.ico"
+$GuiIconPng = Join-Path $Root "gui\TextNodeAssistant-v0.9.5-app-icon.png"
 
 $Go = if ($env:PNA_GO_EXE) { $env:PNA_GO_EXE } else { "go" }
 $Gofmt = if ($env:PNA_GOFMT_EXE) { $env:PNA_GOFMT_EXE } else { "gofmt" }
@@ -52,7 +52,7 @@ foreach ($requiredVisual in @($GuiIcon, $GuiIconPng)) {
         throw "Required application icon is missing: $requiredVisual"
     }
 }
-$RunbookPackageRoot = Join-Path $RunbookRoot "proxy-runbook-v0.9.0"
+$RunbookPackageRoot = Join-Path $RunbookRoot "text-node-assistant-v0.9.5"
 if (-not $SkipCommonValidation) {
     $RunbookHashManifest = Join-Path $RunbookPackageRoot "SHA256SUMS.txt"
     $runbookHashLines = Get-ChildItem -LiteralPath $RunbookPackageRoot -File -Recurse | Where-Object {
@@ -63,8 +63,15 @@ if (-not $SkipCommonValidation) {
         "$hash  $relative"
     }
     [IO.File]::WriteAllText($RunbookHashManifest, (($runbookHashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
-    & tar -czf $Archive -C $RunbookRoot "proxy-runbook-v0.9.0"
+    & tar -czf $Archive -C $RunbookRoot "text-node-assistant-v0.9.5"
     if ($LASTEXITCODE -ne 0) { throw "tar failed" }
+
+    # Windows and Android must ship the exact same toolkit bytes.  Rebuilding
+    # the tarball changes the gzip stream even when its logical contents are
+    # unchanged, so refresh the Android asset before cross-platform guards run.
+    $AndroidToolkitAsset = Join-Path $Root "android\app\src\main\assets\text-node-assistant-toolkit-v0.9.5.tgz"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $AndroidToolkitAsset) | Out-Null
+    Copy-Item -LiteralPath $Archive -Destination $AndroidToolkitAsset -Force
 
     foreach ($shellTest in @(
         "scripts/validate-shell.sh",
@@ -75,6 +82,15 @@ if (-not $SkipCommonValidation) {
     )) {
         & $Bash $shellTest
         if ($LASTEXITCODE -ne 0) { throw "Shell validation failed: $shellTest" }
+    }
+
+    foreach ($staticTest in @(
+        "scripts/test-feature-retirement-static.ps1",
+        "scripts/test-reset-core-install-modes-static.ps1",
+        "scripts/test-android-reset-static.ps1"
+    )) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $staticTest
+        if ($LASTEXITCODE -ne 0) { throw "Static reset-line validation failed: $staticTest" }
     }
 
     $GoFiles = Get-ChildItem -LiteralPath $Root -File -Filter "*.go" | ForEach-Object FullName

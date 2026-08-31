@@ -54,8 +54,8 @@ export PNA_XUI_HANDOFF_FILE="$TMP/state/HANDOFF-SECRETS.txt"
 export PNA_XUI_TOKEN_CACHE_FILE="$TMP/state/XUI_API_TOKEN"
 export PNA_XUI_GENERATE_MARKER="$TMP/state/generated.calls"
 
-# shellcheck source=../runbook/proxy-runbook-v0.9.0/linux/lib-xui-api.sh
-. "$ROOT/runbook/proxy-runbook-v0.9.0/linux/lib-xui-api.sh"
+# shellcheck source=../runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh
+. "$ROOT/runbook/text-node-assistant-v0.9.5/linux/lib-xui-api.sh"
 
 reset_context() {
   unset XUI_API_TOKEN XUI_API_TOKEN_SOURCE XUI_BASE XUI_PORT XUI_WEB_BASE_PATH XUI_BIN

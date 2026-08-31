@@ -15,14 +15,14 @@ import (
 	"sync"
 )
 
-const version = "0.9.0"
+const version = "0.9.5"
 
 var errInputClosed = errors.New("interactive input was closed")
 
 const guiPromptPrefix = "PNA_GUI_PROMPT_B64="
 const guiSecretPromptPrefix = "PNA_GUI_SECRET_B64="
 
-//go:embed assets/proxy-runbook-toolkit-v0.9.0.tar.gz
+//go:embed assets/text-node-assistant-toolkit-v0.9.5.tar.gz
 var embeddedToolkit []byte
 
 type Lang string
@@ -33,7 +33,8 @@ const (
 )
 
 type Settings struct {
-	Language Lang `json:"language"`
+	Language           Lang               `json:"language"`
+	InstallPreferences InstallPreferences `json:"installPreferences"`
 }
 
 type App struct {
@@ -45,9 +46,22 @@ type App struct {
 	tempCleanupMu    sync.Mutex
 	tunnels          []*exec.Cmd
 	inputClosed      bool
+	installPrefs     InstallPreferences
 }
 
 func settingsPath() (string, error) {
+	base := os.Getenv("APPDATA")
+	if base == "" {
+		var err error
+		base, err = os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(base, "TextNodeAssistant", "settings.json"), nil
+}
+
+func legacySettingsPath() (string, error) {
 	base := os.Getenv("APPDATA")
 	if base == "" {
 		var err error
@@ -61,17 +75,37 @@ func settingsPath() (string, error) {
 
 func (a *App) loadLanguage() {
 	a.lang = LangZH
+	a.installPrefs = defaultInstallPreferences()
 	path, err := settingsPath()
 	if err != nil {
 		return
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		legacyPath, legacyErr := legacySettingsPath()
+		if legacyErr != nil {
+			return
+		}
+		data, err = os.ReadFile(legacyPath)
+		if err != nil {
+			return
+		}
 	}
 	var settings Settings
 	if json.Unmarshal(data, &settings) == nil && (settings.Language == LangZH || settings.Language == LangEN) {
 		a.lang = settings.Language
+		candidate := settings.InstallPreferences
+		_, coverOK := normalizeCoverTemplateChoice(candidate.CoverChoice)
+		if strings.EqualFold(strings.TrimSpace(candidate.CoverChoice), "preserve") {
+			coverOK = true
+		}
+		if validRouteMode(candidate.RouteMode) &&
+			validPerformanceMode(candidate.Performance) &&
+			validWarpMode(candidate.WarpMode) &&
+			coverOK &&
+			candidate.BackupBeforeChange {
+			a.installPrefs = candidate
+		}
 	}
 }
 
@@ -83,7 +117,7 @@ func (a *App) saveLanguage() {
 	if os.MkdirAll(filepath.Dir(path), 0700) != nil {
 		return
 	}
-	data, _ := json.MarshalIndent(Settings{Language: a.lang}, "", "  ")
+	data, _ := json.MarshalIndent(Settings{Language: a.lang, InstallPreferences: a.installPrefs}, "", "  ")
 	_ = os.WriteFile(path, data, 0600)
 }
 
@@ -189,7 +223,7 @@ func (a *App) toggleLanguage() {
 
 func (a *App) banner() {
 	a.println("============================================================")
-	a.println(" ProxyNodeAssistant v" + version)
+	a.println(" TextNodeAssistant v" + version)
 	a.println(a.msg(" 隐私优先 · 中英双语 · 失败不连锁", " Privacy-first · bilingual · fail-closed"))
 	a.println("============================================================")
 	a.println(a.msg("共享 EXE 不内置任何真实 VPS IP、域名、账户或密钥。", "The shared EXE contains no real VPS IP, domain, account, or key."))
@@ -292,11 +326,11 @@ func (a *App) extractEmbeddedTar() (string, error) {
 	if len(embeddedToolkit) < 128 {
 		return "", fmt.Errorf("embedded toolkit is unexpectedly empty")
 	}
-	dir := filepath.Join(os.TempDir(), "ProxyNodeAssistant-v0.9.0")
+	dir := filepath.Join(os.TempDir(), "TextNodeAssistant-v0.9.5")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "proxy-runbook-toolkit-v0.9.0.tar.gz")
+	path := filepath.Join(dir, "text-node-assistant-toolkit-v0.9.5.tar.gz")
 	if err := os.WriteFile(path, embeddedToolkit, 0600); err != nil {
 		return "", err
 	}
