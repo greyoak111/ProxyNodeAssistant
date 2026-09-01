@@ -33,8 +33,8 @@ func recentTargetsPath() (string, error) {
 			return "", err
 		}
 	}
-	current := filepath.Join(base, "TextNodeAssistant", "recent-targets.tsv")
-	legacy := filepath.Join(base, "ProxyNodeAssistant", "recent-targets.tsv")
+	current := filepath.Join(base, "ProxyNodeAssistant", "recent-targets.tsv")
+	legacy := filepath.Join(base, "TextNodeAssistant", "recent-targets.tsv")
 	if _, err := os.Stat(current); os.IsNotExist(err) {
 		if _, legacyErr := os.Stat(legacy); legacyErr == nil {
 			return legacy, nil

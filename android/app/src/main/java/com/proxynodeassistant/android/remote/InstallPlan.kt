@@ -3,6 +3,21 @@ package com.proxynodeassistant.android.remote
 import com.proxynodeassistant.android.core.Validation
 import java.security.SecureRandom
 
+/**
+ * SS2022 port policy shared by the Android planner and diagnostics.
+ *
+ * 32443 is the v1 formal listener for fresh installs. 30443 remains a
+ * compatibility value for nodes that already have the short-lived trial
+ * listener; callers must preserve a discovered existing value rather than
+ * silently moving that listener during an upgrade.
+ */
+internal object Ss2022PortPolicy {
+    const val FORMAL_PORT = 32443
+    const val TRIAL_PORT = 30443
+
+    fun valid(port: Int): Boolean = port in 1024..65535 && port !in setOf(443, 24443, 8443, 40000)
+}
+
 internal enum class InstallRouteMode(val wireValue: String) {
     KEEP("keep"),
     GRAY("gray"),
@@ -37,6 +52,8 @@ internal data class AndroidInstallPlan(
     val orange: InstallRouteIdentity = InstallRouteIdentity(),
     val pruneAfterSuccess: Boolean,
     val openPanelOnSuccess: Boolean,
+    /** TCP-only Shadowsocks 2022 listener. Fresh installs use the formal port. */
+    val ss2022Port: Int = Ss2022PortPolicy.FORMAL_PORT,
 ) {
     fun validate(existingNode: Boolean) {
         require(existingNode || routeMode != InstallRouteMode.KEEP) { "keep requires an existing node" }
@@ -46,6 +63,10 @@ internal data class AndroidInstallPlan(
         require(existingNode || coverChoice != "preserve") { "fresh install cannot preserve a cover template" }
         require(existingNode || performanceMode != InstallPerformanceMode.PRESERVE) { "fresh install cannot preserve performance" }
         require(existingNode || warpMode != InstallWarpMode.PRESERVE) { "fresh install cannot preserve WARP" }
+        require(Ss2022PortPolicy.valid(ss2022Port)) { "SS2022 port must be a dedicated TCP port between 1024 and 65535" }
+        require(existingNode || ss2022Port != Ss2022PortPolicy.TRIAL_PORT) {
+            "30443 is reserved for an existing SS2022 trial/migration; fresh nodes must use the formal port or another dedicated port"
+        }
         if (routeMode == InstallRouteMode.GRAY || routeMode == InstallRouteMode.DUAL) validateIdentity(gray, "gray")
         if (routeMode == InstallRouteMode.ORANGE || routeMode == InstallRouteMode.DUAL) validateIdentity(orange, "orange")
         require(routeMode != InstallRouteMode.DUAL || !gray.domain.equals(orange.domain, ignoreCase = true)) {
@@ -61,7 +82,10 @@ internal data class AndroidInstallPlan(
         add("BACKUP_BEFORE_CHANGE=true")
         add("PRUNE_AFTER_SUCCESS=$pruneAfterSuccess")
         add("OPEN_PANEL_ON_SUCCESS=$openPanelOnSuccess")
-        add("PORT_PRESET=reality:443 shadow:24443 cdn:8443 warp:40000")
+        add("PORT_PRESET=reality:443 shadow:24443 cdn:8443 warp:40000 ss2022:$ss2022Port/tcp")
+        add("SS2022_PORT_POLICY=formal:${Ss2022PortPolicy.FORMAL_PORT}; existing-trial:${Ss2022PortPolicy.TRIAL_PORT}")
+        add("SS2022_NETWORK=tcp-only")
+        add("SS2022_ALLOWLIST=exact-public-ip; use action 19 to add the current source")
         if (routeMode == InstallRouteMode.GRAY || routeMode == InstallRouteMode.DUAL) {
             add("GRAY_DOMAIN=${gray.domain}")
             add("GRAY_EMAIL=${maskEmail(gray.email)}")
@@ -85,6 +109,7 @@ internal data class AndroidInstallPlan(
         "TNA_REALITY_SHADOW_PORT" to "24443",
         "TNA_CDN_ORIGIN_PORT" to "8443",
         "TNA_WARP_LOOPBACK_PORT" to "40000",
+        "PNA_SS2022_PORT" to ss2022Port.toString(),
         "TNA_PLAN_CONFIRMED" to "1",
         "TNA_AUTO_INPUT" to inputPath,
     )

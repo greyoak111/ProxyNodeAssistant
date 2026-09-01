@@ -1,4 +1,4 @@
-# TextNodeAssistant v0.9.5 重置线
+# ProxyNodeAssistant v1.0.0 重置线
 
 > 本版本以稳定的 v0.9.0 为底座重新迭代，彻底移除后续实验版的 controller/设备邀请/设备准入门限、私人网盘和本机 admin。保留成熟的 SSH、3x-ui、REALITY、Nginx、WARP、备份、诊断、拆除恢复能力，并将灰云直连、橙云 CDN/XHTTP、双路共存和全部施工偏好收拢到菜单 `[1]` 的显式方案中。
 
@@ -17,7 +17,7 @@ Windows EXE 在主菜单前一次性检查/安装并验证 OpenSSH；菜单 `[14
 Windows x64 用户优先只用：
 
 ```text
-TextNodeAssistant-v0.9.5-win64.exe
+ProxyNodeAssistant-v1.0.0-win64.exe
 ```
 
 这是一个**单 EXE 双语引导器**。工具包 TAR 已直接嵌入 EXE，本身不需要旁边再放几十个脚本。
@@ -106,7 +106,7 @@ EXE 退出时，它启动的 SSH tunnel 会自动关闭，不留孤儿 ssh 进�
 
 # 密码/密钥：自动生成，但必须让操作者看到真实值
 
-v0.9.5 会在生成时全文展示：
+v1.0.0 会在生成时全文展示：
 
 ```text
 Windows SSH Client Private Key
@@ -310,7 +310,7 @@ DOCKER-USER DROP 提示
 完整 Bash/PowerShell source 仍然保留，方便审计：
 
 ```text
-text-node-assistant-toolkit-v0.9.5.tar.gz
+proxy-node-assistant-toolkit-v1.0.0.tar.gz
 ```
 
 完整技术说明：

@@ -15,19 +15,20 @@ $architectureInfo = switch ($Architecture) {
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RunbookRoot = Join-Path $Root "runbook"
-$Archive = Join-Path $Root "assets\text-node-assistant-toolkit-v0.9.5.tar.gz"
+$Archive = Join-Path $Root "assets\proxy-node-assistant-toolkit-v1.0.0.tar.gz"
+$ArchiveHelper = Join-Path $Root "scripts\create_deterministic_tar.py"
 $Dist = Join-Path $Root "dist"
-$CliExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-cli-$($architectureInfo.Suffix).exe"
-$AskPassExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-askpass-$($architectureInfo.Suffix).exe"
-$GuiExe = Join-Path $Dist "TextNodeAssistant-v0.9.5-$($architectureInfo.Suffix).exe"
-$GuiPreview = Join-Path $Dist "TextNodeAssistant-v0.9.5-gui-preview.png"
-$OperationPreview = Join-Path $Dist "TextNodeAssistant-v0.9.5-workflow-preview.png"
-$GuiSource = Join-Path $Root "gui\TextNodeAssistant.Gui.cs"
-$AskPassSource = Join-Path $Root "gui\TextNodeAssistant.AskPass.cs"
+$CliExe = Join-Path $Dist "ProxyNodeAssistant-v1.0.0-cli-$($architectureInfo.Suffix).exe"
+$AskPassExe = Join-Path $Dist "ProxyNodeAssistant-v1.0.0-askpass-$($architectureInfo.Suffix).exe"
+$GuiExe = Join-Path $Dist "ProxyNodeAssistant-v1.0.0-$($architectureInfo.Suffix).exe"
+$GuiPreview = Join-Path $Dist "ProxyNodeAssistant-v1.0.0-gui-preview.png"
+$OperationPreview = Join-Path $Dist "ProxyNodeAssistant-v1.0.0-workflow-preview.png"
+$GuiSource = Join-Path $Root "gui\ProxyNodeAssistant.Gui.cs"
+$AskPassSource = Join-Path $Root "gui\ProxyNodeAssistant.AskPass.cs"
 $GuiXaml = Join-Path $Root "gui\MainWindow.xaml"
 $GuiManifest = Join-Path $Root "gui\app.manifest"
-$GuiIcon = Join-Path $Root "gui\TextNodeAssistant-v0.9.5.ico"
-$GuiIconPng = Join-Path $Root "gui\TextNodeAssistant-v0.9.5-app-icon.png"
+$GuiIcon = Join-Path $Root "gui\ProxyNodeAssistant-v1.0.0.ico"
+$GuiIconPng = Join-Path $Root "gui\ProxyNodeAssistant-v1.0.0-app-icon.png"
 
 $Go = if ($env:PNA_GO_EXE) { $env:PNA_GO_EXE } else { "go" }
 $Gofmt = if ($env:PNA_GOFMT_EXE) { $env:PNA_GOFMT_EXE } else { "gofmt" }
@@ -46,14 +47,44 @@ $Csc = if ($env:PNA_CSC_EXE) {
     "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 }
 
+function Resolve-PythonCommand {
+    if ($env:PNA_PYTHON_EXE) {
+        $configured = Get-Command $env:PNA_PYTHON_EXE -ErrorAction SilentlyContinue
+        if ($configured) {
+            return @{ Path = $configured.Source; Prefix = @() }
+        }
+        if (Test-Path -LiteralPath $env:PNA_PYTHON_EXE -PathType Leaf) {
+            return @{ Path = [IO.Path]::GetFullPath($env:PNA_PYTHON_EXE); Prefix = @() }
+        }
+        throw "PNA_PYTHON_EXE was set but could not be resolved: $env:PNA_PYTHON_EXE"
+    }
+    foreach ($name in @("python", "python3")) {
+        $candidate = Get-Command $name -ErrorAction SilentlyContinue
+        if ($candidate) {
+            return @{ Path = $candidate.Source; Prefix = @() }
+        }
+    }
+    $launcher = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($launcher) {
+        return @{ Path = $launcher.Source; Prefix = @("-3") }
+    }
+    throw "Python 3 was not found; install Python or set PNA_PYTHON_EXE."
+}
+
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Archive), $Dist | Out-Null
 foreach ($requiredVisual in @($GuiIcon, $GuiIconPng)) {
     if (-not (Test-Path -LiteralPath $requiredVisual -PathType Leaf)) {
         throw "Required application icon is missing: $requiredVisual"
     }
 }
-$RunbookPackageRoot = Join-Path $RunbookRoot "text-node-assistant-v0.9.5"
+$RunbookPackageRoot = Join-Path $RunbookRoot "proxy-node-assistant-v1.0.0"
 if (-not $SkipCommonValidation) {
+    if (-not (Test-Path -LiteralPath $ArchiveHelper -PathType Leaf)) {
+        throw "Deterministic archive helper is missing: $ArchiveHelper"
+    }
+    $pythonInfo = Resolve-PythonCommand
+    $pythonPath = $pythonInfo.Path
+    $pythonPrefix = @($pythonInfo.Prefix)
     $RunbookHashManifest = Join-Path $RunbookPackageRoot "SHA256SUMS.txt"
     $runbookHashLines = Get-ChildItem -LiteralPath $RunbookPackageRoot -File -Recurse | Where-Object {
         $_.FullName -ne $RunbookHashManifest
@@ -63,13 +94,20 @@ if (-not $SkipCommonValidation) {
         "$hash  $relative"
     }
     [IO.File]::WriteAllText($RunbookHashManifest, (($runbookHashLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
-    & tar -czf $Archive -C $RunbookRoot "text-node-assistant-v0.9.5"
-    if ($LASTEXITCODE -ne 0) { throw "tar failed" }
+    & $pythonPath @pythonPrefix $ArchiveHelper create `
+        --source $RunbookPackageRoot `
+        --output $Archive `
+        --root-name "proxy-node-assistant-v1.0.0"
+    if ($LASTEXITCODE -ne 0) { throw "deterministic toolkit archive creation failed" }
+    & $pythonPath @pythonPrefix $ArchiveHelper verify `
+        --archive $Archive `
+        --root-name "proxy-node-assistant-v1.0.0"
+    if ($LASTEXITCODE -ne 0) { throw "deterministic toolkit archive verification failed" }
 
     # Windows and Android must ship the exact same toolkit bytes.  Rebuilding
     # the tarball changes the gzip stream even when its logical contents are
     # unchanged, so refresh the Android asset before cross-platform guards run.
-    $AndroidToolkitAsset = Join-Path $Root "android\app\src\main\assets\text-node-assistant-toolkit-v0.9.5.tgz"
+    $AndroidToolkitAsset = Join-Path $Root "android\app\src\main\assets\proxy-node-assistant-toolkit-v1.0.0.tgz"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $AndroidToolkitAsset) | Out-Null
     Copy-Item -LiteralPath $Archive -Destination $AndroidToolkitAsset -Force
 
@@ -87,7 +125,8 @@ if (-not $SkipCommonValidation) {
     foreach ($staticTest in @(
         "scripts/test-feature-retirement-static.ps1",
         "scripts/test-reset-core-install-modes-static.ps1",
-        "scripts/test-android-reset-static.ps1"
+        "scripts/test-android-reset-static.ps1",
+        "scripts/test-deterministic-tar-static.ps1"
     )) {
         & powershell -NoProfile -ExecutionPolicy Bypass -File $staticTest
         if ($LASTEXITCODE -ne 0) { throw "Static reset-line validation failed: $staticTest" }

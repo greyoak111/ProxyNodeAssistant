@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$scriptPath = Join-Path $root 'runbook/text-node-assistant-v0.9.5/linux/00c-retire-v095-device-drive.sh'
+$scriptPath = Join-Path $root 'runbook/proxy-node-assistant-v1.0.0/linux/00c-retire-v095-device-drive.sh'
 $source = Get-Content -LiteralPath $scriptPath -Raw
 
 function Assert-Contains([string]$Needle) {
@@ -17,6 +17,8 @@ function Assert-NotContains([string]$Needle) {
 }
 
 @(
+    # Both aliases are intentionally recognized so v0.9.x device records can
+    # be retired without touching unrelated authorized-key entries.
     'text-node-assistant-device|proxy-node-assistant-device',
     'test("^(tna|pna)-device:")',
     '# TNA_MANAGED_COPYPARTY_V095',
@@ -35,7 +37,7 @@ function Assert-NotContains([string]$Needle) {
 ) | ForEach-Object { Assert-Contains $_ }
 
 @(
-    'rm -rf -- /etc/text-node-assistant',
+    'rm -rf -- /etc/proxy-node-assistant',
     'rm -rf -- "$STATE_DIR"',
     'rm -rf -- /etc/x-ui',
     'rm -rf -- /usr/local/x-ui',

@@ -1,11 +1,15 @@
 param(
-    [string]$OutputFile = (Join-Path $PSScriptRoot "dist\TextNodeAssistant-v0.9.5-android-universal.apk"),
+    [string]$OutputFile = (Join-Path $PSScriptRoot "dist\ProxyNodeAssistant-v1.0.0-android-universal.apk"),
     [switch]$Provision
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$toolsRoot = Join-Path $projectRoot ".android-tools"
+$toolsRoot = if ($env:PNA_ANDROID_TOOLS_ROOT) {
+    [IO.Path]::GetFullPath($env:PNA_ANDROID_TOOLS_ROOT)
+} else {
+    Join-Path $projectRoot ".android-tools"
+}
 $jdkRoot = Join-Path $toolsRoot "jdk-17"
 $sdkRoot = Join-Path $toolsRoot "sdk"
 $signingRoot = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "ProxyNodeAssistant\android-signing"

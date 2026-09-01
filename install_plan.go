@@ -6,6 +6,15 @@ import (
 	"strings"
 )
 
+// The formal SS2022 listener is deliberately separate from the coordinated
+// Reality/CDN ports.  30443 remains reserved for the already-deployed trial
+// listener while an upgrade is being verified; new plans must use 32443 (or a
+// different custom TCP port).
+const (
+	defaultSS2022TCPPort  = 32443
+	legacySS2022TrialPort = 30443
+)
+
 // RouteMode is deliberately small and explicit. Unknown values are rejected;
 // they are never silently treated as the recommended route.
 type RouteMode string
@@ -34,13 +43,14 @@ const (
 	WarpEnsureOn WarpMode = "ensure-on"
 )
 
-// PortPlan is a coordinated preset. Until every remote component consumes
-// these values centrally, v0.9.5 accepts only this proven combination.
+// PortPlan keeps the fixed Reality/CDN/WARP coordination while allowing the
+// SS2022 TCP listener to be moved when a provider or local path requires it.
 type PortPlan struct {
 	RealityProduction int `json:"realityProduction"`
 	RealityShadow     int `json:"realityShadow"`
 	CDNEdgeOrigin     int `json:"cdnEdgeOrigin"`
 	WarpLoopback      int `json:"warpLoopback"`
+	SS2022TCP         int `json:"ss2022Tcp"`
 }
 
 type RouteIdentity struct {
@@ -87,6 +97,7 @@ func defaultPortPlan() PortPlan {
 		RealityShadow:     24443,
 		CDNEdgeOrigin:     8443,
 		WarpLoopback:      40000,
+		SS2022TCP:         defaultSS2022TCPPort,
 	}
 }
 
@@ -123,9 +134,20 @@ func validWarpMode(value WarpMode) bool {
 
 func (p PortPlan) validate() error {
 	recommended := defaultPortPlan()
-	if p != recommended {
-		return fmt.Errorf("unsupported coordinated port plan: got reality=%d shadow=%d cdn=%d warp=%d; supported preset is 443/24443/8443/40000",
+	if p.RealityProduction != recommended.RealityProduction ||
+		p.RealityShadow != recommended.RealityShadow ||
+		p.CDNEdgeOrigin != recommended.CDNEdgeOrigin ||
+		p.WarpLoopback != recommended.WarpLoopback {
+		return fmt.Errorf("unsupported coordinated port plan: got reality=%d shadow=%d cdn=%d warp=%d; supported base preset is 443/24443/8443/40000",
 			p.RealityProduction, p.RealityShadow, p.CDNEdgeOrigin, p.WarpLoopback)
+	}
+	for _, occupied := range []int{p.RealityProduction, p.RealityShadow, p.CDNEdgeOrigin, p.WarpLoopback} {
+		if p.SS2022TCP == occupied {
+			return fmt.Errorf("SS2022 TCP port %d conflicts with another coordinated listener", p.SS2022TCP)
+		}
+	}
+	if p.SS2022TCP < 1024 || p.SS2022TCP > 65535 {
+		return fmt.Errorf("SS2022 TCP port must be between 1024 and 65535")
 	}
 	return nil
 }
@@ -147,10 +169,14 @@ func (p InstallPlan) validateFor(existingNode bool) error {
 		return fmt.Errorf("keep route mode is available only for an existing managed node")
 	}
 	if !p.Preferences.BackupBeforeChange {
-		return fmt.Errorf("backup-before-change cannot be disabled in v0.9.5")
+		return fmt.Errorf("backup-before-change cannot be disabled in v1.0.0")
 	}
 	if err := p.Ports.validate(); err != nil {
 		return err
+	}
+	if p.Ports.SS2022TCP == legacySS2022TrialPort && !existingNode {
+		return fmt.Errorf("SS2022 TCP port %d is reserved for the existing trial listener; new plans must use %d or another port",
+			legacySS2022TrialPort, defaultSS2022TCPPort)
 	}
 	if p.Preferences.RouteMode == RouteKeep {
 		return nil
@@ -197,7 +223,7 @@ func (p InstallPlan) reviewLines() []string {
 		fmt.Sprintf("BACKUP_BEFORE_CHANGE=%t", p.Preferences.BackupBeforeChange),
 		fmt.Sprintf("PRUNE_AFTER_SUCCESS=%t", p.Preferences.PruneAfterSuccess),
 		fmt.Sprintf("OPEN_PANEL_ON_SUCCESS=%t", p.Preferences.OpenPanelOnSuccess),
-		fmt.Sprintf("PORT_PRESET=reality:%d shadow:%d cdn:%d warp:%d", p.Ports.RealityProduction, p.Ports.RealityShadow, p.Ports.CDNEdgeOrigin, p.Ports.WarpLoopback),
+		fmt.Sprintf("PORT_PRESET=reality:%d shadow:%d cdn:%d warp:%d ss2022-tcp:%d", p.Ports.RealityProduction, p.Ports.RealityShadow, p.Ports.CDNEdgeOrigin, p.Ports.WarpLoopback, p.Ports.SS2022TCP),
 	}
 	if p.Preferences.RouteMode != RouteKeep && p.Preferences.RouteMode != RouteOrange {
 		values = append(values, "GRAY_DOMAIN="+p.Gray.Domain, "GRAY_EMAIL="+maskEmail(p.Gray.Email))
@@ -219,7 +245,7 @@ func (p InstallPlan) preferenceSummaryLines() []string {
 		"PLAN_WARP=" + string(p.Preferences.WarpMode),
 		fmt.Sprintf("PLAN_PRUNE=%t", p.Preferences.PruneAfterSuccess),
 		fmt.Sprintf("PLAN_OPEN_PANEL=%t", p.Preferences.OpenPanelOnSuccess),
-		fmt.Sprintf("PORT_PRESET=%d/%d/%d/%d", p.Ports.RealityProduction, p.Ports.RealityShadow, p.Ports.CDNEdgeOrigin, p.Ports.WarpLoopback),
+		fmt.Sprintf("PORT_PRESET=%d/%d/%d/%d/%d", p.Ports.RealityProduction, p.Ports.RealityShadow, p.Ports.CDNEdgeOrigin, p.Ports.WarpLoopback, p.Ports.SS2022TCP),
 	}
 	sort.Strings(values)
 	return values

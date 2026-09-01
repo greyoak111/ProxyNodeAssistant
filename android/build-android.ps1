@@ -6,13 +6,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$toolsRoot = Join-Path $projectRoot ".android-tools"
+$toolsRoot = if ($env:PNA_ANDROID_TOOLS_ROOT) {
+    [IO.Path]::GetFullPath($env:PNA_ANDROID_TOOLS_ROOT)
+} else {
+    Join-Path $projectRoot ".android-tools"
+}
 $jdkRoot = Join-Path $toolsRoot "jdk-17"
 $sdkRoot = Join-Path $toolsRoot "sdk"
 $gradleRoot = Join-Path $toolsRoot "gradle-9.5.0"
-$toolkitSource = Join-Path $projectRoot "assets\text-node-assistant-toolkit-v0.9.5.tar.gz"
+$toolkitSource = Join-Path $projectRoot "assets\proxy-node-assistant-toolkit-v1.0.0.tar.gz"
 $toolkitAssetDirectory = Join-Path $PSScriptRoot "app\src\main\assets"
-$toolkitAsset = Join-Path $toolkitAssetDirectory "text-node-assistant-toolkit-v0.9.5.tgz"
+$toolkitAsset = Join-Path $toolkitAssetDirectory "proxy-node-assistant-toolkit-v1.0.0.tgz"
 
 function Get-VerifiedFile {
     param([string]$Uri, [string]$Destination, [string]$ExpectedSha256 = "")
@@ -82,36 +86,37 @@ foreach ($required in @((Join-Path $jdkRoot "bin\java.exe"), (Join-Path $gradleR
 }
 
 if (-not (Test-Path -LiteralPath $toolkitSource)) {
-    throw "Missing current TextNodeAssistant toolkit archive: $toolkitSource. Run the repository build first."
+    throw "Missing current ProxyNodeAssistant toolkit archive: $toolkitSource. Run the repository build first."
 }
 if ((Get-Item -LiteralPath $toolkitSource).Length -le 128) {
-    throw "Current TextNodeAssistant toolkit archive is unexpectedly empty: $toolkitSource"
+    throw "Current ProxyNodeAssistant toolkit archive is unexpectedly empty: $toolkitSource"
 }
 $toolkitEntries = @(& tar -tzf $toolkitSource)
 if ($LASTEXITCODE -ne 0 -or $toolkitEntries.Count -eq 0) {
-    throw "Could not inspect the current TextNodeAssistant toolkit archive"
+    throw "Could not inspect the current ProxyNodeAssistant toolkit archive"
 }
-if ($toolkitEntries | Where-Object { $_ -notlike "text-node-assistant-v0.9.5/*" }) {
+if ($toolkitEntries | Where-Object { $_ -notlike "proxy-node-assistant-v1.0.0/*" }) {
     throw "Current toolkit archive has a stale or unexpected top-level directory; rebuild the repository archive first"
 }
 $requiredToolkitEntries = @(
-    "text-node-assistant-v0.9.5/TOOLKIT_VERSION",
-    "text-node-assistant-v0.9.5/TOOLKIT_BUILD_ID",
-    "text-node-assistant-v0.9.5/TOOLKIT_BUILD_REVISION",
-    "text-node-assistant-v0.9.5/linux/00-bootstrap-toolkit.sh",
-    "text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh",
-    "text-node-assistant-v0.9.5/linux/28-topology-reconcile.sh"
+    "proxy-node-assistant-v1.0.0/TOOLKIT_VERSION",
+    "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID",
+    "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION",
+    "proxy-node-assistant-v1.0.0/linux/00-bootstrap-toolkit.sh",
+    "proxy-node-assistant-v1.0.0/linux/00-auto-install-or-optimize.sh",
+    "proxy-node-assistant-v1.0.0/linux/28-topology-reconcile.sh",
+    "proxy-node-assistant-v1.0.0/linux/23-ss2022-tcp.sh"
 )
 foreach ($entry in $requiredToolkitEntries) {
     if ($toolkitEntries -notcontains $entry) {
         throw "Current toolkit archive is missing an Android fresh-install entry: $entry"
     }
 }
-$archiveVersion = (& tar -xOf $toolkitSource "text-node-assistant-v0.9.5/TOOLKIT_VERSION" | Out-String).Trim()
-$archiveBuildId = (& tar -xOf $toolkitSource "text-node-assistant-v0.9.5/TOOLKIT_BUILD_ID" | Out-String).Trim()
-$archiveBuildRevision = (& tar -xOf $toolkitSource "text-node-assistant-v0.9.5/TOOLKIT_BUILD_REVISION" | Out-String).Trim()
-if ($archiveVersion -ne "0.9.5" -or $archiveBuildId -ne "20260831-v095-reset-from-v090-r100" -or $archiveBuildRevision -ne "100") {
-    throw "Current toolkit archive metadata is not the exact TextNodeAssistant v0.9.5 revision-100 build"
+$archiveVersion = (& tar -xOf $toolkitSource "proxy-node-assistant-v1.0.0/TOOLKIT_VERSION" | Out-String).Trim()
+$archiveBuildId = (& tar -xOf $toolkitSource "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID" | Out-String).Trim()
+$archiveBuildRevision = (& tar -xOf $toolkitSource "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION" | Out-String).Trim()
+if ($archiveVersion -ne "1.0.0" -or $archiveBuildId -ne "20260901-v100-ss2022-r102" -or $archiveBuildRevision -ne "102") {
+    throw "Current toolkit archive metadata is not the exact ProxyNodeAssistant v1.0.0 revision-102 build"
 }
 New-Item -ItemType Directory -Force -Path $toolkitAssetDirectory | Out-Null
 Copy-Item -LiteralPath $toolkitSource -Destination $toolkitAsset -Force

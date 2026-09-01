@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +47,93 @@ func (a *App) existingNodeInstalled(c Connection) (bool, error) {
 		}
 	}
 	return false, errors.New("existing-node inspection returned no trusted marker")
+}
+
+// parseExistingSS2022Port decodes the single marker emitted by
+// existingSS2022Port. A missing marker is treated as an implementation
+// failure rather than as "no listener", so an upgrade never silently changes
+// an existing SS2022 endpoint because a probe was truncated.
+func parseExistingSS2022Port(output string) (int, bool, error) {
+	const marker = "TNA_EXISTING_SS2022_PORT="
+	found := false
+	selected := 0
+	for _, raw := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, marker) {
+			continue
+		}
+		if found {
+			return 0, false, errors.New("existing SS2022 inspection returned duplicate markers")
+		}
+		found = true
+		value := strings.TrimSpace(strings.TrimPrefix(line, marker))
+		if value == "" || value == "0" {
+			selected = 0
+			continue
+		}
+		port, err := strconv.Atoi(value)
+		if err != nil || port < 1024 || port > 65535 {
+			return 0, false, fmt.Errorf("existing SS2022 inspection returned an invalid port %q", value)
+		}
+		selected = port
+	}
+	if !found {
+		return 0, false, errors.New("existing SS2022 inspection returned no trusted marker")
+	}
+	return selected, true, nil
+}
+
+// existingSS2022Port is deliberately read-only. It checks managed service
+// metadata first, then public compatibility metadata and finally the Xray JSON
+// used by older installations. The result is fed into the install preview so
+// an upgrade preserves a live trial/custom port unless migration is explicit.
+func (a *App) existingSS2022Port(c Connection) (int, error) {
+	command := `port=""
+for f in /etc/proxy-runbook/ss2022/service.env /etc/text-node-assistant/ss2022/service.env /etc/proxy-runbook/public.env /etc/text-node-assistant/public.env; do
+  [ -r "$f" ] || continue
+  case "$f" in
+    */ss2022/service.env)
+      value=$(awk -F= '$1=="PORT" || $1=="SS2022_PORT" || $1=="PNA_SS2022_PORT" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' "$f" 2>/dev/null || true)
+      ;;
+    *)
+      value=$(awk -F= '$1=="SS2022_PORT" || $1=="PNA_SS2022_PORT" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' "$f" 2>/dev/null || true)
+      ;;
+  esac
+  case "$value" in
+    ''|*[!0-9]*) ;;
+    *)
+      if [ "$value" -ge 1024 ] 2>/dev/null && [ "$value" -le 65535 ] 2>/dev/null; then
+        port="$value"
+        break
+      fi
+      ;;
+  esac
+done
+if [ -z "$port" ] && command -v jq >/dev/null 2>&1; then
+  for f in /etc/proxy-runbook/ss2022/server.json /etc/text-node-assistant/ss2022/server.json; do
+    [ -r "$f" ] || continue
+    value=$(jq -r '.inbounds[]? | select(.protocol == "shadowsocks") | select((.settings.method? // "") | startswith("2022-")) | .port // empty' "$f" 2>/dev/null | head -n 1 || true)
+    case "$value" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ "$value" -ge 1024 ] 2>/dev/null && [ "$value" -le 65535 ] 2>/dev/null; then
+          port="$value"
+          break
+        fi
+        ;;
+    esac
+  done
+fi
+printf 'TNA_EXISTING_SS2022_PORT=%s\n' "${port:-0}"`
+	result := a.rootCapture(c, command)
+	if !result.OK() {
+		return 0, fmt.Errorf("existing SS2022 inspection failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
+	}
+	port, _, err := parseExistingSS2022Port(result.Stdout)
+	if err != nil {
+		return 0, err
+	}
+	return port, nil
 }
 
 func (a *App) chooseRouteMode(existingNode bool) (RouteMode, error) {
@@ -188,7 +276,49 @@ func (a *App) chooseWarpMode() (WarpMode, error) {
 	}
 }
 
-func (a *App) collectInstallPlan(existingNode bool) (InstallPlan, error) {
+func (a *App) chooseSS2022Port(existingNode bool, detected ...int) (int, error) {
+	defaultPort := defaultSS2022TCPPort
+	if existingNode && len(detected) > 0 && detected[0] >= 1024 && detected[0] <= 65535 {
+		// An upgrade must not silently move an existing listener.  The caller
+		// may explicitly enter 32443 to migrate after the trial has been tested.
+		defaultPort = detected[0]
+	}
+	a.println()
+	if existingNode && len(detected) > 0 && defaultPort != defaultSS2022TCPPort {
+		a.println(a.msg(fmt.Sprintf("检测到现有 SS2022 TCP 监听 %d；直接回车保持原端口，输入 32443 或其他专用端口才会迁移。", defaultPort),
+			fmt.Sprintf("Existing SS2022 TCP listener %d detected; press Enter to preserve it, or enter 32443/another dedicated port to migrate.", defaultPort)))
+	} else {
+		a.println(a.msg(
+			"SS2022 使用 TCP-only；正式默认端口 32443。30443 仅保留给现有临时试验；留空采用 32443，也可以输入 1024—65535 的其他未占用端口。",
+			"SS2022 is TCP-only and defaults to formal port 32443. 30443 remains reserved for the existing trial; press Enter for 32443 or enter another unused port from 1024 to 65535.",
+		))
+	}
+	for {
+		answer := strings.TrimSpace(a.prompt(a.msg(fmt.Sprintf("SS2022 TCP 端口 [%d]", defaultPort), fmt.Sprintf("SS2022 TCP port [%d]", defaultPort))))
+		if a.inputClosed {
+			return 0, errInputClosed
+		}
+		if answer == "" {
+			return defaultPort, nil
+		}
+		port, err := strconv.Atoi(answer)
+		if err == nil && port >= 1024 && port <= 65535 {
+			conflict := false
+			for _, occupied := range []int{443, 24443, 8443, 40000} {
+				if port == occupied {
+					conflict = true
+					break
+				}
+			}
+			if !conflict && (existingNode || port != legacySS2022TrialPort) {
+				return port, nil
+			}
+		}
+		a.println(a.msg("端口无效、与固定监听冲突，或 30443 仍是临时试验端口。", "The port is invalid, conflicts with a fixed listener, or is 30443, which remains trial-only."))
+	}
+}
+
+func (a *App) collectInstallPlan(existingNode bool, detectedSS2022Port ...int) (InstallPlan, error) {
 	plan := defaultInstallPlan()
 	route, err := a.chooseRouteMode(existingNode)
 	if err != nil {
@@ -223,6 +353,10 @@ func (a *App) collectInstallPlan(existingNode bool) (InstallPlan, error) {
 	if err != nil {
 		return InstallPlan{}, err
 	}
+	plan.Ports.SS2022TCP, err = a.chooseSS2022Port(existingNode, detectedSS2022Port...)
+	if err != nil {
+		return InstallPlan{}, err
+	}
 	plan.Preferences.BackupBeforeChange = true
 	plan.Preferences.PruneAfterSuccess = a.yes(a.msg("成功后清理多余远端备份，并只保留一份新验证的当前配置备份？", "After success, prune redundant remote backups and keep one newly verified current-config backup?"), a.installPrefs.PruneAfterSuccess)
 	plan.Preferences.OpenPanelOnSuccess = a.yes(a.msg("成功后通过 127.0.0.1 SSH 隧道打开 3x-ui 面板？", "After success, open 3x-ui through a 127.0.0.1 SSH tunnel?"), a.installPrefs.OpenPanelOnSuccess)
@@ -238,7 +372,7 @@ func (a *App) confirmInstallPlan(plan InstallPlan) error {
 	for _, line := range plan.reviewLines() {
 		a.println("  " + line)
 	}
-	a.println(a.msg("固定协调端口：Reality 443 / 验货 24443 / CDN 源站 8443 / WARP 回环 40000。", "Coordinated ports are fixed: Reality 443 / validation 24443 / CDN origin 8443 / WARP loopback 40000."))
+	a.println(a.msg("固定协调端口：Reality 443 / 验货 24443 / CDN 源站 8443 / WARP 回环 40000；正式 SS2022 TCP 默认 32443，30443 保留为临时试验。", "Coordinated ports are fixed at Reality 443 / validation 24443 / CDN origin 8443 / WARP loopback 40000; formal SS2022 TCP defaults to 32443 while 30443 remains the trial port."))
 	a.println(a.msg("已有节点必先备份；任何阶段失败都会停止后续交接、清理和开面板。", "Existing nodes are backed up first; any failure stops handoff, cleanup, and panel opening."))
 	confirmation := a.prompt(a.msg("确认无误请输入大写 APPLY；其他输入取消且不会上传工具包", "Type uppercase APPLY to confirm; anything else cancels without uploading the toolkit"))
 	if a.inputClosed {
@@ -275,7 +409,7 @@ func randomOneRunInputPath() (string, error) {
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	return "/tmp/text-node-assistant-auto-input-" + hex.EncodeToString(raw), nil
+	return "/tmp/proxy-node-assistant-auto-input-" + hex.EncodeToString(raw), nil
 }
 
 func (a *App) writeInstallAutoInput(c Connection, plan InstallPlan) (string, error) {
@@ -298,14 +432,17 @@ func (a *App) writeInstallAutoInput(c Connection, plan InstallPlan) (string, err
 }
 
 func (a *App) removeInstallAutoInput(c Connection, path string) {
-	if !strings.HasPrefix(path, "/tmp/text-node-assistant-auto-input-") || strings.ContainsAny(path, "\r\n") {
+	if !strings.HasPrefix(path, "/tmp/proxy-node-assistant-auto-input-") || strings.ContainsAny(path, "\r\n") {
 		return
 	}
 	_ = a.rootCapture(c, "rm -f -- "+shQuote(path))
 }
 
 func (a *App) retireLegacyDeviceDriveIfPresent(c Connection, forceLegacyV095Audit bool) error {
-	probe := a.rootCapture(c, "present=0; if [ -e /etc/text-node-assistant/device-registry.json ] || [ -e /etc/text-node-assistant/private-drive.env ] || [ -e /etc/systemd/system/text-node-assistant-copyparty.service ] || [ -e /opt/text-node-assistant/copyparty ] || [ -e /etc/nginx/sites-available/tna-private-drive ]; then present=1; fi; if grep -RqsE '[[:space:]](text-node-assistant-device|proxy-node-assistant-device):[^[:space:]]+[[:space:]]*$' /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys 2>/dev/null; then present=1; fi; printf 'TNA_RETIRED_FEATURES_PRESENT=%s\\n' \"$present\"")
+	// The retirement worker is intentionally still the v0.9.5 worker and owns
+	// the legacy /etc/text-node-assistant namespace.  Probe both namespaces so
+	// a renamed v1 client does not miss an old device-gate/drive installation.
+	probe := a.rootCapture(c, "present=0; for path in /etc/text-node-assistant/device-registry.json /etc/text-node-assistant/private-drive.env /etc/systemd/system/text-node-assistant-copyparty.service /opt/text-node-assistant/copyparty /etc/proxy-node-assistant/device-registry.json /etc/proxy-node-assistant/private-drive.env /etc/systemd/system/proxy-node-assistant-copyparty.service /opt/proxy-node-assistant/copyparty /etc/nginx/sites-available/tna-private-drive; do if [ -e \"$path\" ]; then present=1; fi; done; if grep -RqsE '[[:space:]](text-node-assistant-device|proxy-node-assistant-device):[^[:space:]]+[[:space:]]*$' /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys 2>/dev/null; then present=1; fi; printf 'TNA_RETIRED_FEATURES_PRESENT=%s\\n' \"$present\"")
 	if !probe.OK() {
 		return fmt.Errorf("legacy feature inspection failed (exit %d): %s", probe.ExitCode, processFailureDetail(probe))
 	}
@@ -335,5 +472,6 @@ func (a *App) installEnvironment(c Connection, plan InstallPlan, inputPath, remo
 		" TNA_REALITY_SHADOW_PORT=" + shQuote(fmt.Sprint(plan.Ports.RealityShadow)) +
 		" TNA_CDN_ORIGIN_PORT=" + shQuote(fmt.Sprint(plan.Ports.CDNEdgeOrigin)) +
 		" TNA_WARP_PORT=" + shQuote(fmt.Sprint(plan.Ports.WarpLoopback)) +
+		" PNA_SS2022_PORT=" + shQuote(fmt.Sprint(plan.Ports.SS2022TCP)) +
 		" TNA_AUTO_INPUT=" + shQuote(inputPath)
 }

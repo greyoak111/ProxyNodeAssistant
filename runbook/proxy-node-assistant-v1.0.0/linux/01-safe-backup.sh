@@ -45,6 +45,8 @@ copy_if_exists /etc/systemd/system/x-ui.service.d
 copy_if_exists /etc/systemd/system/nginx.service.d
 copy_if_exists /etc/systemd/system/proxy-runbook-zram.service
 copy_if_exists /etc/systemd/system/text-node-assistant-zram.service
+copy_if_exists /etc/systemd/system/proxy-node-assistant-ss2022.service
+copy_if_exists /usr/local/libexec/proxy-node-assistant/ss2022-firewall
 
 ip -br addr > "$DIR/state/ip-addr.txt" 2>&1 || true
 ip route show table all > "$DIR/state/ip-route-all.txt" 2>&1 || true
@@ -57,9 +59,11 @@ systemctl status x-ui --no-pager > "$DIR/state/x-ui-status.txt" 2>&1 || true
 systemctl status nginx --no-pager > "$DIR/state/nginx-status.txt" 2>&1 || true
 systemctl status warp-svc --no-pager > "$DIR/state/warp-status.txt" 2>&1 || true
 systemctl status ssh --no-pager > "$DIR/state/ssh-status.txt" 2>&1 || true
+systemctl status proxy-node-assistant-ss2022 --no-pager > "$DIR/state/ss2022-status.txt" 2>&1 || true
 journalctl -u x-ui -n 200 --no-pager > "$DIR/state/x-ui-journal.txt" 2>&1 || true
 journalctl -u nginx -n 200 --no-pager > "$DIR/state/nginx-journal.txt" 2>&1 || true
 journalctl -u warp-svc -n 200 --no-pager > "$DIR/state/warp-journal.txt" 2>&1 || true
+journalctl -u proxy-node-assistant-ss2022 -n 200 --no-pager > "$DIR/state/ss2022-journal.txt" 2>&1 || true
 
 if command -v warp-cli >/dev/null 2>&1; then
   warp-cli --version > "$DIR/state/warp-version.txt" 2>&1 || true

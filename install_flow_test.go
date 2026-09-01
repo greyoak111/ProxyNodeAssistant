@@ -17,7 +17,7 @@ func TestRandomOneRunInputPathIsBoundedAndUnique(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const prefix = "/tmp/text-node-assistant-auto-input-"
+	const prefix = "/tmp/proxy-node-assistant-auto-input-"
 	if !strings.HasPrefix(first, prefix) || !strings.HasPrefix(second, prefix) {
 		t.Fatalf("unexpected one-run input paths: %q %q", first, second)
 	}
@@ -29,12 +29,42 @@ func TestRandomOneRunInputPathIsBoundedAndUnique(t *testing.T) {
 	}
 }
 
+func TestParseExistingSS2022Port(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		want    int
+		wantErr bool
+	}{
+		{name: "formal", output: "noise\nTNA_EXISTING_SS2022_PORT=32443\n", want: 32443},
+		{name: "legacy trial", output: "TNA_EXISTING_SS2022_PORT=30443\n", want: 30443},
+		{name: "absent", output: "TNA_EXISTING_SS2022_PORT=0\n", want: 0},
+		{name: "missing marker", output: "", wantErr: true},
+		{name: "invalid", output: "TNA_EXISTING_SS2022_PORT=443\n", wantErr: true},
+		{name: "duplicate", output: "TNA_EXISTING_SS2022_PORT=32443\nTNA_EXISTING_SS2022_PORT=32443\n", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, present, err := parseExistingSS2022Port(test.output)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got port=%d present=%v", got, present)
+				}
+				return
+			}
+			if err != nil || !present || got != test.want {
+				t.Fatalf("got port=%d present=%v err=%v, want %d", got, present, err, test.want)
+			}
+		})
+	}
+}
+
 func TestInstallEnvironmentCarriesOnlyModesPortsAndRandomInput(t *testing.T) {
 	app := &App{lang: LangZH}
 	plan := validGrayPlan()
 	plan.Preferences.RouteMode = RouteDual
 	plan.Orange = RouteIdentity{Domain: "cdn.example.com", Email: "cdn-ops@example.com"}
-	environment := app.installEnvironment(Connection{User: "root"}, plan, "/tmp/text-node-assistant-auto-input-001122", "1")
+	environment := app.installEnvironment(Connection{User: "root"}, plan, "/tmp/proxy-node-assistant-auto-input-001122", "1")
 	for _, required := range []string{
 		"TNA_ROUTE_MODE='dual'",
 		"TNA_PERFORMANCE_MODE='auto'",
@@ -45,7 +75,8 @@ func TestInstallEnvironmentCarriesOnlyModesPortsAndRandomInput(t *testing.T) {
 		"TNA_REALITY_SHADOW_PORT='24443'",
 		"TNA_CDN_ORIGIN_PORT='8443'",
 		"TNA_WARP_PORT='40000'",
-		"TNA_AUTO_INPUT='/tmp/text-node-assistant-auto-input-001122'",
+		"PNA_SS2022_PORT='32443'",
+		"TNA_AUTO_INPUT='/tmp/proxy-node-assistant-auto-input-001122'",
 	} {
 		if !strings.Contains(environment, required) {
 			t.Fatalf("install environment is missing %q: %s", required, environment)
@@ -99,8 +130,10 @@ func TestSettingsRejectUnsafeOrIncompleteInstallPreferences(t *testing.T) {
 func TestToolkitUninstallAcceptsOnlyBothManagedLaunchers(t *testing.T) {
 	command := toolkitUninstallCommand()
 	for _, required := range []string{
-		"/opt/text-node-assistant-current/linux/13-maintenance-menu.sh",
-		"exec /usr/local/sbin/text-node \"$@\"",
+		"/opt/proxy-node-assistant-current/linux/13-maintenance-menu.sh",
+		// The legacy launcher is only accepted when it forwards to the
+		// managed ProxyNodeAssistant launcher.
+		"exec /usr/local/sbin/proxy-node \"$@\"",
 		"REFUSED_UNMANAGED_LAUNCHER",
 	} {
 		if !strings.Contains(command, required) {

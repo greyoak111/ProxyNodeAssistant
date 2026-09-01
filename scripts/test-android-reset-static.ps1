@@ -21,15 +21,18 @@ function Assert-NoMatch([string]$text, [string]$pattern, [string]$message) {
 $gradle = Read-RepoFile "android/app/build.gradle.kts"
 Assert-Match $gradle 'namespace\s*=\s*"com\.proxynodeassistant\.android"' "Android namespace changed; legacy upgrade compatibility would break"
 Assert-Match $gradle 'applicationId\s*=\s*"com\.proxynodeassistant\.android"' "Android applicationId changed; in-place upgrades would break"
-Assert-Match $gradle 'versionCode\s*=\s*950100' "Android versionCode is not the v0.9.5 revision-100 code"
-Assert-Match $gradle 'versionName\s*=\s*"0\.9\.5"' "Android visible version is not v0.9.5"
+Assert-Match $gradle 'versionCode\s*=\s*1000000' "Android versionCode is not the v1.0.0 release code"
+Assert-Match $gradle 'versionName\s*=\s*"1\.0\.0"' "Android visible version is not v1.0.0"
 
 $workflow = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/WorkflowRunner.kt"
-Assert-Match $workflow 'const val VERSION = "0\.9\.5"' "Android workflow visible version is not v0.9.5"
-Assert-Match $workflow 'const val BUILD_REVISION = 100' "Android workflow revision is not 100"
-Assert-Match $workflow 'const val REMOTE_ROOT = "/opt/text-node-assistant-current"' "Android workflow does not use the current TextNodeAssistant remote root"
-Assert-Match $workflow 'const val LEGACY_REMOTE_ROOT = "/opt/proxy-runbook-current"' "Android workflow lost the v0.9.0 remote-root migration probe"
-Assert-Match $workflow 'const val TOOLKIT_ASSET = "text-node-assistant-toolkit-v0\.9\.5\.tgz"' "Android workflow does not reference the current embedded toolkit"
+Assert-Match $workflow 'const val VERSION = "1\.0\.0"' "Android workflow visible version is not v1.0.0"
+Assert-Match $workflow 'const val BUILD_REVISION = 102' "Android workflow revision is not 102"
+Assert-Match $workflow 'const val BUILD_ID = "20260901-v100-ss2022-r102"' "Android workflow build id is not revision 102"
+Assert-Match $workflow 'Ss2022PortPolicy\.FORMAL_PORT' "Android workflow does not use the formal SS2022 port policy"
+Assert-Match $workflow 'Ss2022PortPolicy\.TRIAL_PORT' "Android workflow lost 30443 trial compatibility"
+Assert-Match $workflow 'const val REMOTE_ROOT = "/opt/proxy-node-assistant-current"' "Android workflow does not use the current ProxyNodeAssistant remote root"
+Assert-Match $workflow 'const val LEGACY_REMOTE_ROOT = "/opt/proxy-runbook-current"' "Android workflow lost the legacy remote-root migration probe"
+Assert-Match $workflow 'const val TOOLKIT_ASSET = "proxy-node-assistant-toolkit-v1\.0\.0\.tgz"' "Android workflow does not reference the current embedded toolkit"
 Assert-Match $workflow '!probe\.installed\s*->\s*true' "A completely fresh VPS no longer marks the embedded-toolkit upload as required"
 Assert-Match $workflow 'if \(needsUpload\) \{[\s\S]*uploadToolkit\(handle\)' "The confirmed Android install plan no longer uploads the toolkit when required"
 Assert-Match $workflow 'context\.assets\.open\(TOOLKIT_ASSET\)' "Android no longer reads the toolkit from its APK assets"
@@ -48,19 +51,40 @@ Assert-Match $workflow 'REAL BROWSE OK' "Android orange/dual route no longer req
 Assert-Match $workflow 'TNA_TOPOLOGY_RECONCILED=1' "Android route reconciliation no longer verifies completion markers"
 Assert-NoMatch $workflow 'PROXY_RUNBOOK_ASSUME_DEFAULTS' "Android action 1 silently enables unsafe runbook defaults"
 Assert-NoMatch $workflow '/tmp/proxy-runbook-auto-input' "Android action 1 reintroduced the fixed legacy auto-input path"
-Assert-Match $workflow 'text-node-assistant-auto-input-\$\{randomToken\(\)\}\.env' "Android action 1 no longer uses a randomized one-run input file"
-Assert-Match $workflow 'handle\.upload\(installAutoInput\(plan\)\.toByteArray\(\), oneRunName, "/tmp", "0600"\)' "Android action 1 no longer uploads the randomized input with mode 0600"
+Assert-Match $workflow 'proxy-node-assistant-auto-input-\$\{randomToken\(\)\}\.env' "Android action 1 no longer uses a randomized one-run input file"
+	Assert-Match $workflow 'handle\.upload\(installAutoInput\(plan\)\.toByteArray\(\), oneRunName, "/tmp", "0600"\)' "Android action 1 no longer uploads the randomized input with mode 0600"
+
+	# Action [19] is an allowlist mutation, so it must fail closed before showing
+	# the confirmation prompt. Keep status and list as separate calls: a successful
+	# list command must never mask a missing/inactive listener or firewall.
+	Assert-Match $workflow 'val status = handle\.exec\("bash \$REMOTE_ROOT/linux/23-ss2022-tcp\.sh status"' "Android action 19 lost the SS2022 status probe"
+	Assert-Match $workflow 'check\(status\.ok\)' "Android action 19 no longer treats a failed status command as fatal"
+	Assert-Match $workflow 'statusValues\["PRESENT"\] == "1" && statusValues\["ACTIVE"\] == "1" && statusValues\["LISTENER"\] == "1" && statusValues\["FIREWALL"\] == "1"' "Android action 19 no longer fails closed on missing SS2022 readiness gates"
+	Assert-Match $workflow 'val list = handle\.exec\("bash \$REMOTE_ROOT/linux/23-ss2022-tcp\.sh list"' "Android action 19 lost the separate SS2022 allowlist listing"
+	$statusIndex = $workflow.IndexOf('val status = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh status"')
+	$gateIndex = $workflow.IndexOf('statusValues["PRESENT"] == "1" && statusValues["ACTIVE"] == "1" && statusValues["LISTENER"] == "1" && statusValues["FIREWALL"] == "1"')
+	$listIndex = $workflow.IndexOf('val list = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh list"')
+	$promptIndex = $workflow.IndexOf('val answer = prompts.ask(', [Math]::Max($listIndex, 0))
+	if ($statusIndex -lt 0 -or $gateIndex -lt $statusIndex -or $listIndex -lt $gateIndex -or $promptIndex -lt $listIndex) {
+	    throw "Android action 19 may prompt before the SS2022 status/list fail-closed checks"
+	}
+
+$appUi = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppUi.kt"
+Assert-Match $appUi 'BUILD 1\.0\.0-R102 / ANDROID' "Android UI build label is not revision R102"
 
 $androidBuilder = Read-RepoFile "android/build-android.ps1"
-Assert-Match $androidBuilder 'text-node-assistant-v0\.9\.5/linux/00-bootstrap-toolkit\.sh' "Android build no longer verifies the fresh-VPS bootstrap entry"
-Assert-Match $androidBuilder 'text-node-assistant-v0\.9\.5/linux/28-topology-reconcile\.sh' "Android build no longer verifies the explicit route reconciler"
-Assert-Match $androidBuilder '20260831-v095-reset-from-v090-r100' "Android build no longer verifies the exact toolkit build id"
-Assert-Match $androidBuilder '\$archiveBuildRevision -ne "100"' "Android build no longer verifies toolkit revision 100"
+Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/00-bootstrap-toolkit\.sh' "Android build no longer verifies the fresh-VPS bootstrap entry"
+Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/28-topology-reconcile\.sh' "Android build no longer verifies the explicit route reconciler"
+Assert-Match $androidBuilder '20260901-v100-ss2022-r102' "Android build no longer verifies the exact toolkit build id"
+Assert-Match $androidBuilder '\$archiveBuildRevision -ne "102"' "Android build no longer verifies toolkit revision 102"
 
 $installPlan = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/InstallPlan.kt"
 foreach ($requiredPlanValue in @('TNA_ROUTE_MODE', 'TNA_PERFORMANCE_MODE', 'TNA_WARP_MODE', 'TNA_COVER_TEMPLATE', 'TNA_REALITY_PRODUCTION_PORT', 'TNA_REALITY_SHADOW_PORT', 'TNA_CDN_ORIGIN_PORT', 'TNA_WARP_LOOPBACK_PORT', 'TNA_PLAN_CONFIRMED', 'TNA_AUTO_INPUT')) {
     Assert-Match $installPlan ([regex]::Escape($requiredPlanValue)) "Android InstallPlan is missing explicit value $requiredPlanValue"
 }
+Assert-Match $installPlan 'FORMAL_PORT\s*=\s*32443' "Android InstallPlan formal SS2022 default is not 32443"
+Assert-Match $installPlan 'TRIAL_PORT\s*=\s*30443' "Android InstallPlan lost 30443 trial compatibility"
+Assert-Match $installPlan 'ss2022Port:\s*Int\s*=\s*Ss2022PortPolicy\.FORMAL_PORT' "Android InstallPlan does not default new nodes to the formal SS2022 port"
 
 $vault = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/data/EncryptedVault.kt"
 Assert-Match $vault 'keyAlias\s*=\s*"pna-v0\.9\.0-vault"' "Encrypted-vault alias changed; old Android secrets would become unreadable"
@@ -69,30 +93,30 @@ $signer = Read-RepoFile "android/build-signed-release.ps1"
 Assert-Match $signer 'ProxyNodeAssistant\\android-signing' "Persistent Android signing directory changed"
 Assert-Match $signer 'pna-release-v1\.jks' "Persistent Android keystore filename changed"
 Assert-Match $signer '-alias pna-release-v1' "Persistent Android signing alias changed"
-Assert-Match $signer 'TextNodeAssistant-v0\.9\.5-android-universal\.apk' "Signed APK artifact name is stale"
+Assert-Match $signer 'ProxyNodeAssistant-v1\.0\.0-android-universal\.apk' "Signed APK artifact name is stale"
 
 $packager = Read-RepoFile "package.ps1"
-Assert-Match $packager '\$Version\s*=\s*"0\.9\.5"' "Package visible version is not v0.9.5"
-Assert-Match $packager 'TextNodeAssistant-v\$Version-win64\.exe' "Package still expects a stale Windows executable name"
-Assert-Match $packager 'text-node-assistant-toolkit-v\$ToolkitVersion\.tar\.gz' "Package still expects a stale toolkit archive name"
+Assert-Match $packager '\$Version\s*=\s*"1\.0\.0"' "Package visible version is not v1.0.0"
+Assert-Match $packager 'ProxyNodeAssistant-v\$Version-win64\.exe' "Package still expects a stale Windows executable name"
+Assert-Match $packager 'proxy-node-assistant-toolkit-v\$ToolkitVersion\.tar\.gz' "Package still expects a stale toolkit archive name"
 Assert-Match $packager '@\(\$preview, \$workflowPreview, \$toolkit, \$manual, \$beginnerGuide, \$notes, \$readme, \$license, \$androidManual, \$androidApk,' "Official packaging no longer requires the Android APK"
 Assert-NoMatch $packager 'if \(Test-Path -LiteralPath \$androidApk' "Official packaging may silently omit the Android APK"
-Assert-NoMatch $packager 'dist\\ProxyNodeAssistant-v|ProxyNodeAssistant-v0\.9\.0-android' "Package would publish a stale product artifact name"
+Assert-NoMatch $packager 'TextNodeAssistant-v|ProxyNodeAssistant-v0\.9' "Package would publish a stale product artifact name"
 
 $androidSources = Get-ChildItem -LiteralPath (Join-Path $root "android/app/src") -File -Recurse |
     ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw } |
     Out-String
-Assert-NoMatch $androidSources '(?i)TNAINV|device.?admission|DriveShell|copyparty|local.?admin|first.?controller' "Removed v0.9.5 experimental admission/drive/admin code leaked into the reset Android client"
+Assert-NoMatch $androidSources '(?i)TNAINV|device.?admission|DriveShell|copyparty|local.?admin|first.?controller' "Removed v1.0.0 experimental admission/drive/admin code leaked into the reset Android client"
 Assert-NoMatch $androidSources 'Proxy Node Assistant|PROXY NODE ASSISTANT' "A visible legacy Android product name remains"
-Assert-Match $androidSources '<string name="app_name">TextNodeAssistant</string>' "Android launcher label is not TextNodeAssistant in every locale"
+Assert-Match $androidSources '<string name="app_name">ProxyNodeAssistant</string>' "Android launcher label is not ProxyNodeAssistant in every locale"
 
 $oldRunbookReference = Get-ChildItem -LiteralPath (Join-Path $root "scripts") -File -Recurse |
     ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw } |
     Out-String
 Assert-NoMatch $oldRunbookReference 'runbook[/\\]proxy-runbook-v0\.9\.0' "A validation script still targets the removed v0.9.0 source directory"
 
-$toolkitArchive = Join-Path $root "assets/text-node-assistant-toolkit-v0.9.5.tar.gz"
-$toolkitAsset = Join-Path $root "android/app/src/main/assets/text-node-assistant-toolkit-v0.9.5.tgz"
+$toolkitArchive = Join-Path $root "assets/proxy-node-assistant-toolkit-v1.0.0.tar.gz"
+$toolkitAsset = Join-Path $root "android/app/src/main/assets/proxy-node-assistant-toolkit-v1.0.0.tgz"
 foreach ($path in @($toolkitArchive, $toolkitAsset)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 128) {
         throw "Missing or empty toolkit archive: $path"
@@ -103,23 +127,23 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $toolkitArchive).Hash -ne (Get-
 }
 $archiveEntries = @(& tar -tzf $toolkitArchive)
 if ($LASTEXITCODE -ne 0 -or $archiveEntries.Count -eq 0) { throw "Could not inspect the current toolkit archive" }
-if ($archiveEntries | Where-Object { $_ -notlike 'text-node-assistant-v0.9.5/*' }) {
+if ($archiveEntries | Where-Object { $_ -notlike 'proxy-node-assistant-v1.0.0/*' }) {
     throw "Toolkit archive contains a stale or unexpected top-level directory"
 }
 foreach ($entry in @(
-    'text-node-assistant-v0.9.5/TOOLKIT_VERSION',
-    'text-node-assistant-v0.9.5/TOOLKIT_BUILD_ID',
-    'text-node-assistant-v0.9.5/TOOLKIT_BUILD_REVISION',
-    'text-node-assistant-v0.9.5/linux/00-bootstrap-toolkit.sh',
-    'text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh'
+    'proxy-node-assistant-v1.0.0/TOOLKIT_VERSION',
+    'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID',
+    'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION',
+    'proxy-node-assistant-v1.0.0/linux/00-bootstrap-toolkit.sh',
+    'proxy-node-assistant-v1.0.0/linux/00-auto-install-or-optimize.sh'
 )) {
     if ($archiveEntries -notcontains $entry) { throw "Toolkit archive is missing fresh-install entry: $entry" }
 }
-$archiveVersion = (& tar -xOf $toolkitArchive 'text-node-assistant-v0.9.5/TOOLKIT_VERSION' | Out-String).Trim()
-$archiveBuildId = (& tar -xOf $toolkitArchive 'text-node-assistant-v0.9.5/TOOLKIT_BUILD_ID' | Out-String).Trim()
-$archiveRevision = (& tar -xOf $toolkitArchive 'text-node-assistant-v0.9.5/TOOLKIT_BUILD_REVISION' | Out-String).Trim()
-if ($archiveVersion -ne '0.9.5' -or $archiveBuildId -ne '20260831-v095-reset-from-v090-r100' -or $archiveRevision -ne '100') {
-    throw "Embedded toolkit metadata is not the exact v0.9.5 revision-100 build"
+$archiveVersion = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_VERSION' | Out-String).Trim()
+$archiveBuildId = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID' | Out-String).Trim()
+$archiveRevision = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION' | Out-String).Trim()
+if ($archiveVersion -ne '1.0.0' -or $archiveBuildId -ne '20260901-v100-ss2022-r102' -or $archiveRevision -ne '102') {
+    throw "Embedded toolkit metadata is not the exact v1.0.0 revision-102 build"
 }
 
 Write-Host "ANDROID_RESET_STATIC_OK"

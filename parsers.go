@@ -111,6 +111,7 @@ func validateHandoff(stdout string) (string, error) {
 		"PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_API_TOKEN",
 		"VPS_LOGIN_PASSWORD", "UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY",
 		"VLESS_LINK", "COVER_DOMAIN", "PUBLIC_IP_AT_HANDOFF",
+		"SS2022_PASSWORD", "SS2022_LINK", "SS2022_SERVER_ADDRESS",
 	}
 	for _, key := range useful {
 		if strings.TrimSpace(kv[key]) != "" {

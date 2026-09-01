@@ -118,7 +118,7 @@ object ActionCatalog {
     val all = listOf(
         ActionSpec("1", "安装 / 升级 / 自适应优化", "Install / upgrade / adaptive optimize", "唯一安装入口；必须明确选路线、模板、性能和 WARP，预览后输入 APPLY 才上传或施工。", "The only install entry. Explicitly select route, cover, performance, and WARP; upload or changes begin only after an APPLY review.", ActionGroup.INSTALL),
         ActionSpec("2", "打开 3x-ui 面板", "Open 3x-ui panel", "通过 Android 本机 127.0.0.1 SSH 隧道访问。", "Access through an Android localhost SSH tunnel.", ActionGroup.ACCESS),
-        ActionSpec("3", "自动体检与排障", "Diagnose", "结构化检查 SSH、x-ui、Nginx、WARP、订阅和端口。", "Structured SSH, x-ui, Nginx, WARP, subscription, and port checks.", ActionGroup.MAINTENANCE),
+        ActionSpec("3", "自动体检与排障", "Diagnose", "结构化检查 SSH、x-ui、Nginx、WARP、订阅和端口，并从本机分层探测 Reality、橙云/XHTTP、SS2022 三条入口。", "Structured SSH, x-ui, Nginx, WARP, subscription, and port checks, plus layered handset probes for Reality, CDN/XHTTP, and SS2022.", ActionGroup.MAINTENANCE),
         ActionSpec("4", "安全自动修复", "Safe repair", "先备份，只修复可确定性问题。", "Back up first and repair deterministic issues only.", ActionGroup.MAINTENANCE),
         ActionSpec("5", "随机化 VPS 登录密码", "Rotate VPS password", "生成并显示真实高强度密码。", "Generate and display a real high-entropy password.", ActionGroup.SECURITY),
         ActionSpec("6", "随机化 3x-ui 账号密码", "Rotate panel credentials", "更新面板身份并输出经过校验的交接单。", "Rotate panel identity and return a validated handoff.", ActionGroup.SECURITY),
@@ -134,6 +134,7 @@ object ActionCatalog {
         ActionSpec("16", "自适应性能档", "Adaptive performance profile", "检测资源并应用可回滚档位。", "Detect capacity and apply a reversible profile.", ActionGroup.MAINTENANCE),
         ActionSpec("17", "SSH / vnStat 流量估算", "SSH / vnStat traffic estimate", "查看系统网卡累计流量，不等同厂商计费。", "View interface counters; not provider billing.", ActionGroup.MAINTENANCE),
         ActionSpec("18", "拆除所有施工并恢复基线", "Dismantle all managed changes", "先生成救援包，再拆除已知施工。", "Create a rescue archive before removing managed changes.", ActionGroup.MAINTENANCE, destructive = true),
+        ActionSpec("19", "识别本机 IP 并管理 SS2022 白名单", "Detect local IP and manage SS2022 allowlist", "先在本机直连识别公网 IPv4，再与 VPS 看到的 SSH 来源核对；明确确认后才加入 SS2022 精确白名单。", "Detect the public IPv4 locally, compare it with the source seen by the VPS, and add it to the exact SS2022 allowlist only after explicit confirmation.", ActionGroup.SECURITY),
         ActionSpec("T", "服务商流量中心", "Provider traffic center", "KiwiVM 临时 API Key 或经确认加密保存；其他厂商按能力接入。", "Temporary KiwiVM API key or confirmed encrypted storage; other providers by capability.", ActionGroup.LOCAL, remote = false),
         ActionSpec("K", "管理节点 SSH key", "Manage node SSH keys", "查看、备份态、恢复、轮换和解绑。", "Inspect, archive, restore, rotate, and unbind keys.", ActionGroup.SECURITY, remote = false),
         ActionSpec("H", "管理 VPS 历史", "Manage VPS history", "快速选择、编辑或一键删除历史。", "Quickly select, edit, or delete history.", ActionGroup.LOCAL, remote = false),

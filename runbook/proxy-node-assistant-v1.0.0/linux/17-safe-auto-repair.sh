@@ -17,6 +17,13 @@ systemctl enable --now nginx 2>/dev/null || true
 systemctl enable --now x-ui 2>/dev/null || true
 systemctl enable --now fail2ban 2>/dev/null || true
 
+if [ -x "$ROOT/linux/23-ss2022-tcp.sh" ] && [ -s /etc/proxy-runbook/ss2022/service.env ]; then
+  SS_PORT_NOW="$(sed -n 's/^PORT=//p' /etc/proxy-runbook/ss2022/service.env | sed -n '1p')"
+  # Preserve an explicitly recorded legacy/trial port (including 30443).
+  # Only a missing metadata value uses the v1 formal default.
+  bash "$ROOT/linux/23-ss2022-tcp.sh" ensure "${SS_PORT_NOW:-32443}" || true
+fi
+
 if command -v ufw >/dev/null 2>&1; then
   ufw allow "${SSH_PORT_NOW}/tcp"
   ufw allow 80/tcp

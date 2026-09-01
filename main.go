@@ -15,14 +15,14 @@ import (
 	"sync"
 )
 
-const version = "0.9.5"
+const version = "1.0.0"
 
 var errInputClosed = errors.New("interactive input was closed")
 
 const guiPromptPrefix = "PNA_GUI_PROMPT_B64="
 const guiSecretPromptPrefix = "PNA_GUI_SECRET_B64="
 
-//go:embed assets/text-node-assistant-toolkit-v0.9.5.tar.gz
+//go:embed assets/proxy-node-assistant-toolkit-v1.0.0.tar.gz
 var embeddedToolkit []byte
 
 type Lang string
@@ -58,7 +58,7 @@ func settingsPath() (string, error) {
 			return "", err
 		}
 	}
-	return filepath.Join(base, "TextNodeAssistant", "settings.json"), nil
+	return filepath.Join(base, "ProxyNodeAssistant", "settings.json"), nil
 }
 
 func legacySettingsPath() (string, error) {
@@ -70,7 +70,7 @@ func legacySettingsPath() (string, error) {
 			return "", err
 		}
 	}
-	return filepath.Join(base, "ProxyNodeAssistant", "settings.json"), nil
+	return filepath.Join(base, "TextNodeAssistant", "settings.json"), nil
 }
 
 func (a *App) loadLanguage() {
@@ -223,7 +223,7 @@ func (a *App) toggleLanguage() {
 
 func (a *App) banner() {
 	a.println("============================================================")
-	a.println(" TextNodeAssistant v" + version)
+	a.println(" ProxyNodeAssistant v" + version)
 	a.println(a.msg(" 隐私优先 · 中英双语 · 失败不连锁", " Privacy-first · bilingual · fail-closed"))
 	a.println("============================================================")
 	a.println(a.msg("共享 EXE 不内置任何真实 VPS IP、域名、账户或密钥。", "The shared EXE contains no real VPS IP, domain, account, or key."))
@@ -245,13 +245,14 @@ func (a *App) printMenu() {
 		a.println("[9] 完整灾备（含程序/身份，体积较大）")
 		a.println("[10] 生成并下载紧急诊断报告")
 		a.println("[11] 绑定 / 重新生成 SSH 登录密钥（先验证再换旧钥）")
-		a.println("[12] 清空 Windows 剪贴板")
+		a.println("[12] 清空系统剪贴板")
 		a.println("[13] 卸载远端内嵌包（保留节点、配置、凭据与备份）")
 		a.println("[14] 本地 10808 代理环境变量：配置 / 撤销 / 查看（不连接 VPS）")
 		a.println("[15] 清理远端多余备份 + 仅备份当前配置（只保留一份）")
 		a.println("[16] 自适应性能档位：检测 / 低配 / 标准 / 高配 / 回滚")
 		a.println("[17] SSH/vnStat 流量估算与 70/85/95% 预警")
 		a.println("[18] 全量拆除本工具施工并恢复原始基线（高风险，先下载救援包）")
+		a.println("[19] SS2022 来源白名单：识别当前本地公网 IP / 对照 VPS / 明确添加")
 		a.println("[T] 服务商流量中心：KiwiVM 精确 API / 兼容 API / 凭据管理器")
 		a.println("[K] 管理已绑定 key：查看 / 恢复 / 全部转入备份态并清空绑定位置")
 		a.println("[H] 管理 VPS 登录历史：查看 / 删除单条 / 清空全部")
@@ -271,13 +272,14 @@ func (a *App) printMenu() {
 		a.println("[9] Full disaster backup (includes programs/identity; larger)")
 		a.println("[10] Generate and download an emergency report")
 		a.println("[11] Bind / regenerate the SSH login key (verify before replacing)")
-		a.println("[12] Clear the Windows clipboard")
+		a.println("[12] Clear the system clipboard")
 		a.println("[13] Uninstall the remote embedded toolkit (preserve node data and backups)")
 		a.println("[14] Local 10808 proxy environment: configure / remove / inspect (no VPS login)")
 		a.println("[15] Prune redundant remote backups + keep one current-config backup")
 		a.println("[16] Adaptive performance: detect / low / standard / high / rollback")
 		a.println("[17] SSH/vnStat traffic estimate with 70/85/95% warnings")
 		a.println("[18] Fully dismantle managed construction and restore the original baseline (high risk; rescue first)")
+		a.println("[19] SS2022 source allowlist: detect local public IP / compare VPS view / explicitly add")
 		a.println("[T] Provider traffic center: exact KiwiVM API / compatible API / Credential Manager")
 		a.println("[K] Manage bound keys: inspect / restore / archive all and empty bound positions")
 		a.println("[H] Manage VPS login history: inspect / delete one / clear all")
@@ -288,18 +290,12 @@ func (a *App) printMenu() {
 }
 
 func copyClipboard(value string) error {
-	command := `[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); [Console]::In.ReadToEnd() | Set-Clipboard`
-	result := runCaptured("powershell.exe", []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command}, []byte(value), true)
-	if !result.OK() {
-		return fmt.Errorf("clipboard command failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
-	}
-	return nil
+	return copyClipboardPlatform(value)
 }
 
 func (a *App) clearClipboard() error {
-	result := runCaptured("powershell.exe", []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value $null"}, nil, true)
-	if !result.OK() {
-		return fmt.Errorf("clipboard clear failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	if err := clearClipboardPlatform(); err != nil {
+		return err
 	}
 	a.println(a.msg("剪贴板已清空。", "Clipboard cleared."))
 	return nil
@@ -314,7 +310,7 @@ func (a *App) secretHandoff(title, block string) error {
 		a.println(a.msg("自动复制失败，请手工保存上面的真实信息。", "Automatic copy failed; save the real values above manually."))
 		return err
 	}
-	a.println(a.msg("已复制到 Windows 剪贴板。请立即粘贴进密码管理器/安全笔记。", "Copied to the Windows clipboard. Paste it into your password manager/secure note now."))
+	a.println(a.msg("已复制到系统剪贴板。请立即粘贴进密码管理器/安全笔记。", "Copied to the system clipboard. Paste it into your password manager/secure note now."))
 	a.prompt(a.msg("保存好以后按 Enter", "After saving it, press Enter"))
 	if a.yes(a.msg("现在清空含秘密的剪贴板？", "Clear the secret-bearing clipboard now?"), true) {
 		return a.clearClipboard()
@@ -326,11 +322,11 @@ func (a *App) extractEmbeddedTar() (string, error) {
 	if len(embeddedToolkit) < 128 {
 		return "", fmt.Errorf("embedded toolkit is unexpectedly empty")
 	}
-	dir := filepath.Join(os.TempDir(), "TextNodeAssistant-v0.9.5")
+	dir := filepath.Join(os.TempDir(), "ProxyNodeAssistant-v1.0.0")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "text-node-assistant-toolkit-v0.9.5.tar.gz")
+	path := filepath.Join(dir, "proxy-node-assistant-toolkit-v1.0.0.tar.gz")
 	if err := os.WriteFile(path, embeddedToolkit, 0600); err != nil {
 		return "", err
 	}
@@ -375,6 +371,8 @@ func (a *App) executeActionChoice(choice string) (bool, error) {
 		return true, a.runRemoteAction(a.trafficEstimate)
 	case "18":
 		return true, a.runRemoteAction(a.dismantleManagedNode)
+	case "19":
+		return true, a.runRemoteAction(a.manageSS2022Allowlist)
 	case "t":
 		return true, a.providerTrafficCenter()
 	case "k":
@@ -390,7 +388,7 @@ func (a *App) prepareConsoleSession() bool {
 	a.banner()
 	if err := a.startupOpenSSHPreflight(); err != nil {
 		a.println()
-		a.println(a.msg("Windows OpenSSH 准备失败，程序不会反复安装或进入远端菜单：", "Windows OpenSSH setup failed. The program will not retry in a loop or enter the remote menu:") + " " + err.Error())
+		a.println(a.msg("OpenSSH 准备失败，程序不会反复安装或进入远端菜单：", "OpenSSH setup failed. The program will not retry in a loop or enter the remote menu:") + " " + err.Error())
 		a.prompt(a.msg("按 Enter 安全退出", "Press Enter to exit safely"))
 		return false
 	}

@@ -125,7 +125,7 @@ func TestVersion090WiresTrafficAndPerformanceIntoGUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guiSource, err := os.ReadFile("gui/TextNodeAssistant.Gui.cs")
+	guiSource, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,11 +142,11 @@ func TestVersion090WiresTrafficAndPerformanceIntoGUI(t *testing.T) {
 }
 
 func TestRemote090ScriptsAreRollbackCapableAndBounded(t *testing.T) {
-	performance, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/20-adaptive-performance.sh")
+	performance, err := os.ReadFile("runbook/proxy-node-assistant-v1.0.0/linux/20-adaptive-performance.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	traffic, err := os.ReadFile("runbook/text-node-assistant-v0.9.5/linux/21-traffic-status.sh")
+	traffic, err := os.ReadFile("runbook/proxy-node-assistant-v1.0.0/linux/21-traffic-status.sh")
 	if err != nil {
 		t.Fatal(err)
 	}

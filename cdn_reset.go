@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const cdnRouteInputDir = "/root/.config/text-node-assistant/runtime-input"
+const cdnRouteInputDir = "/root/.config/proxy-node-assistant/runtime-input"
 
 var (
 	cdnLookupIP    = net.LookupIP
@@ -88,7 +88,7 @@ func randomCDNRouteInputPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	token := strings.TrimPrefix(path, "/tmp/text-node-assistant-auto-input-")
+	token := strings.TrimPrefix(path, "/tmp/proxy-node-assistant-auto-input-")
 	if token == path || token == "" || strings.ContainsAny(token, "/\\\r\n") {
 		return "", errors.New("could not create a safe CDN route input name")
 	}
@@ -96,7 +96,7 @@ func randomCDNRouteInputPath() (string, error) {
 }
 
 func buildCDNRouteInputCopyCommand(sourcePath, destinationPath string, mode RouteMode, publicIP string) (string, error) {
-	if !strings.HasPrefix(sourcePath, "/tmp/text-node-assistant-auto-input-") || strings.ContainsAny(sourcePath, "\r\n") {
+	if !strings.HasPrefix(sourcePath, "/tmp/proxy-node-assistant-auto-input-") || strings.ContainsAny(sourcePath, "\r\n") {
 		return "", errors.New("unsafe core input path")
 	}
 	if !strings.HasPrefix(destinationPath, cdnRouteInputDir+"/cdn-route-") || !strings.HasSuffix(destinationPath, ".env") || strings.ContainsAny(destinationPath, "\r\n") {
@@ -111,7 +111,7 @@ func buildCDNRouteInputCopyCommand(sourcePath, destinationPath string, mode Rout
 	}
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
 	return "set -Eeuo pipefail; umask 077; " +
-		"case " + shQuote(sourcePath) + " in /tmp/text-node-assistant-auto-input-*) ;; *) exit 143;; esac; " +
+		"case " + shQuote(sourcePath) + " in /tmp/proxy-node-assistant-auto-input-*) ;; *) exit 143;; esac; " +
 		"[ -f " + shQuote(sourcePath) + " ] && [ ! -L " + shQuote(sourcePath) + " ] && [ \"$(stat -c '%u:%a' " + shQuote(sourcePath) + ")\" = 0:600 ]; " +
 		"install -d -m 700 " + shQuote(cdnRouteInputDir) + "; test ! -e " + shQuote(destinationPath) + "; " +
 		"{ printf '%s\\n' " + shQuote("TNA_CDN_ROUTE_INPUT_VERSION=1") + " " +
@@ -163,7 +163,7 @@ func validateCDNEdge(domain string) error {
 	if err != nil {
 		return err
 	}
-	request.Header.Set("User-Agent", "TextNodeAssistant-CDN-Validator/0.9.5")
+	request.Header.Set("User-Agent", "ProxyNodeAssistant-CDN-Validator/1.0.0")
 	response, err := cdnHTTPDo(request)
 	if err != nil {
 		return fmt.Errorf("CDN edge HTTPS validation failed: %w", err)

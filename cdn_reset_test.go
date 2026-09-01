@@ -85,7 +85,7 @@ func TestCDNRouteActionsCoverEveryMode(t *testing.T) {
 
 func TestBuildCDNRouteInputCopyCommandUsesOnlyRootOneRunInput(t *testing.T) {
 	command, err := buildCDNRouteInputCopyCommand(
-		"/tmp/text-node-assistant-auto-input-001122",
+		"/tmp/proxy-node-assistant-auto-input-001122",
 		cdnRouteInputDir+"/cdn-route-aabbcc.env",
 		RouteOrange,
 		"192.0.2.10",
@@ -236,7 +236,7 @@ func TestReconcileOrangeAndDualCommitOnlyAfterValidation(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			commands := withCDNReconcileStubs(t, mode, false)
 			plan := validCDNPlan(mode)
-			err := (&App{}).reconcileCDNRoute(Connection{}, plan, "/tmp/text-node-assistant-auto-input-aabbcc")
+			err := (&App{}).reconcileCDNRoute(Connection{}, plan, "/tmp/proxy-node-assistant-auto-input-aabbcc")
 			if err != nil {
 				t.Fatalf("%s convergence failed: %v", mode, err)
 			}
@@ -256,7 +256,7 @@ func TestReconcileOrangeAndDualCommitOnlyAfterValidation(t *testing.T) {
 
 func TestReconcileOrangeRollsBackWhenExternalEdgeValidationFails(t *testing.T) {
 	commands := withCDNReconcileStubs(t, RouteOrange, true)
-	err := (&App{}).reconcileCDNRoute(Connection{}, validCDNPlan(RouteOrange), "/tmp/text-node-assistant-auto-input-aabbcc")
+	err := (&App{}).reconcileCDNRoute(Connection{}, validCDNPlan(RouteOrange), "/tmp/proxy-node-assistant-auto-input-aabbcc")
 	if err == nil || !strings.Contains(err.Error(), "edge unavailable") {
 		t.Fatalf("expected edge validation failure, got %v", err)
 	}
@@ -276,7 +276,7 @@ func TestReconcileDoesNotTreatNothingPendingAsRollbackProof(t *testing.T) {
 		}
 		return baseCapture(app, connection, command)
 	}
-	err := (&App{}).reconcileCDNRoute(Connection{}, validCDNPlan(RouteOrange), "/tmp/text-node-assistant-auto-input-aabbcc")
+	err := (&App{}).reconcileCDNRoute(Connection{}, validCDNPlan(RouteOrange), "/tmp/proxy-node-assistant-auto-input-aabbcc")
 	if err == nil || !strings.Contains(err.Error(), "automatic CDN rollback also failed") {
 		t.Fatalf("ambiguous no-pending response was accepted as rollback proof: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestReconcileDoesNotRepeatRemoteStageTrapRollback(t *testing.T) {
 		}
 		return baseCapture(app, connection, command)
 	}
-	err := (&App{}).reconcileCDNRoute(Connection{}, validCDNPlan(RouteOrange), "/tmp/text-node-assistant-auto-input-aabbcc")
+	err := (&App{}).reconcileCDNRoute(Connection{}, validCDNPlan(RouteOrange), "/tmp/proxy-node-assistant-auto-input-aabbcc")
 	if err == nil || !strings.Contains(err.Error(), "CDN route staging failed") {
 		t.Fatalf("expected the original stage failure, got %v", err)
 	}
@@ -308,7 +308,7 @@ func TestReconcileDoesNotRepeatRemoteStageTrapRollback(t *testing.T) {
 func TestReconcileOrangeRequiresRealClientProofBeforeRemoteConfirmation(t *testing.T) {
 	commands := withCDNReconcileStubs(t, RouteOrange, false)
 	cdnRequestClientProof = func(*App, string) error { return errors.New("real browse was not confirmed") }
-	err := (&App{}).reconcileCDNRoute(Connection{}, validCDNPlan(RouteOrange), "/tmp/text-node-assistant-auto-input-aabbcc")
+	err := (&App{}).reconcileCDNRoute(Connection{}, validCDNPlan(RouteOrange), "/tmp/proxy-node-assistant-auto-input-aabbcc")
 	if err == nil || !strings.Contains(err.Error(), "real browse was not confirmed") {
 		t.Fatalf("expected real-client proof failure, got %v", err)
 	}
@@ -358,7 +358,7 @@ func TestLeanCDNScriptsContainNoRetiredSubsystemDependency(t *testing.T) {
 		"05g-cdn-xhttp-validate.sh", "05h-ensure-cdn-certificate.sh", "28-topology-reconcile.sh",
 		"32-subscription-rewrite.py", "lib-deployment-state.sh", "lib-dns-quorum.sh",
 	}
-	base := filepath.Join("runbook", "text-node-assistant-v0.9.5", "linux")
+	base := filepath.Join("runbook", "proxy-node-assistant-v1.0.0", "linux")
 	for _, name := range files {
 		data, err := os.ReadFile(filepath.Join(base, name))
 		if err != nil {
@@ -380,7 +380,7 @@ func TestLeanCDNScriptsContainNoRetiredSubsystemDependency(t *testing.T) {
 }
 
 func TestSubscriptionRewriteHardFailsNon8443Metadata(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("runbook", "text-node-assistant-v0.9.5", "linux", "32-subscription-rewrite.py"))
+	data, err := os.ReadFile(filepath.Join("runbook", "proxy-node-assistant-v1.0.0", "linux", "32-subscription-rewrite.py"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,26 +390,44 @@ func TestSubscriptionRewriteHardFailsNon8443Metadata(t *testing.T) {
 	}
 }
 
-func TestCertificateBootstrapUsesOnlyNormalHTTP01BeforeOrigin8443(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("runbook", "text-node-assistant-v0.9.5", "linux", "05h-ensure-cdn-certificate.sh"))
+func TestCertificateBootstrapUsesControlledHTTP01BeforePermanentOrigin8443(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("runbook", "proxy-node-assistant-v1.0.0", "linux", "05h-ensure-cdn-certificate.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, required := range []string{"listen 80;", "cf-ray:", "certbot certonly", "PUBLIC_ACME_PREFLIGHT_FAILED"} {
+	for _, required := range []string{
+		"listen 80;",
+		"listen ${PUBLIC_IP}:8443;",
+		"/root/.config/proxy-node-assistant/runtime-input/*.env",
+		"/root/.config/text-node-assistant/runtime-input/*.env",
+		"CLOUDFLARE_FIREWALL_APPLIED=1",
+		"ORIGIN_LOCK_REQUIRED_BEFORE_ACME_8443",
+		"LOCAL_ACME_8443_PREFLIGHT_FAILED",
+		"cf-ray:",
+		"certbot certonly",
+		"PUBLIC_ACME_PREFLIGHT_FAILED",
+		"trap cleanup EXIT",
+	} {
 		if !strings.Contains(strings.ToLower(text), strings.ToLower(required)) {
 			t.Fatalf("certificate bootstrap is missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"--prepare-public-origin", "TNA_MANAGED_ACME_ORIGIN_HTTP", "listen ${PUBLIC_IP}:8443", "05f-cloudflare-origin-lock.sh"} {
+	for _, forbidden := range []string{
+		"--prepare-public-origin",
+		"TNA_MANAGED_ACME_ORIGIN_HTTP",
+		"listen 0.0.0.0:8443",
+		"listen [::]:8443",
+		"05f-cloudflare-origin-lock.sh",
+	} {
 		if strings.Contains(text, forbidden) {
-			t.Fatalf("certificate bootstrap still mutates the staged origin/firewall via %q", forbidden)
+			t.Fatalf("certificate bootstrap exposes an unsafe or unrelated origin path via %q", forbidden)
 		}
 	}
 }
 
 func TestTopologyRollbackRestoresManagedFirewallRealityAndRouteState(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("runbook", "text-node-assistant-v0.9.5", "linux", "28-topology-reconcile.sh"))
+	data, err := os.ReadFile(filepath.Join("runbook", "proxy-node-assistant-v1.0.0", "linux", "28-topology-reconcile.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +435,11 @@ func TestTopologyRollbackRestoresManagedFirewallRealityAndRouteState(t *testing.
 	for _, required := range []string{
 		"previous_cf_applied=1",
 		"bash \"$cf_helper\" remove",
+		"/root/.config/proxy-node-assistant/runtime-input/*.env",
+		"/root/.config/text-node-assistant/runtime-input/*.env",
 		"restore_path /etc/x-ui x-ui",
+		// The on-disk Cloudflare state root is intentionally kept at the
+		// legacy path so upgrades remain compatible with v0.9.x nodes.
 		"restore_path /etc/text-node-assistant/cloudflare cloudflare",
 		"bash \"$cf_helper\" apply",
 		"ROLLBACK_INCOMPLETE_TRANSACTION_PRESERVED",

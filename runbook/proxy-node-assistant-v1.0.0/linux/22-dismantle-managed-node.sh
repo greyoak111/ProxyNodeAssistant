@@ -30,6 +30,8 @@ managed_paths=(
   /etc/systemd/system/nginx.service.d
   /etc/systemd/system/proxy-runbook-zram.service
   /etc/systemd/system/text-node-assistant-zram.service
+  /etc/systemd/system/proxy-node-assistant-ss2022.service
+  /usr/local/libexec/proxy-node-assistant/ss2022-firewall
   /etc/text-node-assistant
   /root/.config/text-node-assistant
   /var/lib/text-node-assistant
@@ -51,7 +53,7 @@ owned_packages=(
   vnstat
 )
 
-owned_services=(nginx fail2ban warp-svc vnstat x-ui proxy-runbook-zram.service text-node-assistant-zram.service)
+owned_services=(nginx fail2ban warp-svc vnstat x-ui proxy-runbook-zram.service text-node-assistant-zram.service proxy-node-assistant-ss2022.service)
 
 die() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -221,6 +223,12 @@ remove_current_stack() {
     bash "$ROOT/linux/05f-cloudflare-origin-lock.sh" remove >/dev/null 2>&1 || \
       die "managed Cloudflare origin-lock rules could not be removed safely"
   fi
+  if [ -x "$ROOT/linux/23-ss2022-tcp.sh" ]; then
+    bash "$ROOT/linux/23-ss2022-tcp.sh" uninstall purge-state || \
+      die "managed SS2022 service/firewall could not be removed safely"
+  elif systemctl is-active --quiet proxy-node-assistant-ss2022.service 2>/dev/null; then
+    die "managed SS2022 service is active but its ownership-aware uninstaller is unavailable"
+  fi
 
   # Only certificate names recorded by this product are candidates for
   # deletion.  Never enumerate and delete unrelated Certbot identities.
@@ -278,6 +286,8 @@ remove_current_stack() {
   rm -f -- /etc/sysctl.d/99-proxy-runbook.conf /etc/sysctl.d/99-proxy-runbook-performance.conf
   rm -f -- /etc/systemd/system/proxy-runbook-zram.service
   rm -f -- /etc/systemd/system/text-node-assistant-zram.service
+  rm -f -- /etc/systemd/system/proxy-node-assistant-ss2022.service
+  rm -f -- /usr/local/libexec/proxy-node-assistant/ss2022-firewall
   rm -f -- /etc/systemd/system/x-ui.service.d/90-proxy-runbook-performance.conf
   rm -f -- /etc/systemd/system/nginx.service.d/90-proxy-runbook-performance.conf
   rm -f -- /etc/nginx/sites-enabled/tna-cdn-xhttp-stage /etc/nginx/sites-available/tna-cdn-xhttp-stage
@@ -410,7 +420,7 @@ execute_dismantle() {
     ! systemctl is-active --quiet x-ui 2>/dev/null
     ! systemctl is-active --quiet nginx 2>/dev/null
     ! systemctl is-active --quiet warp-svc 2>/dev/null
-    if ss -lnt 2>/dev/null | grep -E ':(80|443|8443|24443|40000)[[:space:]]' >/dev/null; then
+    if ss -lnt 2>/dev/null | grep -E ':(80|443|8443|24443|30443|32443|40000)[[:space:]]' >/dev/null; then
       echo "ERROR: managed listener remains after legacy dismantle" >&2
       exit 9
     fi

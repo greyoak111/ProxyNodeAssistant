@@ -3,9 +3,11 @@ set -Eeuo pipefail
 umask 077
 
 # Obtain the origin certificate before the permanent Cloudflare-only :8443
-# listener exists.  The client and Cloudflare both use hostname:8443, so an
-# Origin Rule which rewrites :443 to :8443 is neither needed nor supported.
-# HTTP-01 is deliberately served only on the normal origin port 80.
+# listener exists.  If a pre-existing Origin Rule sends the orange hostname to
+# :8443, briefly serve the ACME challenge on the concrete PUBLIC_IP:8443 only
+# after the Cloudflare CIDR lock is active.  The temporary vhost is removed by
+# cleanup; no permanent origin or firewall state is changed here.  Normal
+# HTTP-01 on port 80 remains the default path.
 
 INPUT_FILE=''
 DOMAIN=''
@@ -18,7 +20,7 @@ PUBLIC_IP=''
 }
 INPUT_FILE="$2"
 case "$INPUT_FILE" in
-  /root/.config/text-node-assistant/runtime-input/*.env) ;;
+  /root/.config/proxy-node-assistant/runtime-input/*.env|/root/.config/text-node-assistant/runtime-input/*.env) ;;
   *) echo 'TNA_CDN_CERT_ERROR=INPUT_PATH_INVALID' >&2; exit 161 ;;
 esac
 [ -f "$INPUT_FILE" ] && [ ! -L "$INPUT_FILE" ] || {
@@ -102,11 +104,42 @@ if [ -e "$acme_vhost" ] && ! grep -Fqx '# TNA_MANAGED_CDN_ACME_HTTP01_V095' "$ac
   echo 'TNA_CDN_CERT_ERROR=ACME_VHOST_NOT_TOOL_MANAGED' >&2
   exit 162
 fi
+
+# A pre-existing Cloudflare Origin Rule may rewrite the entire hostname to
+# origin port 8443.  In that topology the normal edge-port-80 HTTP-01 request
+# never reaches origin port 80.  The topology transaction applies the official
+# Cloudflare CIDR allowlist before calling this helper, which makes it safe to
+# expose a short-lived *plaintext HTTP* listener on the concrete public :8443.
+# It serves only the ACME path and is removed before the permanent TLS/XHTTP
+# listener is staged.
+grep -Fqx 'CLOUDFLARE_FIREWALL_APPLIED=1' \
+  /etc/text-node-assistant/cloudflare/cidr-state.env 2>/dev/null || {
+    echo 'TNA_CDN_CERT_ERROR=ORIGIN_LOCK_REQUIRED_BEFORE_ACME_8443' >&2
+    exit 162
+  }
+if ss -H -lntp 2>/dev/null | awk -v address="${PUBLIC_IP}:8443" '$4 == address {found=1} END{exit found ? 0 : 1}'; then
+  echo 'TNA_CDN_CERT_ERROR=PUBLIC_8443_ALREADY_IN_USE_BEFORE_CERTIFICATE' >&2
+  exit 162
+fi
 cat > "$acme_vhost" <<EOF
 # TNA_MANAGED_CDN_ACME_HTTP01_V095
 server {
     listen 80;
     listen [::]:80;
+    server_name ${DOMAIN};
+    root /var/www/cover;
+    location ^~ /.well-known/acme-challenge/ {
+        default_type text/plain;
+        auth_basic off;
+        allow all;
+        add_header Cache-Control "no-store" always;
+        try_files \$uri =404;
+    }
+    location / { return 404; }
+}
+
+server {
+    listen ${PUBLIC_IP}:8443;
     server_name ${DOMAIN};
     root /var/www/cover;
     location ^~ /.well-known/acme-challenge/ {
@@ -147,6 +180,27 @@ if [ "$local_status" != 200 ] || [ "$local_body" != "$probe" ]; then
   exit 162
 fi
 
+# Also prove the temporary concrete :8443 listener locally.  This catches a
+# bind/routing error before the edge preflight and avoids a misleading 522.
+local_8443_body=''
+local_8443_status='000'
+for _ in $(seq 1 4); do
+  local_8443_body_file="$(mktemp)"
+  local_8443_status="$(curl --noproxy '*' --silent --show-error --max-time 5 \
+    --output "$local_8443_body_file" --write-out '%{http_code}' \
+    --resolve "${DOMAIN}:8443:${PUBLIC_IP}" \
+    "http://${DOMAIN}:8443/.well-known/acme-challenge/${probe}" || true)"
+  local_8443_body="$(cat "$local_8443_body_file" 2>/dev/null || true)"
+  rm -f -- "$local_8443_body_file"
+  [ "$local_8443_status" = 200 ] && [ "$local_8443_body" = "$probe" ] && break
+  sleep 1
+done
+if [ "$local_8443_status" != 200 ] || [ "$local_8443_body" != "$probe" ]; then
+  echo 'TNA_CDN_CERT_ERROR=LOCAL_ACME_8443_PREFLIGHT_FAILED' >&2
+  echo "TNA_ACME_LOCAL_8443_HTTP_STATUS=${local_8443_status:-000}" >&2
+  exit 162
+fi
+
 # The orange hostname must actually traverse Cloudflare.  Requiring Cf-Ray
 # prevents a gray/direct DNS record from being mistaken for the CDN route.
 public_body=''
@@ -172,7 +226,7 @@ if [ "$public_status" != 200 ] || [ "$public_body" != "$probe" ] || [ -z "$publi
   echo "TNA_ACME_PUBLIC_HTTP_STATUS=${public_status:-000}" >&2
   [ -n "$public_location" ] && echo "TNA_ACME_PUBLIC_HTTP_LOCATION=$public_location" >&2
   [ -n "$public_cf_ray" ] && echo "TNA_ACME_PUBLIC_CF_RAY=$public_cf_ray" >&2
-  echo 'TNA_ACME_PUBLIC_HTTP_HINT=orange_DNS_must_be_proxied_and_HTTP_80_must_reach_origin_80;_do_not_rewrite_all_requests_to_8443' >&2
+  echo 'TNA_ACME_PUBLIC_HTTP_HINT=orange_DNS_must_be_proxied;_allow_HTTP_80_to_origin_80_or_use_the_managed_temporary_8443_ACME_path;_do_not_expose_permanent_8443' >&2
   exit 162
 fi
 

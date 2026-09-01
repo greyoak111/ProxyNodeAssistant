@@ -21,13 +21,14 @@ import (
 )
 
 const (
-	remoteRoot           = "/opt/text-node-assistant-current"
-	legacyRemoteRoot     = "/opt/proxy-runbook-current"
-	toolkitVersion       = "0.9.5"
-	toolkitBuildID       = "20260831-v095-reset-from-v090-r100"
-	toolkitBuildRevision = 100
-	toolkitInstallDir    = "/opt/text-node-assistant-v0.9.5"
-	toolkitArchive       = "text-node-assistant-toolkit-v0.9.5.tar.gz"
+	remoteRoot              = "/opt/proxy-node-assistant-current"
+	legacyTextRemoteRoot    = "/opt/text-node-assistant-current"
+	legacyRunbookRemoteRoot = "/opt/proxy-runbook-current"
+	toolkitVersion          = "1.0.0"
+	toolkitBuildID          = "20260901-v100-ss2022-r102"
+	toolkitBuildRevision    = 102
+	toolkitInstallDir       = "/opt/proxy-node-assistant-v1.0.0"
+	toolkitArchive          = "proxy-node-assistant-toolkit-v1.0.0.tar.gz"
 )
 
 var managedToolkitDirs = []string{
@@ -54,6 +55,7 @@ var managedToolkitDirs = []string{
 	"/opt/proxy-runbook-v0.8.3",
 	"/opt/proxy-runbook-v0.9.0",
 	"/opt/text-node-assistant-v0.9.5",
+	"/opt/proxy-node-assistant-v1.0.0",
 }
 
 var managedToolkitArchives = []string{
@@ -80,6 +82,7 @@ var managedToolkitArchives = []string{
 	"/tmp/proxy-runbook-toolkit-v0.8.3.tar.gz",
 	"/tmp/proxy-runbook-toolkit-v0.9.0.tar.gz",
 	"/tmp/text-node-assistant-toolkit-v0.9.5.tar.gz",
+	"/tmp/proxy-node-assistant-toolkit-v1.0.0.tar.gz",
 }
 
 var requiredOpenSSHExecutables = []string{
@@ -245,6 +248,15 @@ func managedCommandPath(name string) string {
 	if filepath.IsAbs(name) {
 		return name
 	}
+	logical := name
+	if path := openSSHExecutablePaths[strings.ToLower(logical)]; path != "" {
+		return path
+	}
+	// The Windows implementation historically passes the .exe suffix for all
+	// OpenSSH tools.  Keep those logical names in the rest of the code (and in
+	// the Windows compatibility tests), but resolve them to native command
+	// names on Unix-like hosts where the binaries are named without .exe.
+	name = nativeCommandName(name)
 	if path := openSSHExecutablePaths[strings.ToLower(name)]; path != "" {
 		return path
 	}
@@ -338,7 +350,7 @@ func openSSHSuiteCandidates() []openSSHSuiteCandidate {
 		addTrustedDirectory(filepath.Join(programFiles, "OpenSSH"))
 	}
 	for _, name := range requiredOpenSSHExecutables {
-		if path, err := exec.LookPath(name); err == nil {
+		if path, err := exec.LookPath(nativeCommandName(name)); err == nil {
 			addUniqueDirectory(&dirs, seen, filepath.Dir(path))
 		}
 	}
@@ -348,7 +360,7 @@ func openSSHSuiteCandidates() []openSSHSuiteCandidate {
 		paths := map[string]string{}
 		complete := true
 		for _, name := range requiredOpenSSHExecutables {
-			path := filepath.Join(dir, name)
+			path := filepath.Join(dir, nativeCommandName(name))
 			if !fileExists(path) {
 				complete = false
 				break
@@ -422,7 +434,7 @@ func validateOpenSSHSuite(paths map[string]string) error {
 func resolveVerifiedOpenSSHSuite() (map[string]string, error) {
 	candidates := openSSHSuiteCandidates()
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("a complete Windows OpenSSH Client suite is required: %s", strings.Join(requiredOpenSSHExecutables, ", "))
+		return nil, fmt.Errorf("a complete OpenSSH client suite is required: %s", strings.Join(requiredOpenSSHExecutables, ", "))
 	}
 	var failures []string
 	for _, candidate := range candidates {
@@ -488,9 +500,12 @@ func installOpenSSHClientOnce() ProcessResult {
 func (a *App) startupOpenSSHPreflight() error {
 	if paths, err := resolveVerifiedOpenSSHSuite(); err == nil {
 		openSSHExecutablePaths = paths
-		a.println(a.msg("[GOOD] Windows OpenSSH 已安装并通过启动验证。", "[GOOD] Windows OpenSSH is installed and passed launch verification."))
+		a.println(a.msg("[GOOD] OpenSSH 客户端已安装并通过启动验证。", "[GOOD] OpenSSH client is installed and passed launch verification."))
 		a.println("OpenSSH=" + openSSHSuiteSummary(paths))
 		return nil
+	}
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("OpenSSH client suite is unavailable; install ssh, scp, ssh-keygen, and ssh-keyscan with the system package manager, then restart")
 	}
 
 	a.println(a.msg("[INFO] 未找到可用的完整 Windows OpenSSH Client；现在申请管理员权限安装一次并复验。", "[INFO] A usable complete Windows OpenSSH Client was not found. Administrator permission will be requested once, followed by verification."))
@@ -680,7 +695,7 @@ func (a *App) getActionConnection() (*Connection, error) {
 func (a *App) ensureOpenSSH() error {
 	paths, err := resolveVerifiedOpenSSHSuite()
 	if err != nil {
-		return fmt.Errorf("Windows OpenSSH became unavailable after startup verification: %w", err)
+		return fmt.Errorf("OpenSSH became unavailable after startup verification: %w", err)
 	}
 	openSSHExecutablePaths = paths
 	return nil
@@ -724,12 +739,12 @@ func win32KeyscanUnsupportedKEX(value string) bool {
 // fingerprint in ensureHostKey.
 func isolatedSSHHostKeyArgs(c Connection, path string) []string {
 	return []string{
-		"-F", "NUL",
+		"-F", nullDevicePath(),
 		"-o", "ConnectTimeout=12",
 		"-o", "ConnectionAttempts=1",
 		"-o", "LogLevel=ERROR",
 		"-o", "UserKnownHostsFile=" + openSSHOptionPath(path),
-		"-o", "GlobalKnownHostsFile=NUL",
+		"-o", "GlobalKnownHostsFile=" + nullDevicePath(),
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "UpdateHostKeys=no",
 		"-o", "HashKnownHosts=no",
@@ -937,9 +952,9 @@ func (a *App) installPublicKey(c Connection, keyPath, authKeyPath string, onInst
 	var result ProcessResult
 	if interactivePassword {
 		if os.Getenv("PNA_GUI_MODE") == "1" {
-			a.println(a.msg("Windows OpenSSH 即将请求 VPS 密码；请在图形遮罩密码框中输入并提交。密码不会进入日志、参数、剪贴板或磁盘。", "Windows OpenSSH is about to request the VPS password. Enter it in the graphical masked password dialog. It is not written to logs, arguments, the clipboard, or disk."))
+			a.println(a.msg("OpenSSH 即将请求 VPS 密码；请在图形遮罩密码框中输入并提交。密码不会进入日志、参数、剪贴板或磁盘。", "OpenSSH is about to request the VPS password. Enter it in the graphical masked password dialog. It is not written to logs, arguments, the clipboard, or disk."))
 		} else {
-			a.println(a.msg("下面是 Windows OpenSSH 的 VPS 密码输入。输入时屏幕不会显示字符，这是正常的；输入完成按 Enter。", "Windows OpenSSH will now ask for the VPS password. No characters are shown while typing; press Enter when finished."))
+			a.println(a.msg("下面是 OpenSSH 的 VPS 密码输入。输入时屏幕不会显示字符，这是正常的；输入完成按 Enter。", "OpenSSH will now ask for the VPS password. No characters are shown while typing; press Enter when finished."))
 		}
 		result = runInteractiveSSH("ssh.exe", args)
 	} else {
@@ -1014,7 +1029,7 @@ func (a *App) prepareTemporaryPasswordAuth(c *Connection) error {
 	if os.Getenv("PNA_GUI_MODE") == "1" {
 		a.println(a.msg("临时密码模式：稍后在图形遮罩密码框中输入一次 VPS 密码；它只通过本机受限命名管道交给 OpenSSH。", "Temporary password mode: enter the VPS password once in the graphical masked dialog; it is passed to OpenSSH only through a restricted local named pipe."))
 	} else {
-		a.println(a.msg("临时密码模式：下面只向 Windows OpenSSH 输入一次 VPS 密码；程序不会读取或保存密码。", "Temporary password mode: enter the VPS password once into Windows OpenSSH; this program never reads or stores it."))
+		a.println(a.msg("临时密码模式：下面只向 OpenSSH 输入一次 VPS 密码；程序不会读取或保存密码。", "Temporary password mode: enter the VPS password once into OpenSSH; this program never reads or stores it."))
 	}
 	a.println(a.msg("为支持本项多步 SSH/SCP，程序会安装一次性公钥；若不绑定，会在本项结束前从 VPS 撤销，并删除本机临时私钥。", "A one-time public key is installed for this multi-step SSH/SCP action; unless you bind it, it is revoked from the VPS and the local temporary private key is deleted before the action returns."))
 	if err := a.installPublicKey(*c, c.KeyPath, "", func() { c.Temporary.Installed = true }); err != nil {
@@ -1780,7 +1795,7 @@ func (a *App) openManagedKeyFolders() error {
 	a.println(a.msg("已绑定 key 总目录：", "Bound-key root:") + " " + activeRoot)
 	a.println(a.msg("可恢复备份总目录：", "Recoverable-backup root:") + " " + backupRoot)
 	for _, path := range []string{activeRoot, backupRoot} {
-		if err := exec.Command("explorer.exe", path).Start(); err != nil {
+		if err := openDirectory(path); err != nil {
 			return err
 		}
 	}
@@ -1874,12 +1889,14 @@ func (a *App) readyConn() (Connection, error) {
 
 func (a *App) remoteToolkitProbe(c Connection) (ToolkitProbe, error) {
 	command := "printf '%s\\n' " + shQuote(toolkitBegin) + "; " +
-		"probe_root=" + shQuote(remoteRoot) + "; [ -r \"$probe_root/TOOLKIT_VERSION\" ] || probe_root=" + shQuote(legacyRemoteRoot) + "; " +
+		"probe_root=" + shQuote(remoteRoot) + "; " +
+		"[ -r \"$probe_root/TOOLKIT_VERSION\" ] || probe_root=" + shQuote(legacyTextRemoteRoot) + "; " +
+		"[ -r \"$probe_root/TOOLKIT_VERSION\" ] || probe_root=" + shQuote(legacyRunbookRemoteRoot) + "; " +
 		"if [ -r \"$probe_root/TOOLKIT_VERSION\" ]; then " +
 		"version=''; IFS= read -r version < \"$probe_root/TOOLKIT_VERSION\" || true; version=${version%$'\\r'}; " +
 		"build=''; if [ -r \"$probe_root/TOOLKIT_BUILD_ID\" ]; then IFS= read -r build < \"$probe_root/TOOLKIT_BUILD_ID\" || true; build=${build%$'\\r'}; fi; " +
 		"revision=''; if [ -r \"$probe_root/TOOLKIT_BUILD_REVISION\" ]; then IFS= read -r revision < \"$probe_root/TOOLKIT_BUILD_REVISION\" || true; revision=${revision%$'\\r'}; fi; " +
-		"complete=0; test -x \"$probe_root/linux/00-auto-install-or-optimize.sh\" && test -x \"$probe_root/linux/18-panel-metadata.sh\" && test -x \"$probe_root/linux/19-prune-backups-current-config.sh\" && test -x \"$probe_root/linux/20-adaptive-performance.sh\" && test -x \"$probe_root/linux/21-traffic-status.sh\" && test -x \"$probe_root/linux/22-dismantle-managed-node.sh\" && test -s \"$probe_root/templates/cover-sites/MANIFEST.tsv\" && test -s \"$probe_root/templates/cover-sites/15-signal-runner.html\" && test -s \"$probe_root/TOOLKIT_BUILD_ID\" && complete=1; " +
+		"complete=0; test -x \"$probe_root/linux/00-auto-install-or-optimize.sh\" && test -x \"$probe_root/linux/18-panel-metadata.sh\" && test -x \"$probe_root/linux/19-prune-backups-current-config.sh\" && test -x \"$probe_root/linux/20-adaptive-performance.sh\" && test -x \"$probe_root/linux/21-traffic-status.sh\" && test -x \"$probe_root/linux/22-dismantle-managed-node.sh\" && test -x \"$probe_root/linux/23-ss2022-tcp.sh\" && test -s \"$probe_root/templates/cover-sites/MANIFEST.tsv\" && test -s \"$probe_root/templates/cover-sites/15-signal-runner.html\" && test -s \"$probe_root/TOOLKIT_BUILD_ID\" && complete=1; " +
 		"printf 'TOOLKIT_PRESENT=1\\nTOOLKIT_VERSION=%s\\nTOOLKIT_BUILD_ID=%s\\nTOOLKIT_BUILD_REVISION=%s\\nTOOLKIT_COMPLETE=%s\\n' \"$version\" \"$build\" \"$revision\" \"$complete\"; " +
 		"else printf 'TOOLKIT_PRESENT=0\\n'; fi; " +
 		"printf '%s\\n' " + shQuote(toolkitEnd)
@@ -2043,10 +2060,11 @@ func toolkitUninstallCommand() string {
 	}
 	script.WriteString(" )\n")
 	script.WriteString(`
-current_link='/opt/text-node-assistant-current'
-legacy_link='/opt/proxy-runbook-current'
-launcher='/usr/local/sbin/text-node'
-legacy_launcher='/usr/local/sbin/proxy-node'
+current_link='/opt/proxy-node-assistant-current'
+legacy_text_link='/opt/text-node-assistant-current'
+legacy_runbook_link='/opt/proxy-runbook-current'
+launcher='/usr/local/sbin/proxy-node'
+legacy_launcher='/usr/local/sbin/text-node'
 
 # Complete ownership/type validation happens before the first deletion.
 for target in "${toolkit_dirs[@]}"; do
@@ -2059,7 +2077,7 @@ for target in "${toolkit_archives[@]}"; do
     [ -f "$target" ] && [ ! -L "$target" ] || { printf 'REFUSED_UNEXPECTED_ARCHIVE=%s\n' "$target" >&2; exit 62; }
   fi
 done
-for link in "$current_link" "$legacy_link"; do
+for link in "$current_link" "$legacy_text_link" "$legacy_runbook_link"; do
 if [ -e "$link" ] || [ -L "$link" ]; then
   [ -L "$link" ] || { printf 'REFUSED_CURRENT_NOT_SYMLINK=%s\n' "$link" >&2; exit 63; }
   current_target="$(readlink -f "$link" 2>/dev/null || true)"
@@ -2074,17 +2092,17 @@ for command_path in "$launcher" "$legacy_launcher"; do
 if [ -e "$command_path" ] || [ -L "$command_path" ]; then
   [ -f "$command_path" ] && [ ! -L "$command_path" ] || { printf 'REFUSED_UNEXPECTED_LAUNCHER=%s\n' "$command_path" >&2; exit 65; }
   if [ "$command_path" = "$launcher" ]; then
-    grep -qF '/opt/text-node-assistant-current/linux/13-maintenance-menu.sh' "$command_path" || { printf 'REFUSED_UNMANAGED_LAUNCHER=%s\n' "$command_path" >&2; exit 66; }
+    grep -qF '/opt/proxy-node-assistant-current/linux/13-maintenance-menu.sh' "$command_path" || { printf 'REFUSED_UNMANAGED_LAUNCHER=%s\n' "$command_path" >&2; exit 66; }
   else
     # The compatibility launcher is an intentionally tiny forwarding wrapper.
     # Accept only the exact managed target; never remove an arbitrary user script.
-    grep -qF 'exec /usr/local/sbin/text-node "$@"' "$command_path" || { printf 'REFUSED_UNMANAGED_LAUNCHER=%s\n' "$command_path" >&2; exit 66; }
+    grep -qF 'exec /usr/local/sbin/proxy-node "$@"' "$command_path" || { printf 'REFUSED_UNMANAGED_LAUNCHER=%s\n' "$command_path" >&2; exit 66; }
   fi
 fi
 done
 
 printf 'PROXY_RUNBOOK_UNINSTALL_BEGIN\n'
-for link in "$current_link" "$legacy_link"; do
+for link in "$current_link" "$legacy_text_link" "$legacy_runbook_link"; do
   if [ -L "$link" ]; then rm -f -- "$link"; printf 'REMOVED=%s\n' "$link"; fi
 done
 for command_path in "$launcher" "$legacy_launcher"; do
@@ -2104,7 +2122,8 @@ for target in "${toolkit_archives[@]}"; do
 done
 
 [ ! -e "$current_link" ] && [ ! -L "$current_link" ]
-[ ! -e "$legacy_link" ] && [ ! -L "$legacy_link" ]
+[ ! -e "$legacy_text_link" ] && [ ! -L "$legacy_text_link" ]
+[ ! -e "$legacy_runbook_link" ] && [ ! -L "$legacy_runbook_link" ]
 [ ! -e "$launcher" ] && [ ! -L "$launcher" ]
 [ ! -e "$legacy_launcher" ] && [ ! -L "$legacy_launcher" ]
 for target in "${toolkit_dirs[@]}" "${toolkit_archives[@]}"; do

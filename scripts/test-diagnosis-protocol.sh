@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIAG="$ROOT/runbook/text-node-assistant-v0.9.5/linux/16-auto-diagnose.sh"
+DIAG="$ROOT/runbook/proxy-node-assistant-v1.0.0/linux/16-auto-diagnose.sh"
 
 # Keep this regression test offline. The diagnostic must still return a
 # complete protocol block even when its public-IP probe cannot use the network.

@@ -21,13 +21,13 @@ function Safe-Part([string]$Value) {
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $archiveCandidates = @(
-    (Join-Path $here "text-node-assistant-toolkit-v0.9.5.tar.gz"),
-    (Join-Path $here "..\..\assets\text-node-assistant-toolkit-v0.9.5.tar.gz")
+    (Join-Path $here "proxy-node-assistant-toolkit-v1.0.0.tar.gz"),
+    (Join-Path $here "..\..\assets\proxy-node-assistant-toolkit-v1.0.0.tar.gz")
 )
 $archive = $archiveCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 
 Write-Host "============================================================"
-Write-Host " TextNodeAssistant v0.9.5 reset line - Detect-first Installer"
+Write-Host " ProxyNodeAssistant v1.0.0 - Detect-first Installer"
 Write-Host "============================================================"
 Write-Host
 Write-Host "The shared package contains NO real VPS IP/domain/account/keys."
@@ -53,7 +53,7 @@ if ($needOpenSsh) {
     }
 }
 if ([string]::IsNullOrWhiteSpace($archive)) {
-    throw "Missing text-node-assistant-toolkit-v0.9.5.tar.gz. Keep the source tree intact or put the archive beside this launcher."
+    throw "Missing proxy-node-assistant-toolkit-v1.0.0.tar.gz. Keep the source tree intact or put the archive beside this launcher."
 }
 
 $VpsHost = Ask-Required "VPS IP or hostname"
@@ -86,7 +86,7 @@ New-Item -ItemType Directory -Force -Path $keyDir | Out-Null
 if (-not (Test-Path $keyPath)) {
     Write-Host
     Write-Host "[3/7] Generating a unique Ed25519 SSH client key for THIS node..."
-    & ssh-keygen -q -t ed25519 -f $keyPath -N '""' -C "text-node:${VpsHost}:$SshUser"
+    & ssh-keygen -q -t ed25519 -f $keyPath -N '""' -C "proxy-node:${VpsHost}:$SshUser"
     if ($LASTEXITCODE -ne 0) { throw "ssh-keygen failed." }
 } else {
     Write-Host
@@ -123,11 +123,11 @@ Write-Host "SSH_KEY_OK" -ForegroundColor Green
 
 Write-Host
 Write-Host "[5/7] Uploading toolkit with the verified SSH key..."
-& scp -i $keyPath -P $SshPort $archive "$SshUser@${VpsHost}:/tmp/text-node-assistant-toolkit-v0.9.5.tar.gz"
+& scp -i $keyPath -P $SshPort $archive "$SshUser@${VpsHost}:/tmp/proxy-node-assistant-toolkit-v1.0.0.tar.gz"
 if ($LASTEXITCODE -ne 0) { throw "SCP upload failed." }
 
 $isRoot = $SshUser -eq "root"
-$extract = 'mkdir -p /opt; rm -rf /opt/text-node-assistant-v0.9.5; tar -xzf /tmp/text-node-assistant-toolkit-v0.9.5.tar.gz -C /opt; bash /opt/text-node-assistant-v0.9.5/linux/00-bootstrap-toolkit.sh'
+$extract = 'mkdir -p /opt; rm -rf /opt/proxy-node-assistant-v1.0.0; tar -xzf /tmp/proxy-node-assistant-toolkit-v1.0.0.tar.gz -C /opt; bash /opt/proxy-node-assistant-v1.0.0/linux/00-bootstrap-toolkit.sh'
 $escapedUser = $SshUser.Replace("'","")
 
 Write-Host
@@ -141,7 +141,7 @@ if ($isRoot) {
 if ($LASTEXITCODE -ne 0) { throw "Remote bootstrap failed." }
 
 if (-not (Ask-Yes "Start adaptive install/optimization now?" $true)) {
-    Write-Host "Toolkit installed. Run it later with: sudo text-node"
+    Write-Host "Toolkit installed. Run it later with: sudo proxy-node"
     exit 0
 }
 
@@ -150,7 +150,7 @@ Write-Host "[7/7] Starting remote adaptive wizard."
 Write-Host "IMPORTANT: cover domain and Let's Encrypt email have NO defaults."
 Write-Host "You must type both yourself." -ForegroundColor Yellow
 Write-Host
-$wizard = "env PROXY_RUNBOOK_LOGIN_USER='$escapedUser' PROXY_RUNBOOK_SSH_KEY_INSTALLED=1 bash /opt/proxy-runbook-current/linux/00-auto-install-or-optimize.sh"
+$wizard = "env PROXY_RUNBOOK_LOGIN_USER='$escapedUser' PROXY_RUNBOOK_SSH_KEY_INSTALLED=1 bash /opt/proxy-node-assistant-current/linux/00-auto-install-or-optimize.sh"
 if ($isRoot) {
     & ssh -tt -i $keyPath -p $SshPort "$SshUser@$VpsHost" $wizard
 } else {

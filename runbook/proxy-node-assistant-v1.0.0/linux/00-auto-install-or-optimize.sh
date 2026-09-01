@@ -90,6 +90,9 @@ REALITY_PRODUCTION_PORT="${TNA_REALITY_PRODUCTION_PORT:-${TNA_REALITY_PORT:-443}
 REALITY_SHADOW_PORT="${TNA_REALITY_SHADOW_PORT:-24443}"
 CDN_ORIGIN_PORT="${TNA_CDN_ORIGIN_PORT:-${TNA_CDN_EDGE_ORIGIN_PORT:-8443}}"
 WARP_LOOPBACK_PORT="${TNA_WARP_LOOPBACK_PORT:-${TNA_WARP_PORT:-40000}}"
+# v1.0.0 formal SS2022 listener.  The old 30443 trial remains accepted when
+# explicitly supplied by an existing-node migration; it is not the new default.
+SS2022_TCP_PORT="${PNA_SS2022_PORT:-32443}"
 
 config_error() {
   red "INSTALL_PLAN_INVALID: $*"
@@ -108,6 +111,13 @@ case "$PLAN_CONFIRMED" in 0|1) ;; *) config_error "unknown TNA_PLAN_CONFIRMED='$
 [ "$REALITY_SHADOW_PORT" = 24443 ] || config_error "TNA_REALITY_SHADOW_PORT must be 24443"
 [ "$CDN_ORIGIN_PORT" = 8443 ] || config_error "TNA_CDN_ORIGIN_PORT must be 8443"
 [ "$WARP_LOOPBACK_PORT" = 40000 ] || config_error "TNA_WARP_LOOPBACK_PORT must be 40000"
+[[ "$SS2022_TCP_PORT" =~ ^[0-9]+$ ]] || config_error "PNA_SS2022_PORT must be numeric"
+[ "$SS2022_TCP_PORT" -ge 1024 ] && [ "$SS2022_TCP_PORT" -le 65535 ] || config_error "PNA_SS2022_PORT must be between 1024 and 65535"
+case "$SS2022_TCP_PORT" in
+  "$REALITY_PRODUCTION_PORT"|"$REALITY_SHADOW_PORT"|"$CDN_ORIGIN_PORT"|"$WARP_LOOPBACK_PORT")
+    config_error "PNA_SS2022_PORT conflicts with a coordinated listener"
+    ;;
+esac
 
 case "$RUN_LANG" in zh|en) ;; *) RUN_LANG=en;; esac
 GRAY_ROUTE=0
@@ -325,7 +335,7 @@ fi
 echo "INSTALL_PLAN_ROUTE=$ROUTE_MODE"
 echo "INSTALL_PLAN_PERFORMANCE=$PERFORMANCE_MODE"
 echo "INSTALL_PLAN_WARP=$WARP_MODE"
-echo "INSTALL_PLAN_PORTS=${REALITY_PRODUCTION_PORT}/${REALITY_SHADOW_PORT}/${CDN_ORIGIN_PORT}/${WARP_LOOPBACK_PORT}"
+echo "INSTALL_PLAN_PORTS=${REALITY_PRODUCTION_PORT}/${REALITY_SHADOW_PORT}/${CDN_ORIGIN_PORT}/${WARP_LOOPBACK_PORT}/${SS2022_TCP_PORT}"
 if [ "$GRAY_ROUTE" -eq 1 ]; then
   echo "GRAY_DOMAIN=$GRAY_DOMAIN"
   echo "GRAY_EMAIL=$(mask_email "$GRAY_EMAIL")"
@@ -762,6 +772,17 @@ if [ "$WARP_OK" -eq 1 ] && [ "$WARP_ROUTE_RECONCILE" -eq 1 ]; then
   fi
 fi
 
+step "SHADOWSOCKS 2022 TCP-ONLY"
+echo "SS2022_PORT=$SS2022_TCP_PORT"
+echo "SS2022_ALLOWLIST_POLICY=EXACT_IPV4_SOURCE_ONLY"
+bash "$ROOT/linux/23-ss2022-tcp.sh" ensure "$SS2022_TCP_PORT"
+SS2022_ALLOWED_COUNT="$(grep -c . /etc/proxy-runbook/ss2022/allowlist.txt 2>/dev/null || true)"
+if [ "${SS2022_ALLOWED_COUNT:-0}" -gt 0 ]; then
+  green "SS2022_TCP_READY_ALLOWLIST_COUNT=$SS2022_ALLOWED_COUNT"
+else
+  warn "SS2022_TCP_WAITING_ALLOWLIST — use client menu [19] to detect and explicitly approve the current public IPv4"
+fi
+
 step "FINAL CREDENTIAL HANDOFF"
 bash "$ROOT/linux/03d-export-panel-handoff.sh" "$NODE_MODE" || true
 if [ "$GRAY_ROUTE" -eq 1 ] || [ "$ROUTE_MODE" = keep ]; then
@@ -798,10 +819,10 @@ bash "$ROOT/linux/14-node-doctor.sh" || true
 echo
 green "AUTO_CONVERGENCE_FINISHED"
 echo "Maintenance command:"
-if command -v text-node >/dev/null 2>&1; then
-  echo "  text-node"
+if command -v proxy-node >/dev/null 2>&1; then
+  echo "  proxy-node"
 else
-  echo "  text-node (preferred; legacy compatibility command: proxy-node)"
+  echo "  proxy-node (preferred; legacy compatibility command: text-node)"
 fi
 echo
 echo "Route identities came only from this run's explicit input."

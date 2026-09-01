@@ -5,33 +5,32 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo "===== TEXT NODE ASSISTANT TOOLKIT BOOTSTRAP ====="
+echo "===== PROXY NODE ASSISTANT TOOLKIT BOOTSTRAP ====="
 echo "Toolkit: $ROOT"
 
 find "$ROOT/linux" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
 chmod 700 "$ROOT"/linux/*.sh
 
+ln -sfn "$ROOT" /opt/proxy-node-assistant-current
+# Compatibility aliases let v0.9.0/v0.9.5 clients finish a controlled upgrade.
 ln -sfn "$ROOT" /opt/text-node-assistant-current
-# Compatibility alias for v0.9.0 clients during a controlled upgrade. The
-# product uses the text-node path; the legacy link can be removed later only
-# after all local clients have been upgraded.
 ln -sfn "$ROOT" /opt/proxy-runbook-current
-
-cat > /usr/local/sbin/text-node <<'EOF'
-#!/usr/bin/env bash
-if [ "$(id -u)" -ne 0 ]; then
-  exec sudo /opt/text-node-assistant-current/linux/13-maintenance-menu.sh "$@"
-else
-  exec /opt/text-node-assistant-current/linux/13-maintenance-menu.sh "$@"
-fi
-EOF
-chmod 755 /usr/local/sbin/text-node
 
 cat > /usr/local/sbin/proxy-node <<'EOF'
 #!/usr/bin/env bash
-exec /usr/local/sbin/text-node "$@"
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo /opt/proxy-node-assistant-current/linux/13-maintenance-menu.sh "$@"
+else
+  exec /opt/proxy-node-assistant-current/linux/13-maintenance-menu.sh "$@"
+fi
 EOF
 chmod 755 /usr/local/sbin/proxy-node
+
+cat > /usr/local/sbin/text-node <<'EOF'
+#!/usr/bin/env bash
+exec /usr/local/sbin/proxy-node "$@"
+EOF
+chmod 755 /usr/local/sbin/text-node
 
 PUBLIC_NOW="$(curl -4fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
 echo "Detected public IPv4: ${PUBLIC_NOW:-UNKNOWN}"
@@ -53,4 +52,6 @@ bash "$ROOT/linux/00-preflight-vps.sh"
 echo
 echo "BOOTSTRAP_OK"
 echo "Maintenance command:"
+echo "  proxy-node"
+echo "Compatibility command:"
 echo "  text-node"

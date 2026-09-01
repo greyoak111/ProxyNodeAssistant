@@ -87,7 +87,13 @@ fail_apply() { local rc="$1"; trap - ERR INT TERM; rollback_pending >&2 || true;
 
 read_input() {
   local input="$1" value
-  case "$input" in /root/.config/text-node-assistant/runtime-input/*.env) ;; *) echo 'TNA_TOPOLOGY_ERROR=INPUT_PATH_INVALID' >&2; return 143;; esac
+  # v1.0.0 clients use the product-namespaced runtime directory.  Keep the
+  # v0.9.x path accepted as a migration compatibility lane; both paths are
+  # root-only, randomized, one-run files and are validated identically below.
+  case "$input" in
+    /root/.config/proxy-node-assistant/runtime-input/*.env|/root/.config/text-node-assistant/runtime-input/*.env) ;;
+    *) echo 'TNA_TOPOLOGY_ERROR=INPUT_PATH_INVALID' >&2; return 143 ;;
+  esac
   [ -f "$input" ] && [ ! -L "$input" ] && [ "$(stat -c '%u:%a' "$input")" = 0:600 ] || { echo 'TNA_TOPOLOGY_ERROR=INPUT_FILE_INVALID' >&2; return 143; }
   input_value() { awk -F= -v key="$1" '$1 == key {if (++n > 1) exit 2; print substr($0,index($0,"=")+1)} END{if(n != 1) exit 1}' "$input"; }
   [ "$(input_value TNA_CDN_ROUTE_INPUT_VERSION || true)" = 1 ] || { echo 'TNA_TOPOLOGY_ERROR=INPUT_VERSION_INVALID' >&2; return 143; }
@@ -107,10 +113,15 @@ apply_input() {
   begin_transaction
   trap 'fail_apply $?' ERR; trap 'fail_apply 130' INT; trap 'fail_apply 143' TERM
   TNA_TARGET_TOPOLOGY="$ROUTE_MODE" bash "$ROOT/linux/04f-xhttp-cdn-api.sh" create "$ORANGE_DOMAIN"
-  bash "$ROOT/linux/05h-ensure-cdn-certificate.sh" --input-file "$input"
   bash "$ROOT/linux/05f-cloudflare-origin-lock.sh" remove >/dev/null 2>&1 || true
   bash "$ROOT/linux/05f-cloudflare-origin-lock.sh" fetch
   bash "$ROOT/linux/05f-cloudflare-origin-lock.sh" apply
+  # The operator may already have an Origin Rule which rewrites every request
+  # for this hostname (including HTTP-01 on edge port 80) to origin port 8443.
+  # Apply the Cloudflare-only origin lock first so the certificate helper can
+  # safely expose a temporary plaintext ACME listener on public :8443.  The
+  # helper removes that listener before the permanent TLS/XHTTP vhost is staged.
+  bash "$ROOT/linux/05h-ensure-cdn-certificate.sh" --input-file "$input"
   TNA_TARGET_TOPOLOGY="$ROUTE_MODE" bash "$ROOT/linux/05e-cdn-xhttp-nginx.sh" stage "$ORANGE_DOMAIN" "$PUBLIC_IP"
   TNA_TARGET_TOPOLOGY="$ROUTE_MODE" bash "$ROOT/linux/05g-cdn-xhttp-validate.sh" --origin-ready "$ORANGE_DOMAIN" "$PUBLIC_IP"
   TNA_TARGET_TOPOLOGY="$ROUTE_MODE" bash "$ROOT/linux/05g-cdn-xhttp-validate.sh" --edge "$ORANGE_DOMAIN" "$PUBLIC_IP"

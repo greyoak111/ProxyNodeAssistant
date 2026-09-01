@@ -64,6 +64,48 @@ func TestInstallPlanRejectsUncoordinatedPorts(t *testing.T) {
 	}
 }
 
+func TestInstallPlanAcceptsCustomSS2022Port(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Ports.SS2022TCP = 31443
+	if err := plan.validate(); err != nil {
+		t.Fatalf("custom non-conflicting SS2022 port should validate: %v", err)
+	}
+}
+
+func TestInstallPlanUsesDedicatedFormalSS2022Default(t *testing.T) {
+	plan := defaultInstallPlan()
+	if plan.Ports.SS2022TCP != defaultSS2022TCPPort || plan.Ports.SS2022TCP == legacySS2022TrialPort {
+		t.Fatalf("formal SS2022 default must be dedicated from the trial port: %#v", plan.Ports)
+	}
+}
+
+func TestInstallPlanRejectsTrialPortForNewNode(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Ports.SS2022TCP = legacySS2022TrialPort
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("new plans must reject the legacy trial port, got %v", err)
+	}
+}
+
+func TestInstallPlanKeepsLegacyTrialPortOnlyForExistingKeep(t *testing.T) {
+	plan := defaultInstallPlan()
+	plan.Preferences.RouteMode = RouteKeep
+	plan.Preferences.Performance = PerformancePreserve
+	plan.Preferences.WarpMode = WarpPreserve
+	plan.Ports.SS2022TCP = legacySS2022TrialPort
+	if err := plan.validateFor(true); err != nil {
+		t.Fatalf("existing keep plan should be able to preserve a legacy trial port: %v", err)
+	}
+}
+
+func TestInstallPlanRejectsConflictingSS2022Port(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Ports.SS2022TCP = 443
+	if err := plan.validate(); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("expected an SS2022 port conflict, got %v", err)
+	}
+}
+
 func TestInstallPreferencesCannotSerializeRouteIdentity(t *testing.T) {
 	plan := validGrayPlan()
 	data, err := json.Marshal(plan)

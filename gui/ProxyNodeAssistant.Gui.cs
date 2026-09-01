@@ -22,12 +22,12 @@ using System.Windows.Threading;
 using System.Xml;
 using IOPath = System.IO.Path;
 
-[assembly: AssemblyTitle("TextNodeAssistant")]
-[assembly: AssemblyProduct("TextNodeAssistant")]
+[assembly: AssemblyTitle("ProxyNodeAssistant")]
+[assembly: AssemblyProduct("ProxyNodeAssistant")]
 [assembly: AssemblyDescription("Privacy-first graphical VPS node assistant")]
-[assembly: AssemblyVersion("0.9.5.100")]
-[assembly: AssemblyFileVersion("0.9.5.100")]
-[assembly: AssemblyInformationalVersion("0.9.5-reset-r100")]
+[assembly: AssemblyVersion("1.0.0.100")]
+[assembly: AssemblyFileVersion("1.0.0.100")]
+[assembly: AssemblyInformationalVersion("1.0.0-reset-r102")]
 
 namespace ProxyNodeAssistant.Gui
 {
@@ -54,7 +54,7 @@ namespace ProxyNodeAssistant.Gui
 
     internal sealed class MainController
     {
-        private const string Version = "0.9.5";
+        private const string Version = "1.0.0";
         private const string CliResourceName = "ProxyNodeAssistant.Cli.exe";
         private const string AskPassResourceName = "ProxyNodeAssistant.AskPass.exe";
         private const string TunnelSessionMarker = "PANEL_TUNNEL_SESSION_ACTIVE";
@@ -317,7 +317,7 @@ namespace ProxyNodeAssistant.Gui
             MessageBox.Show(window,
                 english ? "An operation is still running. Use Safe stop in the operation workspace before closing the app."
                         : "当前仍有操作正在执行。请先在操作工作区使用“安全停止”，再关闭程序。",
-                "TextNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Information);
+                "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private T Find<T>(string name) where T : class
@@ -335,7 +335,7 @@ namespace ProxyNodeAssistant.Gui
             string overridePath = Environment.GetEnvironmentVariable("PNA_HISTORY_PATH");
             if (!String.IsNullOrWhiteSpace(overridePath)) return IOPath.GetFullPath(overridePath.Trim());
             string root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string current = IOPath.Combine(root, "TextNodeAssistant", "recent-targets.tsv");
+            string current = IOPath.Combine(root, "ProxyNodeAssistant", "recent-targets.tsv");
             string legacy = IOPath.Combine(root, "ProxyNodeAssistant", "recent-targets.tsv");
             return File.Exists(current) || !File.Exists(legacy) ? current : legacy;
         }
@@ -452,7 +452,7 @@ namespace ProxyNodeAssistant.Gui
             {
                 MessageBox.Show(window,
                     (english ? "VPS history could not be changed:\n\n" : "无法修改 VPS 历史：\n\n") + error.Message,
-                    "TextNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
@@ -496,7 +496,7 @@ namespace ProxyNodeAssistant.Gui
             MessageBoxResult answer = MessageBox.Show(window,
                 english ? "Clear all VPS login history? Bound keys will not be changed."
                         : "确定清空全部 VPS 登录历史？已绑定 key 不会改变。",
-                "TextNodeAssistant", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                "ProxyNodeAssistant", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (answer != MessageBoxResult.Yes) return;
             string path = RecentTargetsPath();
             if (File.Exists(path)) File.Delete(path);
@@ -843,7 +843,7 @@ namespace ProxyNodeAssistant.Gui
                 MessageBox.Show(window,
                     english ? "The workflow is still running. Finish it or use Safe stop first."
                             : "当前流程仍在运行。请等待完成，或先使用“安全停止”。",
-                    "TextNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Information);
+                    "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
             operationWorkspace.Visibility = Visibility.Collapsed;
@@ -869,7 +869,7 @@ namespace ProxyNodeAssistant.Gui
                     MessageBox.Show(window,
                         english ? "Enter a valid VPS host, SSH username, and port."
                                 : "请填写有效的 VPS 地址、SSH 用户名和端口。",
-                        "TextNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
                 ComboBoxItem mode = connectionAuthMode.SelectedItem as ComboBoxItem;
@@ -879,7 +879,7 @@ namespace ProxyNodeAssistant.Gui
                     MessageBox.Show(window,
                         english ? "Choose Temporary password or Per-node key for this operation."
                                 : "请明确选择本次使用“临时密码”或“节点长期 key”。",
-                        "TextNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Information);
+                        "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
                 prefilledInput.Add(auth);
@@ -946,7 +946,7 @@ namespace ProxyNodeAssistant.Gui
             start.StandardErrorEncoding = new UTF8Encoding(false);
             start.EnvironmentVariables["SSH_ASKPASS"] = runtime.AskPassPath;
             start.EnvironmentVariables["SSH_ASKPASS_REQUIRE"] = "force";
-            start.EnvironmentVariables["DISPLAY"] = "TextNodeAssistant";
+            start.EnvironmentVariables["DISPLAY"] = "ProxyNodeAssistant";
             start.EnvironmentVariables["PNA_ASKPASS_PIPE"] = askPassPipeName;
             start.EnvironmentVariables["PNA_GUI_MODE"] = "1";
             if (prefilledInput.Count >= 4) start.EnvironmentVariables["PNA_PREFILLED_CONNECTION"] = "1";
@@ -1182,7 +1182,7 @@ namespace ProxyNodeAssistant.Gui
             MessageBoxResult result = MessageBox.Show(window,
                 english ? "Force stopping can interrupt remote cleanup. Use it only if the workflow is genuinely stuck. Continue?"
                         : "强制结束可能中断远端清理，仅在流程确实卡死时使用。仍要继续吗？",
-                "TextNodeAssistant", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+                "ProxyNodeAssistant", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
             if (result != MessageBoxResult.Yes) return;
             try
             {
@@ -1317,7 +1317,7 @@ namespace ProxyNodeAssistant.Gui
             if (!cancelled && String.IsNullOrEmpty(askPassPassword.Password))
             {
                 MessageBox.Show(window, english ? "Enter the VPS password." : "请输入 VPS 登录密码。",
-                    "TextNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Information);
+                    "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
             request.Cancelled = cancelled;
@@ -1349,8 +1349,8 @@ namespace ProxyNodeAssistant.Gui
         private RuntimeFiles EnsureRuntimeExtracted()
         {
             RuntimeFiles runtime = new RuntimeFiles();
-            runtime.CliPath = ExtractEmbeddedExecutable(CliResourceName, "TextNodeAssistant-v" + Version + "-engine", 1024 * 1024);
-            runtime.AskPassPath = ExtractEmbeddedExecutable(AskPassResourceName, "TextNodeAssistant-v" + Version + "-askpass", 4096);
+            runtime.CliPath = ExtractEmbeddedExecutable(CliResourceName, "ProxyNodeAssistant-v" + Version + "-engine", 1024 * 1024);
+            runtime.AskPassPath = ExtractEmbeddedExecutable(AskPassResourceName, "ProxyNodeAssistant-v" + Version + "-askpass", 4096);
             return runtime;
         }
 
@@ -1369,7 +1369,7 @@ namespace ProxyNodeAssistant.Gui
             }
             if (payload.Length < minimumBytes) throw new InvalidOperationException("Embedded runtime payload is unexpectedly small: " + resourceName);
             string hash = Sha256(payload);
-            string directory = IOPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TextNodeAssistant", "v" + Version);
+            string directory = IOPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ProxyNodeAssistant", "v" + Version);
             Directory.CreateDirectory(directory);
             string path = IOPath.Combine(directory, fileStem + "-" + hash.Substring(0, 12) + ".exe");
             if (File.Exists(path) && Sha256(File.ReadAllBytes(path)) == hash) return path;
@@ -1457,7 +1457,7 @@ namespace ProxyNodeAssistant.Gui
                             (english ? "Windows OpenSSH could not be installed and verified in one pass. The app will not retry in a loop.\n\n"
                                      : "Windows OpenSSH 未能一次性安装并验证；程序不会进入重复安装死循环。\n\n") +
                             (failure ?? (english ? "No usable OpenSSH suite was found." : "没有找到可用的完整 OpenSSH 套件。")),
-                            "TextNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Error);
+                            "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Error);
                         app.Shutdown(1);
                     }
                     else
@@ -1572,7 +1572,7 @@ namespace ProxyNodeAssistant.Gui
         private static string SettingsPath()
         {
             string root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string current = IOPath.Combine(root, "TextNodeAssistant", "settings.json");
+            string current = IOPath.Combine(root, "ProxyNodeAssistant", "settings.json");
             string legacy = IOPath.Combine(root, "ProxyNodeAssistant", "settings.json");
             if (!File.Exists(current) && File.Exists(legacy))
             {
@@ -2032,7 +2032,7 @@ namespace ProxyNodeAssistant.Gui
             }
             catch (Exception error)
             {
-                MessageBox.Show("TextNodeAssistant GUI could not start:\n\n" + error, "TextNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show("ProxyNodeAssistant GUI could not start:\n\n" + error, "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }

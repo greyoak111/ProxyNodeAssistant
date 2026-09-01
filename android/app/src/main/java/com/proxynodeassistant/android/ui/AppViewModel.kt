@@ -128,7 +128,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun copySecret(text: String) {
         val clipboard = getApplication<Application>().getSystemService(ClipboardManager::class.java)
-        val clip = ClipData.newPlainText("TextNodeAssistant secret", text)
+        val clip = ClipData.newPlainText("ProxyNodeAssistant secret", text)
         clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
         clipboard.setPrimaryClip(clip)
         _ui.value = _ui.value.copy(toast = tr("已复制；保存到密码管理器后请立即清空剪贴板", "Copied. Clear it after saving."))

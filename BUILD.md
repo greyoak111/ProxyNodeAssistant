@@ -1,17 +1,17 @@
-# TextNodeAssistant v0.9.5 构建、验证与发行
+# ProxyNodeAssistant v1.0.0 构建、验证与发行
 
-本文只描述当前的 **v0.9.5 精简重置线**。它以 v0.9.0 的可靠 SSH 运维主链路为基础，已经退役旧过度版 v0.9.5 的设备准入、controller、邀请、网盘和本机 admin。构建产物不得重新暴露这些入口。
+本文只描述当前的 **v1.0.0 精简重置线**。它以 v0.9.0 的可靠 SSH 运维主链路为基础，已经退役此前实验版引入的设备准入、controller、邀请、网盘和本机 admin。构建产物不得重新暴露这些入口。
 
 ## 1. 版本与目录基线
 
-- 产品名：`TextNodeAssistant`
-- 对外版本：`0.9.5`
-- Windows GUI：`dist/TextNodeAssistant-v0.9.5-*.exe`
-- Linux 工具包目录：`runbook/text-node-assistant-v0.9.5`
-- Linux 工具包归档：`assets/text-node-assistant-toolkit-v0.9.5.tar.gz`
-- Android APK：`android/dist/TextNodeAssistant-v0.9.5-android-universal.apk`
+- 产品名：`ProxyNodeAssistant`
+- 对外版本：`1.0.0`
+- Windows GUI：`dist/ProxyNodeAssistant-v1.0.0-*.exe`
+- Linux 工具包目录：`runbook/proxy-node-assistant-v1.0.0`
+- Linux 工具包归档：`assets/proxy-node-assistant-toolkit-v1.0.0.tar.gz`
+- Android APK：`android/dist/ProxyNodeAssistant-v1.0.0-android-universal.apk`
 
-应用、内嵌工具包、Android 资产和发行说明必须同时来自同一次源码状态。不要用旧 v0.9.0 EXE、旧过度版 v0.9.5 工具包或手工替换过的归档拼装发行包。
+应用、内嵌工具包、Android 资产和发行说明必须同时来自同一次源码状态。不要用旧 v0.9.0 EXE、旧过度版 v1.0.0 工具包或手工替换过的归档拼装发行包。
 
 ## 2. Windows 构建环境
 
@@ -20,12 +20,13 @@
 - Windows 10/11；
 - PowerShell 5.1 或更新版本；
 - Go 1.23 或更新版本；
+- Python 3.9 或更新版本（仅使用标准库，用于生成确定性 `tar.gz` 归档）；
 - Windows 自带 `tar.exe`；
 - .NET Framework 4.x 的 C# 编译器和 WPF 程序集；
 - Git Bash 或其他可运行 Bash 的环境，用于 Shell 静态测试；
 - 构建 Android 时还需要 JDK 17、Gradle 和 Android SDK。加 `-Provision` 后，Android 脚本会在项目内的 `.android-tools` 中准备受控工具链。
 
-`scripts/ensure-go.ps1` 可用于查找或准备 Go。构建脚本也支持现有的 `PNA_GO_EXE`、`PNA_GOFMT_EXE`、`PNA_BASH_EXE` 和 `PNA_CSC_EXE` 环境覆盖；这些 `PNA_*` 名称仅是兼容实现细节，不是产品名。
+`scripts/ensure-go.ps1` 可用于查找或准备 Go。构建脚本也支持现有的 `PNA_GO_EXE`、`PNA_GOFMT_EXE`、`PNA_BASH_EXE`、`PNA_CSC_EXE` 和 `PNA_PYTHON_EXE` 环境覆盖；这些 `PNA_*` 名称仅是兼容实现细节，不是产品名。
 
 ## 3. 推荐：一次构建全部正式产物
 
@@ -46,10 +47,10 @@ build-all-pc.bat
 默认正式发行目录是：
 
 ```text
-outputs/TextNodeAssistant-v0.9.5-official
+outputs/ProxyNodeAssistant-v1.0.0-official
 ```
 
-批处理标题和目标文件必须明确显示 `TextNodeAssistant v0.9.5 reset line`。如果本地还有写着 `ProxyNodeAssistant v0.9.0` 的旧批处理副本，不要使用。
+批处理标题和目标文件必须明确显示 `ProxyNodeAssistant v1.0.0 reset line`。如果本地还有写着 `ProxyNodeAssistant v0.9.0` 的旧批处理副本，不要使用。
 
 ## 4. 分架构构建
 
@@ -72,8 +73,8 @@ x86 二进制可在兼容的 x64 Windows 上真实运行验证。ARM64 二进制
 
 首次架构构建会：
 
-1. 重建 `runbook/text-node-assistant-v0.9.5/SHA256SUMS.txt`；
-2. 重建 `assets/text-node-assistant-toolkit-v0.9.5.tar.gz`；
+1. 重建 `runbook/proxy-node-assistant-v1.0.0/SHA256SUMS.txt`；
+2. 重建 `assets/proxy-node-assistant-toolkit-v1.0.0.tar.gz`；
 3. 执行以下 Bash 校验：
 
    ```text
@@ -107,29 +108,49 @@ x86 二进制可在兼容的 x64 Windows 上真实运行验证。ARM64 二进制
 结果位于 `dist`：
 
 ```text
-TextNodeAssistant-v0.9.5-win64.exe
-TextNodeAssistant-v0.9.5-win32.exe
-TextNodeAssistant-v0.9.5-win-arm64.exe
-TextNodeAssistant-v0.9.5-cli-win64.exe
-TextNodeAssistant-v0.9.5-cli-win32.exe
-TextNodeAssistant-v0.9.5-cli-win-arm64.exe
-TextNodeAssistant-v0.9.5-askpass-win64.exe
-TextNodeAssistant-v0.9.5-askpass-win32.exe
-TextNodeAssistant-v0.9.5-askpass-win-arm64.exe
-TextNodeAssistant-v0.9.5-gui-preview.png
-TextNodeAssistant-v0.9.5-workflow-preview.png
+ProxyNodeAssistant-v1.0.0-win64.exe
+ProxyNodeAssistant-v1.0.0-win32.exe
+ProxyNodeAssistant-v1.0.0-win-arm64.exe
+ProxyNodeAssistant-v1.0.0-cli-win64.exe
+ProxyNodeAssistant-v1.0.0-cli-win32.exe
+ProxyNodeAssistant-v1.0.0-cli-win-arm64.exe
+ProxyNodeAssistant-v1.0.0-askpass-win64.exe
+ProxyNodeAssistant-v1.0.0-askpass-win32.exe
+ProxyNodeAssistant-v1.0.0-askpass-win-arm64.exe
+ProxyNodeAssistant-v1.0.0-gui-preview.png
+ProxyNodeAssistant-v1.0.0-workflow-preview.png
 ```
 
 对外发布前三个 GUI EXE；`cli` 和 `askpass` 是构建/高级排障中间件，不作为普通用户入口。
 
+## 7. macOS / Linux CLI 构建
+
+macOS 与 Linux 提供同一套无 GUI 的 CLI 工作流（SSH、诊断、SS2022 白名单等）。
+在 Windows 构建机上可交叉编译四个目标：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-unix.ps1
+```
+
+也可以只构建一个系统或架构：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-unix.ps1 -Target linux -Architecture arm64
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-unix.ps1 -Target darwin -Architecture amd64
+```
+
+产物位于 `dist/ProxyNodeAssistant-v1.0.0-cli-<os>-<arch>`，同时生成对应 `.tar.gz` 和 `SHA256SUMS-unix-v1.0.0.txt`。归档由 `scripts/create_deterministic_tar.py` 生成：gzip 与 TarInfo 的时间固定为 epoch 0，属主固定为 `root:root`，目录和脚本/二进制使用 `0755`（普通资料使用 `0644`）；构建脚本会立即复核这些模式。这样从 Windows 构建机生成的包在 Linux/macOS 解包后可直接执行。 这些 CLI 不携带 WPF/AskPass；运行主机需自行安装 `ssh`、`scp`、`ssh-keygen`、`ssh-keyscan`。macOS/Linux 的 `[14]` 代理环境操作只影响本工具及其子进程，不能替父 shell 持久修改环境变量。
+
+Unix 凭据与交互边界：macOS 使用系统 Keychain 的 `security`，Linux 使用 Secret Service 的 `secret-tool`；若命令或后台不可用，菜单会返回带安装提示的明确错误，不会回退到明文文件。Linux 写入通过 `secret-tool` 的标准输入传递秘密；macOS `security` 的非交互写入接口只有 `-w` 参数，工具不会把它写入日志或文件，但该系统 CLI 本身可能在短暂进程参数中暴露值，单用户本机使用更合适。Unix 终端秘密提示通过 `/dev/tty` 配合 `stty -echo`/`stty echo`，读取结束或出错都会恢复回显。
+
 图标源文件：
 
 ```text
-gui/TextNodeAssistant-v0.9.5-app-icon.png
-gui/TextNodeAssistant-v0.9.5.ico
+gui/ProxyNodeAssistant-v1.0.0-app-icon.png
+gui/ProxyNodeAssistant-v1.0.0.ico
 ```
 
-## 7. Android 构建与签名
+## 8. Android 构建与签名
 
 在仓库根目录运行：
 
@@ -145,7 +166,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\android\build-signed-relea
 正式结果：
 
 ```text
-android/dist/TextNodeAssistant-v0.9.5-android-universal.apk
+android/dist/ProxyNodeAssistant-v1.0.0-android-universal.apk
 ```
 
 Android 构建会核对内嵌工具包版本、内部 revision、顶层目录、必要安装入口和归档 SHA-256，避免 APK 携带旧工具包。
@@ -164,12 +185,12 @@ pna-v0.9.0-vault
 
 它们仅是 Android 原位升级签名和旧加密数据解密的兼容边界，不代表当前产品仍叫 ProxyNodeAssistant。改名、删除或重建签名身份会使已安装 APK 无法原位升级；改动 vault alias 会使旧加密数据不可读。应离线备份 keystore 及其 DPAPI 密码文件，不得提交仓库。
 
-## 8. 发行打包
+## 9. 发行打包
 
 先完成三种 Windows GUI 与已签名 Android APK，再运行：
 
 ```powershell
-$env:PNA_PACKAGE_OUTPUT = (Join-Path $PWD 'outputs\TextNodeAssistant-v0.9.5-official')
+$env:PNA_PACKAGE_OUTPUT = (Join-Path $PWD 'outputs\ProxyNodeAssistant-v1.0.0-official')
 powershell -NoProfile -ExecutionPolicy Bypass -File .\package.ps1
 Remove-Item Env:PNA_PACKAGE_OUTPUT
 ```
@@ -177,28 +198,28 @@ Remove-Item Env:PNA_PACKAGE_OUTPUT
 `package.ps1` 会拒绝缺少 EXE、APK、工具包、预览图、图标或说明书的半成品发行。正式目录包含：
 
 ```text
-TextNodeAssistant-v0.9.5-win64.exe
-TextNodeAssistant-v0.9.5-win32.exe
-TextNodeAssistant-v0.9.5-win-arm64.exe
-TextNodeAssistant-v0.9.5-android-universal.apk
-text-node-assistant-toolkit-v0.9.5.tar.gz
-TextNodeAssistant-v0.9.5-便携包.zip
-TextNodeAssistant-v0.9.5-source.zip
-TextNodeAssistant-v0.9.5-完整使用说明书.md
-TextNodeAssistant-v0.9.5-从零部署教程.md
-TextNodeAssistant-v0.9.5-更新说明.md
-TextNodeAssistant-v0.9.5-android-manual-zh-CN.md
-TextNodeAssistant-v0.9.5-gui-preview.png
-TextNodeAssistant-v0.9.5-workflow-preview.png
-TextNodeAssistant-v0.9.5-app-icon.png
-TextNodeAssistant-v0.9.5.ico
-SHA256SUMS-v0.9.5.txt
-SHA256SUMS-GITHUB-v0.9.5.txt
+ProxyNodeAssistant-v1.0.0-win64.exe
+ProxyNodeAssistant-v1.0.0-win32.exe
+ProxyNodeAssistant-v1.0.0-win-arm64.exe
+ProxyNodeAssistant-v1.0.0-android-universal.apk
+proxy-node-assistant-toolkit-v1.0.0.tar.gz
+ProxyNodeAssistant-v1.0.0-便携包.zip
+ProxyNodeAssistant-v1.0.0-source.zip
+ProxyNodeAssistant-v1.0.0-完整使用说明书.md
+ProxyNodeAssistant-v1.0.0-从零部署教程.md
+ProxyNodeAssistant-v1.0.0-更新说明.md
+ProxyNodeAssistant-v1.0.0-android-manual-zh-CN.md
+ProxyNodeAssistant-v1.0.0-gui-preview.png
+ProxyNodeAssistant-v1.0.0-workflow-preview.png
+ProxyNodeAssistant-v1.0.0-app-icon.png
+ProxyNodeAssistant-v1.0.0.ico
+SHA256SUMS-v1.0.0.txt
+SHA256SUMS-GITHUB-v1.0.0.txt
 ```
 
-GitHub 发布时，中文文件会使用 `portable.zip`、`release-notes-zh-CN.md`、`beginner-guide-zh-CN.md` 和 `manual-zh-CN.md` 等 ASCII 映射；以 `SHA256SUMS-GITHUB-v0.9.5.txt` 为准。
+GitHub 发布时，中文文件会使用 `portable.zip`、`release-notes-zh-CN.md`、`beginner-guide-zh-CN.md` 和 `manual-zh-CN.md` 等 ASCII 映射；以 `SHA256SUMS-GITHUB-v1.0.0.txt` 为准。
 
-## 9. 旧内部名称
+## 10. 旧内部名称
 
 源码仍可能出现以下兼容实现名：
 
@@ -207,9 +228,9 @@ GitHub 发布时，中文文件会使用 `portable.zip`、`release-notes-zh-CN.m
 - `PNA_*` 环境变量；
 - 上述 Android 签名目录、alias、DN 与 vault alias。
 
-这些不是对外产品名，也不表示旧功能仍存在。资源键和标识符只有在确认不会破坏资源装载、升级签名、既有密钥或旧加密数据后才能迁移。用户可见标题、文件名、目录、说明书和新远端工具包必须统一为 `TextNodeAssistant v0.9.5`。
+这些不是对外产品名，也不表示旧功能仍存在。资源键和标识符只有在确认不会破坏资源装载、升级签名、既有密钥或旧加密数据后才能迁移。用户可见标题、文件名、目录、说明书和新远端工具包必须统一为 `ProxyNodeAssistant v1.0.0`。
 
-## 10. 发行前检查表
+## 11. 发行前检查表
 
 - [ ] `go test ./...`、`go vet ./...` 和全部静态脚本通过；
 - [ ] x64/x86 运行时冒烟通过，ARM64 的验证范围如实标注；
@@ -220,5 +241,5 @@ GitHub 发布时，中文文件会使用 `portable.zip`、`release-notes-zh-CN.m
 - [ ] 安装模式必须显式选择：已有节点才允许 `0 keep`，以及 `1 灰云 / 2 橙云 / 3 双路`；
 - [ ] 预览后必须输入精确 `APPLY` 才能上传或改远端；
 - [ ] 无任何真实 VPS IP、域名、邮箱、密码、私钥、API key 或本机运行态凭据进入源码和发行包；
-- [ ] `SHA256SUMS-v0.9.5.txt` 与 `SHA256SUMS-GITHUB-v0.9.5.txt` 都能校验对应文件；
+- [ ] `SHA256SUMS-v1.0.0.txt` 与 `SHA256SUMS-GITHUB-v1.0.0.txt` 都能校验对应文件；
 - [ ] 在干净目录解压便携包和源码包，再做一次名称、隐私和启动抽查。

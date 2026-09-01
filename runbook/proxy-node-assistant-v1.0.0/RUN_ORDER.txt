@@ -1,6 +1,6 @@
-TextNodeAssistant v0.9.5 重置线 — 最短顺序
+ProxyNodeAssistant v1.0.0 重置线 — 最短顺序
 
-1. 运行 TextNodeAssistant-v0.9.5-win64.exe（或完整解压便携包）；菜单 [1] 是唯一安装/升级/线路施工入口
+1. 运行 ProxyNodeAssistant-v1.0.0-win64.exe（或完整解压便携包）；菜单 [1] 是唯一安装/升级/线路施工入口
 2. 在菜单 [1] 的二级菜单明确选：临时密码会话，或节点专属长期 SSH key
 3. 每次手输本次 VPS IP/hostname；不会暗中复用上次 VPS
 4. 手输 SSH user

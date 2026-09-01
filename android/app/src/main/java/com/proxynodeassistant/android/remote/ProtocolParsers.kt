@@ -36,7 +36,7 @@ object ProtocolParsers {
         val payload = markedBlock(value, HANDOFF_BEGIN, HANDOFF_END)
         val values = kv(payload)
         require(values["HANDOFF_RUN_STARTED"].orEmpty().isNotBlank()) { "handoff run marker is missing" }
-        val useful = listOf("PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_API_TOKEN", "VPS_LOGIN_PASSWORD", "UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY", "VLESS_LINK", "COVER_DOMAIN", "PUBLIC_IP_AT_HANDOFF")
+        val useful = listOf("PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_API_TOKEN", "VPS_LOGIN_PASSWORD", "UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY", "VLESS_LINK", "SS2022_LINK", "SS2022_PASSWORD", "SS2022_PORT", "COVER_DOMAIN", "PUBLIC_IP_AT_HANDOFF")
         require(useful.any { values[it].orEmpty().isNotBlank() }) { "handoff contains no verified credential or runtime field" }
         return payload
     }

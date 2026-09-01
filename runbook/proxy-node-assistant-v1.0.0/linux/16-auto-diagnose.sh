@@ -60,6 +60,32 @@ else
   add_issue PORT443_MISSING ERROR "TCP 443 没有监听；正式代理入口不可用" "TCP 443 has no listener; production proxy entry is unavailable" CHECK_XRAY false
 fi
 
+if [ -x "$ROOT/linux/23-ss2022-tcp.sh" ]; then
+  SS_STATUS="$(bash "$ROOT/linux/23-ss2022-tcp.sh" status 2>/dev/null || true)"
+  SS_PRESENT="$(awk -F= '$1=="PRESENT"{print $2}' <<<"$SS_STATUS" | sed -n '1p')"
+  SS_ACTIVE="$(awk -F= '$1=="ACTIVE"{print $2}' <<<"$SS_STATUS" | sed -n '1p')"
+  SS_LISTENER="$(awk -F= '$1=="LISTENER"{print $2}' <<<"$SS_STATUS" | sed -n '1p')"
+  SS_FIREWALL="$(awk -F= '$1=="FIREWALL"{print $2}' <<<"$SS_STATUS" | sed -n '1p')"
+  SS_ALLOWED="$(awk -F= '$1=="ALLOWLIST_COUNT"{print $2}' <<<"$SS_STATUS" | sed -n '1p')"
+  if [ "$SS_PRESENT/$SS_ACTIVE/$SS_LISTENER/$SS_FIREWALL" = "1/1/1/1" ]; then
+    pass SS2022_SERVICE "SS2022 TCP-only 服务、监听和来源白名单防火墙均正常" \
+      "SS2022 TCP-only service, listener, and source allowlist firewall are healthy"
+  else
+    add_issue SS2022_SERVICE_BAD ERROR "SS2022 服务/监听/来源防火墙不完整" \
+      "SS2022 service/listener/source firewall is incomplete" REPAIR_SS2022 true
+  fi
+  if [ "${SS_ALLOWED:-0}" -gt 0 ] 2>/dev/null; then
+    pass SS2022_ALLOWLIST "SS2022 已配置 ${SS_ALLOWED} 个精确 IPv4 来源" \
+      "SS2022 has ${SS_ALLOWED} exact IPv4 source entries"
+  else
+    add_issue SS2022_ALLOWLIST_EMPTY WARN "SS2022 尚无允许来源；请在客户端菜单中检测当前公网 IP 后明确添加" \
+      "SS2022 has no allowed source; explicitly detect and add the current public IP from the client menu" ADD_SS2022_SOURCE false
+  fi
+else
+  add_issue SS2022_MODULE_MISSING ERROR "SS2022 管理模块缺失；需要升级工具包" \
+    "The SS2022 management module is missing; upgrade the toolkit" RECONVERGE false
+fi
+
 L8443="$(ss -lntp 2>/dev/null | grep -E ':8443[[:space:]]' || true)"
 if echo "$L8443" | grep -q '127.0.0.1:8443' && ! echo "$L8443" | grep -qE '0\.0\.0\.0:8443|\[::\]:8443'; then
   pass PORT8443 "8443 只监听 127.0.0.1，符合预期" "8443 is bound only to 127.0.0.1"

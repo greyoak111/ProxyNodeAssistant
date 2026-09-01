@@ -23,6 +23,19 @@ systemctl is-active --quiet fail2ban 2>/dev/null && pass "fail2ban active" || wa
 
 ss -lntp 2>/dev/null | grep -E ':443[[:space:]]' >/dev/null && pass "TCP 443 has a listener" || warning "TCP 443 has no listener"
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -x "$ROOT/linux/23-ss2022-tcp.sh" ]; then
+  SS_STATUS="$(bash "$ROOT/linux/23-ss2022-tcp.sh" status 2>/dev/null || true)"
+  if grep -q '^ACTIVE=1$' <<<"$SS_STATUS" && grep -q '^LISTENER=1$' <<<"$SS_STATUS" && grep -q '^FIREWALL=1$' <<<"$SS_STATUS"; then
+    SS_PORT_NOW="$(awk -F= '$1=="PORT"{print $2}' <<<"$SS_STATUS" | sed -n '1p')"
+    pass "SS2022 TCP-only service/listener/firewall healthy on ${SS_PORT_NOW:-unknown}"
+  else
+    warning "SS2022 service/listener/firewall is incomplete"
+  fi
+else
+  warning "SS2022 management module missing"
+fi
+
 L8443="$(ss -lntp 2>/dev/null | grep -E ':8443[[:space:]]' || true)"
 if echo "$L8443" | grep -q '127.0.0.1:8443' && ! echo "$L8443" | grep -qE '0\.0\.0\.0:8443|\[::\]:8443'; then
   pass "8443 is localhost-only"

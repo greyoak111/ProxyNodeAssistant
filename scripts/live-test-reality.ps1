@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$KnownHostsPath,
     [Parameter(Mandatory = $true)][string]$V2rayNArchive,
     [int]$RemotePortOverride = 0,
-    [string]$RuntimeDirectory = (Join-Path $env:TEMP "TextNodeAssistant-Reality-Live-Test")
+    [string]$RuntimeDirectory = (Join-Path $env:TEMP "ProxyNodeAssistant-Reality-Live-Test")
 )
 
 $ErrorActionPreference = "Stop"

@@ -1,4 +1,4 @@
-# TextNodeAssistant v0.9.5 从零部署教程
+# ProxyNodeAssistant v1.0.0 从零部署教程
 
 本教程从一台可 SSH 登录的 Ubuntu/Debian VPS 开始，直到真实客户端通过 Reality、Cloudflare/XHTTP 或双路访问互联网。
 
@@ -35,7 +35,7 @@
 - 当前登录密码或已安装的 key；
 - Console/VNC/救援入口位置。
 
-这些信息只保存在你自己的密码管理器。TextNodeAssistant 的发行包不会内置它们。
+这些信息只保存在你自己的密码管理器。ProxyNodeAssistant 的发行包不会内置它们。
 
 ### 1.3 本机先验证 SSH
 
@@ -117,9 +117,9 @@ ssh -p <SSH端口> <SSH用户>@<VPS公网IPv4>
 选择与系统架构匹配的正式文件：
 
 ```text
-TextNodeAssistant-v0.9.5-win64.exe
-TextNodeAssistant-v0.9.5-win32.exe
-TextNodeAssistant-v0.9.5-win-arm64.exe
+ProxyNodeAssistant-v1.0.0-win64.exe
+ProxyNodeAssistant-v1.0.0-win32.exe
+ProxyNodeAssistant-v1.0.0-win-arm64.exe
 ```
 
 启动后程序会检查 OpenSSH。若系统没有，它只执行一次安装尝试和一次完整验证；失败后会告诉你缺哪个组件，不会不断重启安装。
@@ -301,7 +301,7 @@ APPLY
 
 不要先拆节点，也不要先删除旧工具包。
 
-1. 使用重置版 v0.9.5；
+1. 使用重置版 v1.0.0；
 2. 进入 `[1]`；
 3. 选择当前可用的密码或长期 key；
 4. 程序识别旧版本并声明升级；
@@ -312,9 +312,9 @@ APPLY
 
 升级不是重装系统，也不应重复创建已有同构建节点。
 
-## 11. 旧实验版 v0.9.5 重置
+## 11. 旧实验版 v1.0.0 重置
 
-旧实验版和本版都显示 v0.9.5，所以不能只比较可见版本。重置版内部 revision 更高，菜单 `[1]` 会执行受控替换：
+旧实验版和本版都显示 v1.0.0，所以不能只比较可见版本。重置版内部 revision 更高，菜单 `[1]` 会执行受控替换：
 
 - 退役设备准入/controller/邀请服务；
 - 退役网盘/Copyparty/local-admin 程序和入口；
@@ -357,7 +357,7 @@ APPLY
 
 ### 为什么端口固定，不能随便填
 
-Reality、Nginx、Xray、UFW、订阅、诊断、回滚和拆除必须同时理解同一端口。v0.9.5 只开放完整联调的端口组，避免“面板显示一个端口，订阅却导出另一个”的分裂状态。
+Reality、Nginx、Xray、UFW、订阅、诊断、回滚和拆除必须同时理解同一端口。v1.0.0 只开放完整联调的端口组，避免“面板显示一个端口，订阅却导出另一个”的分裂状态。
 
 ### 为什么橙云入站内部端口不是 8443
 

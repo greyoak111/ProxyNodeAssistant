@@ -194,7 +194,7 @@ func (a *App) deployOptimize() error {
 	case ToolkitSameIncomplete:
 		if legacyV095Audit {
 			updateSameVersionBuild = true
-			a.println(a.msg("检测到旧产品线 v0.9.5 的不完整构建；其内部修订低于重置线，将允许一次受控替换并退役设备门限/网盘。", "An incomplete build from the old v0.9.5 product line was detected; its internal revision predates the reset line, so one controlled replacement and feature retirement is allowed."))
+			a.println(a.msg("检测到旧产品线 v1.0.0 的不完整构建；其内部修订低于重置线，将允许一次受控替换并退役设备门限/网盘。", "An incomplete build from the old v1.0.0 product line was detected; its internal revision predates the reset line, so one controlled replacement and feature retirement is allowed."))
 		} else {
 			return fmt.Errorf(a.msg(
 				"远端已有重置线同版本 v%s，但文件不完整；为防止循环重装，本次拒绝覆盖。请先运行 [13]，确认卸载后再回 [1]",
@@ -221,7 +221,16 @@ func (a *App) deployOptimize() error {
 	} else {
 		a.println(a.msg("未检测到已安装节点：必须明确选择灰云、橙云或双路之一。", "No installed node was detected: explicitly choose gray, orange, or dual."))
 	}
-	plan, err := a.collectInstallPlan(existingNode)
+	existingSSPort, err := a.existingSS2022Port(c)
+	if err != nil {
+		return fmt.Errorf(a.msg("无法只读识别现有 SS2022 端口：%w。没有上传任何东西。", "Could not inspect the existing SS2022 port read-only: %w. Nothing was uploaded."), err)
+	}
+	if existingSSPort > 0 {
+		a.println(fmt.Sprintf(a.msg("检测到现有 SS2022 TCP 端口 %d；预览默认保持它，只有明确输入新端口才迁移。", "Existing SS2022 TCP port %d detected; the preview will preserve it by default and migrate only on an explicit new-port choice."), existingSSPort))
+	} else {
+		a.println(a.msg("未检测到现有 SS2022 监听；新部署预览默认使用正式端口 32443。", "No existing SS2022 listener was detected; a fresh deployment preview defaults to the formal port 32443."))
+	}
+	plan, err := a.collectInstallPlan(existingNode, existingSSPort)
 	if err != nil {
 		return err
 	}
@@ -319,12 +328,12 @@ func (a *App) uninstallRemoteToolkit() error {
 		return err
 	}
 	a.println(a.msg(
-		"此操作只卸载 TextNodeAssistant 上传的远端工具包程序。",
-		"This removes only the remote toolkit program uploaded by TextNodeAssistant.",
+		"此操作只卸载 ProxyNodeAssistant 上传的远端工具包程序。",
+		"This removes only the remote toolkit program uploaded by ProxyNodeAssistant.",
 	))
 	a.println(a.msg(
-		"会删除：/opt 下已知旧版及重置版 v0.9.5 工具包、兼容链接、text-node/proxy-node 命令和对应 /tmp 上传残留。",
-		"It removes known legacy and reset-v0.9.5 toolkit directories under /opt, compatibility links, text-node/proxy-node launchers, and matching /tmp upload remnants.",
+		"会删除：/opt 下已知旧版及重置版 v1.0.0 工具包、兼容链接、text-node/proxy-node 命令和对应 /tmp 上传残留。",
+		"It removes known legacy and reset-v1.0.0 toolkit directories under /opt, compatibility links, text-node/proxy-node launchers, and matching /tmp upload remnants.",
 	))
 	a.println(a.msg(
 		"不会删除：x-ui/Xray、Nginx、WARP、节点配置、凭据、证书或灾备。卸载后只有菜单 [1] 可以重新安装内嵌包。",
@@ -380,7 +389,7 @@ func (a *App) downloadDismantleRescue(c Connection, remotePath string) (string, 
 	if err != nil {
 		return "", err
 	}
-	downloadDir := filepath.Join(home, "Downloads", "TextNodeAssistant-Rescue")
+	downloadDir := filepath.Join(home, "Downloads", "ProxyNodeAssistant-Rescue")
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
 		return "", err
 	}
@@ -487,7 +496,7 @@ func (a *App) dismantleManagedNode() error {
 			return fmt.Errorf("remote dismantle returned success but marker %s is missing; rescue=%s", marker, localArchive)
 		}
 	}
-	verify := a.rootCapture(c, "set -e; test ! -e /opt/text-node-assistant-current; test ! -e /opt/proxy-runbook-current; test ! -e /etc/proxy-runbook; test ! -e /root/.config/proxy-runbook; printf 'PNA_POST_DISMANTLE_VERIFY_OK\\n'")
+	verify := a.rootCapture(c, "set -e; test ! -e /opt/proxy-node-assistant-current; test ! -e /opt/proxy-runbook-current; test ! -e /etc/proxy-runbook; test ! -e /root/.config/proxy-runbook; printf 'PNA_POST_DISMANTLE_VERIFY_OK\\n'")
 	if !verify.OK() || !strings.Contains(verify.Stdout, "PNA_POST_DISMANTLE_VERIFY_OK") {
 		return fmt.Errorf(a.msg("拆除脚本已结束，但独立复核失败；救援包位于 %s", "The dismantle script ended, but independent verification failed; rescue archive: %s"), localArchive)
 	}
@@ -606,6 +615,12 @@ func (a *App) diagnose() error {
 		return fmt.Errorf(a.msg("SSH 登录层仍失败：%w", "SSH authentication layer still fails: %w"), err)
 	}
 	a.println(a.msg("【GOOD】SSH TCP 可达，问题至少不是“完全到不了 VPS”。", "[GOOD] SSH TCP is reachable; the VPS is not completely unreachable."))
+	if observed, detectErr := localPublicIPv4(); detectErr == nil {
+		a.println(fmt.Sprintf("LOCAL_PUBLIC_IPV4=%s (%d/%d direct sources agree)", observed.IP, len(observed.Sources), observed.Total))
+	} else {
+		a.println(a.msg("[WARN] 本机公网 IPv4 多源直查失败：", "[WARN] Direct multi-source local public-IPv4 detection failed: ") + detectErr.Error())
+	}
+	a.runThreeRouteReachability(c)
 	return a.diagnoseWithConn(c, true)
 }
 
@@ -842,7 +857,7 @@ func (a *App) emergencyReport() error {
 	if err != nil {
 		return err
 	}
-	downloadDir := filepath.Join(home, "Downloads", "TextNodeAssistant-Reports")
+	downloadDir := filepath.Join(home, "Downloads", "ProxyNodeAssistant-Reports")
 	if err := os.MkdirAll(downloadDir, 0700); err != nil {
 		return err
 	}

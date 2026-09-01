@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.util.Locale
 
 class WorkflowRunner(
     private val context: Context,
@@ -54,10 +55,26 @@ class WorkflowRunner(
             try {
                 targets.remember(target)
                 log("PNA_ANDROID_WORKFLOW action=${action.code} target=${target.id}")
+                // Actions 3 and 19 deliberately inspect the handset before SSH is opened.
+                // This keeps the local egress observation separate from the VPS view and
+                // prevents a proxy/TUN setting from being silently presented as the source.
+                val localObservation = if (action.code.equals("3", true) || action.code.equals("19", true)) {
+                    log("LOCAL_PUBLIC_IPV4_DETECTION=START (direct HTTP lookups; app proxy bypassed)")
+                    try {
+                        AndroidNetworkProbes.detectPublicIpv4().also { observation ->
+                            log("LOCAL_PUBLIC_IPV4=${observation.ip} SOURCES=${observation.quorum}")
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Throwable) {
+                        log("LOCAL_PUBLIC_IPV4_DETECTION=FAILED detail=${safeError(error)}")
+                        null
+                    }
+                } else null
                 handle = connect(target, authMode, suppliedPassword)
                 activeHandle = handle
                 _state.update { it.copy(status = RunStatus.RUNNING) }
-                tunnelTransferred = execute(action.code.uppercase(), handle)
+                tunnelTransferred = execute(action.code.uppercase(), handle, localObservation)
                 _state.update { it.copy(status = RunStatus.SUCCEEDED) }
             } catch (_: CancellationException) {
                 _state.update { it.copy(status = RunStatus.CANCELLED, error = tr("操作已安全取消", "Operation cancelled safely")) }
@@ -132,10 +149,10 @@ class WorkflowRunner(
         return checkNotNull(verified)
     }
 
-    private suspend fun execute(code: String, handle: SshHandle): Boolean = when (code) {
+    private suspend fun execute(code: String, handle: SshHandle, localObservation: AndroidPublicIpObservation? = null): Boolean = when (code) {
         "1" -> deploy(handle)
         "2" -> openPanel(handle)
-        "3" -> { ensureToolkit(handle); checked(handle, "bash $REMOTE_ROOT/linux/16-auto-diagnose.sh --protocol-v1"); false }
+        "3" -> { ensureToolkit(handle); diagnoseWithLocalRoutes(handle, localObservation); false }
         "4" -> { ensureToolkit(handle); confirmYes(tr("先备份，再执行可确定的安全修复？", "Back up and run deterministic safe repair?"), false); checked(handle, "bash $REMOTE_ROOT/linux/17-safe-auto-repair.sh", interactive = true); false }
         "5" -> { ensureToolkit(handle); rotateVpsPassword(handle); false }
         "6" -> { ensureToolkit(handle); rotatePanelCredentials(handle); false }
@@ -149,8 +166,187 @@ class WorkflowRunner(
         "16" -> { ensureToolkit(handle); performanceProfile(handle); false }
         "17" -> { ensureToolkit(handle); trafficEstimate(handle); false }
         "18" -> { ensureToolkit(handle); dismantle(handle); false }
+        "19" -> { ensureToolkit(handle); manageSS2022Allowlist(handle, localObservation); false }
         "T" -> { ensureToolkit(handle); trafficEstimate(handle); log("Provider API profiles are managed from the local Provider screen."); false }
         else -> error(tr("操作 $code 属于本地功能或远端执行器暂不支持", "Action $code is local or unsupported in the remote runner"))
+    }
+
+    /**
+     * Keep the existing remote doctor, then add handset-origin probes.  The probes are
+     * intentionally layered: they establish TCP/TLS/HTTPS reachability only and never
+     * claim that a VLESS or Shadowsocks data session has been authenticated.
+     */
+    private suspend fun diagnoseWithLocalRoutes(handle: SshHandle, localObservation: AndroidPublicIpObservation?) {
+        var remoteFailure: Throwable? = null
+        try {
+            checked(handle, "bash $REMOTE_ROOT/linux/16-auto-diagnose.sh --protocol-v1")
+        } catch (error: CancellationException) {
+            // Do not turn an explicit user cancellation into a delayed diagnostic
+            // failure; abort before opening any handset-side probes.
+            throw error
+        } catch (error: Throwable) {
+            remoteFailure = error
+            log("REMOTE_DOCTOR=FAILED detail=${safeError(error)}")
+        }
+
+        val metadata = readRuntimeMetadata(handle)
+        log("")
+        log(tr("—— 当前本地链路 → VPS 三协议到达性 ——", "—— CURRENT LOCAL PATH -> VPS THREE-PROTOCOL REACHABILITY ——"))
+        log(tr("GOOD 仅表示对应网络/TLS/边缘层已到达，不等同于 VLESS/SS 吞吐或完整认证。", "GOOD means the named network/TLS/edge layer was reached; it is not a VLESS/SS throughput or full-authentication test."))
+        localObservation?.let { log("LOCAL_PUBLIC_IPV4=${it.ip} SOURCES=${it.quorum}") }
+
+        // The reconciled topology is authoritative once it exists.  INSTALL_PLAN_ROUTE_MODE
+        // is only the bootstrap/public-env fallback; preferring it would leave action [3]
+        // probing a stale route after a later gray/orange reconciliation.
+        val routeModeRaw = sequenceOf(
+            metadata["TOPOLOGY_MODE"],
+            metadata["ROUTE_MODE"],
+            metadata["INSTALL_PLAN_ROUTE_MODE"],
+        ).filterNotNull().firstOrNull { it.isNotBlank() }.orEmpty().lowercase(Locale.ROOT)
+        // Deployment-state files use the managed-* spelling while public.env uses the
+        // short route name. Normalize both so an older toolkit and the v1 toolkit
+        // produce the same probe matrix.
+        val routeMode = when (routeModeRaw) {
+            "managed-orange" -> "orange"
+            "managed-gray" -> "gray"
+            "managed-dual" -> "dual"
+            else -> routeModeRaw
+        }
+        val realityPort = metadata["REALITY_PRODUCTION_PORT"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 443
+        val realitySni = metadata["COVER_DOMAIN"].orEmpty().takeIf { Validation.validDomain(it) }
+        if (routeMode == "orange") {
+            log(tr("[SKIP] REALITY：当前拓扑未配置灰云 Reality 路由。", "[SKIP] REALITY: the current topology has no gray/Reality route."))
+        } else {
+            val probe = AndroidNetworkProbes.realityProbe(handle.target.host, realityPort, realitySni)
+            logRouteProbe(probe)
+            if (realitySni == null) log(tr("  未找到 Reality SNI，本次只把 TLS 尝试作为分层探测。", "  No Reality SNI was found; this is only a layered TLS attempt."))
+        }
+
+        val orangeDomain = sequenceOf(metadata["ORANGE_DOMAIN"], metadata["CDN_EDGE_DOMAIN"], metadata["COVER_DOMAIN"])
+            .filterNotNull().firstOrNull { Validation.validDomain(it) }
+        val orangePort = metadata["CDN_EDGE_PORT"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 8443
+        if (routeMode == "gray") {
+            log(tr("[SKIP] CDN_XHTTP：当前拓扑未配置橙云/XHTTP 路由。", "[SKIP] CDN_XHTTP: the current topology has no orange-cloud/XHTTP route."))
+        } else if (orangeDomain != null) {
+            logRouteProbe(AndroidNetworkProbes.cdnHttpsProbe(orangeDomain, orangePort))
+        } else {
+            log(tr("[SKIP] CDN_XHTTP：运行态没有可验证的橙云域名。", "[SKIP] CDN_XHTTP: no verifiable orange-cloud hostname is present in runtime metadata."))
+        }
+
+        val ssPort = metadata["SS2022_PORT"]?.toIntOrNull()?.takeIf { Ss2022PortPolicy.valid(it) }
+            ?: Ss2022PortPolicy.FORMAL_PORT
+        logRouteProbe(AndroidNetworkProbes.tcpProbe("SS2022", handle.target.host, ssPort))
+        remoteFailure?.let { throw it }
+    }
+
+    private suspend fun readRuntimeMetadata(handle: SshHandle): Map<String, String> {
+        // The v1 scripts are intentionally compatible with the v0.9.x state layout.
+        // Emit lower-priority files first because ProtocolParsers.kv keeps the last
+        // occurrence of a key: the new topology file wins over its legacy fallback,
+        // while edge-state fills in ORANGE/CDN fields absent from public.env.
+        val command = """
+            cat /etc/proxy-runbook/public.env 2>/dev/null || true
+            cat /etc/text-node-assistant/public.env 2>/dev/null || true
+            cat /etc/proxy-runbook/deployment-state.env 2>/dev/null || true
+            cat /etc/text-node-assistant/deployment-state.env 2>/dev/null || true
+            cat /etc/proxy-runbook/cloudflare/edge-state.env 2>/dev/null || true
+            cat /etc/text-node-assistant/cloudflare/edge-state.env 2>/dev/null || true
+            cat /root/.config/text-node-assistant/topology.env 2>/dev/null || true
+            cat /root/.config/proxy-node-assistant/topology.env 2>/dev/null || true
+            if systemctl is-active --quiet tna-ss2022-112-trial.service 2>/dev/null; then
+              trial_port=""
+              if [ -r /run/tna-ss2022-112-trial.json ] && command -v jq >/dev/null 2>&1; then
+                trial_port="${'$'}(jq -r '.inbounds[0].port // empty' /run/tna-ss2022-112-trial.json 2>/dev/null || true)"
+              fi
+              [ -n "${'$'}trial_port" ] || trial_port="${Ss2022PortPolicy.TRIAL_PORT}"
+              printf 'SS2022_PORT=%s\n' "${'$'}trial_port"
+            fi
+            cat /etc/proxy-runbook/ss2022/service.env 2>/dev/null || true
+        """.trimIndent()
+        return try {
+            val result = checked(handle, command, emit = false)
+            ProtocolParsers.kv(result.stdout)
+        } catch (error: Throwable) {
+            log("RUNTIME_ROUTE_METADATA=UNAVAILABLE detail=${safeError(error)}")
+            emptyMap()
+        }
+    }
+
+    private suspend fun logRouteProbe(probe: AndroidRouteProbe) {
+        val state = if (probe.ok) "GOOD" else "FAIL"
+        log("[$state] ${probe.name} layer=${probe.layer} target=${probe.target} time=${probe.elapsedMs}ms detail=${probe.detail}")
+    }
+
+    /** Add exactly the source observed by sshd, never a CIDR or a guessed subnet. */
+    private suspend fun manageSS2022Allowlist(handle: SshHandle, initialLocal: AndroidPublicIpObservation?) {
+        val local = initialLocal ?: run {
+            try {
+                AndroidNetworkProbes.detectPublicIpv4().also { log("LOCAL_PUBLIC_IPV4_RETRY=${it.ip} SOURCES=${it.quorum}") }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                log("LOCAL_PUBLIC_IPV4_RETRY=FAILED detail=${safeError(error)}")
+                null
+            }
+        }
+
+        // SSH_CONNECTION is read in the login shell (not through sudo), because sudo may
+        // intentionally strip connection metadata. This value is the authoritative source
+        // that the VPS firewall can actually match.
+        val observedResult = handle.exec(
+            "printf '%s\\n' \"\$SSH_CONNECTION\" | awk '{print \$1}'",
+            root = false,
+            log = { },
+        )
+        check(observedResult.ok) { "SSH source inspection failed (exit ${observedResult.exitCode})" }
+        val observed = AndroidNetworkProbes.normalizePublicIpv4(observedResult.stdout)
+            ?: error(tr("VPS 未报告有效的公网 IPv4 SSH 来源", "The VPS did not report a valid public IPv4 for this SSH session"))
+        log("VPS_SEES_SSH_SOURCE=$observed")
+        if (local != null && local.ip != observed) {
+            log(tr("[WARN] 本机多源结果与 VPS 看到的 SSH 来源不一致；白名单只采用 VPS 实际看到的来源。", "[WARN] The local observation differs from the source seen by the VPS; only the VPS-observed source will be allowlisted."))
+        }
+
+        // Keep the status exit code authoritative; appending `; list` would mask a
+        // missing/inactive service because the list command exits successfully.
+        val status = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh status", root = true, log = ::log)
+        check(status.ok) { "SS2022 status failed (exit ${status.exitCode})" }
+        val statusValues = ProtocolParsers.kv(status.stdout)
+        check(statusValues["PRESENT"] == "1" && statusValues["ACTIVE"] == "1" && statusValues["LISTENER"] == "1" && statusValues["FIREWALL"] == "1") {
+            "SS2022 service is not ready (PRESENT=${statusValues["PRESENT"] ?: "?"}, ACTIVE=${statusValues["ACTIVE"] ?: "?"}, LISTENER=${statusValues["LISTENER"] ?: "?"}, FIREWALL=${statusValues["FIREWALL"] ?: "?"})"
+        }
+        val list = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh list", root = true, log = ::log)
+        check(list.ok) { "SS2022 allowlist listing failed (exit ${list.exitCode})" }
+        val statusOutput = status.stdout + "\n" + list.stdout
+        val statusSummary = statusOutput.lines().filter { it.contains("PNA_SS2022_") || it.startsWith("PORT=") || it.startsWith("ALLOWLIST_COUNT=") || it.startsWith("SOURCE=") }.joinToString(" ")
+        if (statusSummary.isNotBlank()) log("SS2022_STATUS $statusSummary")
+
+        val answer = prompts.ask(
+            tr("添加 SS2022 白名单", "Add SS2022 allowlist entry"),
+            tr(
+                "本机探测=${local?.ip ?: "未知"}；VPS 实际看到的 SSH 来源=$observed。是否把精确地址 $observed 加入 SS2022 TCP 白名单？不会添加网段。",
+                "Local observation=${local?.ip ?: "unknown"}; VPS-observed SSH source=$observed. Add the exact address $observed to the SS2022 TCP allowlist? No network range will be added.",
+            ),
+            PromptKind.YES_NO,
+            defaultValue = "n",
+            danger = true,
+        )
+        val yes = answer.trim().equals("y", true) || answer.trim().equals("yes", true) || answer.trim() == "是"
+        if (!yes) {
+            log("SS2022_ALLOWLIST=UNCHANGED")
+            return
+        }
+
+        val update = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh allow ${SshHandle.shellQuote(observed)}")
+        check("PNA_SS2022_ALLOW_ADDED=$observed" in update.stdout) { "SS2022 allowlist update marker missing" }
+        val verifiedStatus = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh status", emit = false)
+        val verifiedList = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh list", emit = false)
+        log("SS2022_ALLOWLIST=UPDATED source=$observed")
+        val verifiedOutput = verifiedStatus.stdout + "\n" + verifiedList.stdout
+        verifiedOutput.lines().filter { it.startsWith("PRESENT=") || it.startsWith("ACTIVE=") || it.startsWith("LISTENER=") || it.startsWith("FIREWALL=") || it.startsWith("PORT=") || it.startsWith("ALLOWLIST_COUNT=") || it.startsWith("SOURCE=") }.forEach { log("  $it") }
+
+        val port = ProtocolParsers.kv(verifiedOutput)["PORT"]?.toIntOrNull()?.takeIf { Ss2022PortPolicy.valid(it) }
+            ?: Ss2022PortPolicy.FORMAL_PORT
+        logRouteProbe(AndroidNetworkProbes.tcpProbe("SS2022", handle.target.host, port))
     }
 
     private suspend fun deploy(handle: SshHandle): Boolean {
@@ -165,7 +361,9 @@ class WorkflowRunner(
             else -> true
         }
         val existingNode = detectExistingNode(handle)
-        val plan = collectInstallPlan(existingNode)
+        val existingSs2022Port = if (existingNode) detectExistingSs2022Port(handle) else null
+        existingSs2022Port?.let { log("SS2022_EXISTING_PORT=$it (upgrade default preserves the existing listener)") }
+        val plan = collectInstallPlan(existingNode, existingSs2022Port)
         plan.validate(existingNode)
         val review = plan.reviewLines().joinToString("\n")
         val apply = prompts.ask(
@@ -197,7 +395,7 @@ class WorkflowRunner(
             log("TOOLKIT_SAME_BUILD; upload and bootstrap skipped")
         }
 
-        val oneRunName = "text-node-assistant-auto-input-${randomToken()}.env"
+        val oneRunName = "proxy-node-assistant-auto-input-${randomToken()}.env"
         val oneRunPath = "/tmp/$oneRunName"
         handle.upload(installAutoInput(plan).toByteArray(), oneRunName, "/tmp", "0600")
         try {
@@ -217,13 +415,95 @@ class WorkflowRunner(
     private suspend fun detectExistingNode(handle: SshHandle): Boolean {
         val result = checked(
             handle,
-            "existing=0; if systemctl is-active --quiet x-ui 2>/dev/null || [ -x /usr/local/x-ui/x-ui ] || [ -s /etc/x-ui/x-ui.db ]; then existing=1; fi; printf 'TNA_EXISTING_NODE=%s\\n' \"\$existing\"",
+	            "existing=0; if systemctl is-active --quiet x-ui 2>/dev/null || [ -x /usr/local/x-ui/x-ui ] || [ -s /etc/x-ui/x-ui.db ] || [ -s /etc/proxy-runbook/ss2022/service.env ] || [ -s /etc/text-node-assistant/ss2022/service.env ] || [ -s /etc/proxy-runbook/ss2022/server.json ] || [ -s /etc/text-node-assistant/ss2022/server.json ] || systemctl is-active --quiet tna-ss2022-112-trial.service 2>/dev/null; then existing=1; fi; printf 'TNA_EXISTING_NODE=%s\\n' \"\$existing\"",
             emit = false,
         )
         return result.stdout.lineSequence().any { it.trim() == "TNA_EXISTING_NODE=1" }
     }
 
-    private suspend fun collectInstallPlan(existingNode: Boolean): AndroidInstallPlan {
+    /**
+     * Read only the existing SS2022 listener port so an upgrade does not
+     * silently move a trial or custom listener to the formal port. The
+     * command emits no credentials and an unavailable state is treated as
+     * unknown; the user can still enter a port explicitly.
+     */
+	    private suspend fun detectExistingSs2022Port(handle: SshHandle): Int? {
+	        // Match the desktop probe's precedence and legacy paths.  Emit one marker
+	        // only, so a truncated/malformed probe cannot silently choose a stale port.
+	        val command = """
+	            port=""
+	            for file in /etc/proxy-runbook/ss2022/service.env /etc/text-node-assistant/ss2022/service.env /etc/proxy-runbook/public.env /etc/text-node-assistant/public.env; do
+	              [ -r "${'$'}file" ] || continue
+	              value=""
+	              case "${'$'}file" in
+	                */ss2022/service.env)
+	                  value="${'$'}(awk -F= '${'$'}1==\"PORT\" || ${'$'}1==\"SS2022_PORT\" || ${'$'}1==\"PNA_SS2022_PORT\" {gsub(/^[[:space:]]+|[[:space:]]+$/, \"\", ${'$'}2); print ${'$'}2; exit}' "${'$'}file" 2>/dev/null || true)"
+	                  ;;
+	                *)
+	                  value="${'$'}(awk -F= '${'$'}1==\"SS2022_PORT\" || ${'$'}1==\"PNA_SS2022_PORT\" {gsub(/^[[:space:]]+|[[:space:]]+$/, \"\", ${'$'}2); print ${'$'}2; exit}' "${'$'}file" 2>/dev/null || true)"
+	                  ;;
+	              esac
+	              case "${'$'}value" in
+	                ''|*[!0-9]*) ;;
+	                *)
+	                  if [ "${'$'}value" -ge 1024 ] 2>/dev/null && [ "${'$'}value" -le 65535 ] 2>/dev/null; then
+	                    port="${'$'}value"
+	                    break
+	                  fi
+	                  ;;
+	              esac
+	            done
+	            if [ -z "${'$'}port" ] && command -v jq >/dev/null 2>&1; then
+	              for file in /etc/proxy-runbook/ss2022/server.json /etc/text-node-assistant/ss2022/server.json; do
+	                [ -r "${'$'}file" ] || continue
+	                value="${'$'}(jq -r '.inbounds[]? | select(.protocol == \"shadowsocks\") | select((.settings.method? // \"\") | startswith(\"2022-\")) | .port // empty' "${'$'}file" 2>/dev/null | head -n 1 || true)"
+	                case "${'$'}value" in
+	                  ''|*[!0-9]*) ;;
+	                  *)
+	                    if [ "${'$'}value" -ge 1024 ] 2>/dev/null && [ "${'$'}value" -le 65535 ] 2>/dev/null; then
+	                      port="${'$'}value"
+	                      break
+	                    fi
+	                    ;;
+	                esac
+	              done
+	            fi
+	            if [ -z "${'$'}port" ] && systemctl is-active --quiet tna-ss2022-112-trial.service 2>/dev/null; then
+	              trial_port=""
+	              if [ -r /run/tna-ss2022-112-trial.json ] && command -v jq >/dev/null 2>&1; then
+	                trial_port="${'$'}(jq -r '.inbounds[0].port // empty' /run/tna-ss2022-112-trial.json 2>/dev/null || true)"
+	              fi
+	              case "${'$'}trial_port" in
+	                ''|*[!0-9]*) ;;
+	                *)
+	                  if [ "${'$'}trial_port" -ge 1024 ] 2>/dev/null && [ "${'$'}trial_port" -le 65535 ] 2>/dev/null; then port="${'$'}trial_port"; fi
+	                  ;;
+	              esac
+	            fi
+	            printf 'SS2022_EXISTING_PORT=%s\n' "${'$'}{port:-0}"
+	        """.trimIndent()
+	        val result = handle.exec(command, root = true, log = { })
+	        if (!result.ok) {
+	            log("SS2022_EXISTING_PORT=UNKNOWN detail=remote_probe_exit_${result.exitCode}")
+	            return null
+	        }
+        val markerLines = result.stdout.lineSequence()
+            .map(String::trim)
+            .filter { it.startsWith("SS2022_EXISTING_PORT=") }
+            .toList()
+        if (markerLines.size != 1) {
+            log("SS2022_EXISTING_PORT=UNKNOWN detail=marker_count_${markerLines.size}")
+            return null
+        }
+        val value = markerLines.single().substringAfter('=', missingDelimiterValue = "").toIntOrNull()
+        if (value == null) {
+            log("SS2022_EXISTING_PORT=UNKNOWN detail=marker_value_invalid")
+            return null
+        }
+        return value.takeIf { it > 0 && Ss2022PortPolicy.valid(it) }
+	    }
+
+    private suspend fun collectInstallPlan(existingNode: Boolean, existingSs2022Port: Int? = null): AndroidInstallPlan {
         val routeMessage = if (existingNode) {
             tr(
                 "必须选择：0=保持现有链路，1=仅灰云直连，2=仅橙云 CDN/XHTTP，3=双路。留空无效。",
@@ -298,9 +578,34 @@ class WorkflowRunner(
             else -> InstallWarpMode.ENSURE_ON
         }
 
+        val preservedPort = existingSs2022Port?.takeIf { Ss2022PortPolicy.valid(it) }
+        val ss2022Default = preservedPort ?: Ss2022PortPolicy.FORMAL_PORT
+        val ss2022PortMessageZh = when {
+            preservedPort == Ss2022PortPolicy.TRIAL_PORT -> "检测到已有 30443 trial 监听，默认保留；如需迁移到 v1 正式端口请输入 32443。"
+            preservedPort != null -> "检测到已有 SS2022 监听 $preservedPort，默认保留；全新 v1 节点默认使用 32443。"
+            existingNode -> "未能读取已有 SS2022 端口；默认使用 v1 正式端口 32443。若节点仍在使用 30443 trial，请明确输入 30443 以保留。"
+            else -> "默认 32443（v1 正式端口）；30443 仅用于已有 trial/迁移兼容。"
+        }
+        val ss2022PortMessageEn = when {
+            preservedPort == Ss2022PortPolicy.TRIAL_PORT -> "An existing 30443 trial listener was detected and will be preserved by default; enter 32443 explicitly to migrate to the v1 formal port."
+            preservedPort != null -> "An existing SS2022 listener on $preservedPort was detected and will be preserved by default; fresh v1 nodes use 32443."
+            existingNode -> "The existing SS2022 port could not be read; the v1 formal default is 32443. If this node still uses the 30443 trial, enter 30443 explicitly to preserve it."
+            else -> "Default 32443 (the v1 formal port); 30443 is reserved for existing trial/migration compatibility."
+        }
+        val ss2022Port = required(
+            tr("SS2022 TCP 端口", "SS2022 TCP port"),
+            tr(
+                "输入 1024—65535 的 TCP 端口；$ss2022PortMessageZh 不能与 443、24443、8443、40000 冲突。白名单稍后由操作 [19] 明确添加。",
+                "Enter a TCP port from 1024-65535; $ss2022PortMessageEn It cannot conflict with 443, 24443, 8443, or 40000. Add the exact source later with action [19].",
+            ),
+            ss2022Default.toString(),
+        ) { raw ->
+            raw.toIntOrNull()?.let(Ss2022PortPolicy::valid) == true
+        }.toInt()
+
         val prune = confirmYes(tr("成功后清理冗余备份，仅保留一份已验证的当前配置备份？", "After success, prune redundant backups and retain one verified current-config backup?"), false, allowNo = true)
         val openPanel = confirmYes(tr("成功后通过本机 SSH 隧道打开 3x-ui 面板？", "After success, open the 3x-ui panel through a localhost SSH tunnel?"), true, allowNo = true)
-        return AndroidInstallPlan(route, coverChoice, performance, warp, gray, orange, prune, openPanel)
+        return AndroidInstallPlan(route, coverChoice, performance, warp, gray, orange, prune, openPanel, ss2022Port)
     }
 
     private fun installAutoInput(plan: AndroidInstallPlan): String = buildString {
@@ -328,9 +633,12 @@ class WorkflowRunner(
 
     private suspend fun reconcileOrangeRoute(handle: SshHandle, plan: AndroidInstallPlan, publicIp: String) {
         val token = randomToken()
-        val tempName = "text-node-assistant-cdn-route-$token.env"
+        val tempName = "proxy-node-assistant-cdn-route-$token.env"
         val tempPath = "/tmp/$tempName"
-        val runtimePath = "/root/.config/text-node-assistant/runtime-input/cdn-route-$token.env"
+        // v1 uses a product-namespaced runtime directory. The reconciler also
+        // accepts the legacy v0.9.x directory for upgrades, but a fresh client
+        // must use only its own randomized root-only file.
+        val preferredRuntimePath = "/root/.config/proxy-node-assistant/runtime-input/cdn-route-$token.env"
         val routeInput = buildString {
             appendLine("TNA_CDN_ROUTE_INPUT_VERSION=1")
             appendLine("ROUTE_MODE_B64=${b64(plan.routeMode.wireValue)}")
@@ -344,10 +652,10 @@ class WorkflowRunner(
         try {
             checked(
                 handle,
-                "install -d -m 700 /root/.config/text-node-assistant/runtime-input; install -o root -g root -m 600 ${SshHandle.shellQuote(tempPath)} ${SshHandle.shellQuote(runtimePath)}; rm -f -- ${SshHandle.shellQuote(tempPath)}",
+                "install -d -m 700 /root/.config/proxy-node-assistant/runtime-input; install -o root -g root -m 600 ${SshHandle.shellQuote(tempPath)} ${SshHandle.shellQuote(preferredRuntimePath)}; rm -f -- ${SshHandle.shellQuote(tempPath)}",
                 emit = false,
             )
-            val staged = checked(handle, "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --apply-input ${SshHandle.shellQuote(runtimePath)}", interactive = true)
+            val staged = checked(handle, "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --apply-input ${SshHandle.shellQuote(preferredRuntimePath)}", interactive = true)
             require("TNA_TOPOLOGY_STAGED=1" in staged.stdout) { "CDN topology staging marker missing" }
             val linkOutput = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(plan.orange.domain)} 8443", emit = false).stdout
             val link = Regex("vless://[^\\s]+", RegexOption.IGNORE_CASE).find(linkOutput)?.value
@@ -372,7 +680,7 @@ class WorkflowRunner(
             completed = true
         } finally {
             if (!completed) runCatching { handle.exec("bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --rollback-pending", root = true) }
-            runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(tempPath)} ${SshHandle.shellQuote(runtimePath)}", root = true) }
+            runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(tempPath)} ${SshHandle.shellQuote(preferredRuntimePath)}", root = true) }
         }
     }
 
@@ -406,7 +714,7 @@ class WorkflowRunner(
     private fun randomToken(): String = newOneRunToken()
 
     private suspend fun uploadToolkit(handle: SshHandle) {
-        log("Uploading embedded TextNodeAssistant toolkit v$VERSION...")
+        log("Uploading embedded ProxyNodeAssistant toolkit v$VERSION...")
         val bytes = context.assets.open(TOOLKIT_ASSET).use { it.readBytes() }
         require(bytes.size > 128) { tr("APK 内嵌工具包为空", "embedded toolkit is empty") }
         handle.upload(bytes, TOOLKIT_ARCHIVE, "/tmp", "0600")
@@ -425,6 +733,8 @@ class WorkflowRunner(
             root=''
             if [ -r $REMOTE_ROOT/TOOLKIT_VERSION ]; then
               root=$REMOTE_ROOT
+            elif [ -r $LEGACY_TEXT_REMOTE_ROOT/TOOLKIT_VERSION ]; then
+              root=$LEGACY_TEXT_REMOTE_ROOT
             elif [ -r $LEGACY_REMOTE_ROOT/TOOLKIT_VERSION ]; then
               root=$LEGACY_REMOTE_ROOT
             fi
@@ -433,7 +743,7 @@ class WorkflowRunner(
               build=${'$'}(head -n1 "${'$'}root/TOOLKIT_BUILD_ID" 2>/dev/null | tr -d '\r' || true)
               revision=${'$'}(head -n1 "${'$'}root/TOOLKIT_BUILD_REVISION" 2>/dev/null | tr -d '\r' || true)
               complete=0
-              test -x "${'$'}root/linux/00-auto-install-or-optimize.sh" && test -x "${'$'}root/linux/18-panel-metadata.sh" && test -x "${'$'}root/linux/22-dismantle-managed-node.sh" && test -s "${'$'}root/templates/cover-sites/MANIFEST.tsv" && complete=1
+              test -x "${'$'}root/linux/00-auto-install-or-optimize.sh" && test -x "${'$'}root/linux/18-panel-metadata.sh" && test -x "${'$'}root/linux/22-dismantle-managed-node.sh" && test -x "${'$'}root/linux/23-ss2022-tcp.sh" && test -s "${'$'}root/templates/cover-sites/MANIFEST.tsv" && complete=1
               printf 'TOOLKIT_PRESENT=1\nTOOLKIT_VERSION=%s\nTOOLKIT_BUILD_ID=%s\nTOOLKIT_BUILD_REVISION=%s\nTOOLKIT_COMPLETE=%s\n' "${'$'}version" "${'$'}build" "${'$'}revision" "${'$'}complete"
             else
               printf 'TOOLKIT_PRESENT=0\n'
@@ -548,12 +858,13 @@ class WorkflowRunner(
         check(confirmation == "UNINSTALL")
         val command = """
             set -Eeuo pipefail
-            dirs=(/opt/text-node-assistant-v0.9.5 /opt/proxy-runbook-v0.5 /opt/proxy-runbook-v0.6 /opt/proxy-runbook-v0.6.1 /opt/proxy-runbook-v0.6.2 /opt/proxy-runbook-v0.6.5 /opt/proxy-runbook-v0.6.6 /opt/proxy-runbook-v0.7.1 /opt/proxy-runbook-v0.7.4 /opt/proxy-runbook-v0.8.2 /opt/proxy-runbook-v0.8.4 /opt/proxy-runbook-v0.8.5 /opt/proxy-runbook-v0.8.6 /opt/proxy-runbook-v0.9.0)
+            dirs=(/opt/proxy-node-assistant-v1.0.0 /opt/text-node-assistant-v0.9.5 /opt/proxy-runbook-v0.5 /opt/proxy-runbook-v0.6 /opt/proxy-runbook-v0.6.1 /opt/proxy-runbook-v0.6.2 /opt/proxy-runbook-v0.6.5 /opt/proxy-runbook-v0.6.6 /opt/proxy-runbook-v0.7.1 /opt/proxy-runbook-v0.7.4 /opt/proxy-runbook-v0.8.2 /opt/proxy-runbook-v0.8.4 /opt/proxy-runbook-v0.8.5 /opt/proxy-runbook-v0.8.6 /opt/proxy-runbook-v0.9.0)
             for target in "${'$'}{dirs[@]}"; do [ ! -e "${'$'}target" ] || { [ -d "${'$'}target" ] && [ ! -L "${'$'}target" ]; } || exit 61; done
             [ ! -e /opt/proxy-runbook-current ] || [ -L /opt/proxy-runbook-current ] || exit 62
             [ ! -e /opt/text-node-assistant-current ] || [ -L /opt/text-node-assistant-current ] || exit 63
+            [ ! -e /opt/proxy-node-assistant-current ] || [ -L /opt/proxy-node-assistant-current ] || exit 64
             printf 'PROXY_RUNBOOK_UNINSTALL_BEGIN\n'
-            rm -f /opt/text-node-assistant-current /opt/proxy-runbook-current /usr/local/sbin/text-node /usr/local/sbin/proxy-node /tmp/text-node-assistant-toolkit-v*.tar.gz /tmp/proxy-runbook-toolkit-v*.tar.gz
+            rm -f /opt/text-node-assistant-current /opt/proxy-node-assistant-current /opt/proxy-runbook-current /usr/local/sbin/text-node /usr/local/sbin/proxy-node /tmp/text-node-assistant-toolkit-v*.tar.gz /tmp/proxy-node-assistant-toolkit-v*.tar.gz /tmp/proxy-runbook-toolkit-v*.tar.gz
             for target in "${'$'}{dirs[@]}"; do [ ! -d "${'$'}target" ] || rm -rf -- "${'$'}target"; done
             printf 'PRESERVED=NODE_SERVICES_AND_CONFIG\nPROXY_RUNBOOK_UNINSTALL_END\n'
         """.trimIndent()
@@ -659,14 +970,15 @@ class WorkflowRunner(
     private fun tr(zh: String, en: String): String = if (language == Language.ZH) zh else en
 
     companion object {
-        const val VERSION = "0.9.5"
-        const val BUILD_ID = "20260831-v095-reset-from-v090-r100"
-        const val BUILD_REVISION = 100
-        const val REMOTE_ROOT = "/opt/text-node-assistant-current"
+        const val VERSION = "1.0.0"
+        const val BUILD_ID = "20260901-v100-ss2022-r102"
+        const val BUILD_REVISION = 102
+        const val REMOTE_ROOT = "/opt/proxy-node-assistant-current"
+        const val LEGACY_TEXT_REMOTE_ROOT = "/opt/text-node-assistant-current"
         const val LEGACY_REMOTE_ROOT = "/opt/proxy-runbook-current"
-        const val INSTALL_ROOT = "/opt/text-node-assistant-v0.9.5"
-        const val TOOLKIT_ASSET = "text-node-assistant-toolkit-v0.9.5.tgz"
-        const val TOOLKIT_ARCHIVE = "text-node-assistant-toolkit-v0.9.5.tar.gz"
+        const val INSTALL_ROOT = "/opt/proxy-node-assistant-v1.0.0"
+        const val TOOLKIT_ASSET = "proxy-node-assistant-toolkit-v1.0.0.tgz"
+        const val TOOLKIT_ARCHIVE = "proxy-node-assistant-toolkit-v1.0.0.tar.gz"
         val COVER_TEMPLATE_CATALOG = """
             1 atlas-journal   2 northstar-studio   3 cedar-stone
             4 field-lab       5 harbor-weather     6 local-library

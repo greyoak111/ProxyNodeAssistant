@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-$scriptPath = Join-Path $repo 'runbook/text-node-assistant-v0.9.5/linux/00-auto-install-or-optimize.sh'
+$scriptPath = Join-Path $repo 'runbook/proxy-node-assistant-v1.0.0/linux/00-auto-install-or-optimize.sh'
 if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
     throw "missing core installer: $scriptPath"
 }
@@ -101,7 +101,7 @@ if ($unsafeEmailOutput) {
     throw "a full email variable can reach stdout/stderr: $($unsafeEmailOutput -join ' | ')"
 }
 
-Require-Literal 'echo "  text-node"' 'the final maintenance command must prefer the reset product command'
-Require-Literal 'legacy compatibility command: proxy-node' 'the old maintenance command may remain only as an explicit compatibility hint'
+Require-Literal 'echo "  proxy-node"' 'the final maintenance command must prefer the reset product command'
+Require-Literal 'legacy compatibility command: text-node' 'the old maintenance command may remain only as an explicit compatibility hint'
 
 Write-Host 'RESET_CORE_INSTALL_MODES_STATIC_OK'
