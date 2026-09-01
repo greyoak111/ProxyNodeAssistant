@@ -4,6 +4,7 @@ umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/linux/lib-gui-prompt.sh"
+. "$ROOT/linux/lib-third-party.sh"
 PRIVATE_DIR="/root/.config/proxy-runbook"
 PUBLIC_DIR="/etc/proxy-runbook"
 RUN_STATUS_FILE="$PUBLIC_DIR/last-run.env"
@@ -440,7 +441,7 @@ if [ "$EXISTING" -eq 0 ]; then
     export XUI_DB_TYPE=sqlite
     # Intentionally do NOT set username/password/panel port/web path:
     # official installer generates unique random values.
-    bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh)
+    tna_install_3xui_pinned "$ROOT"
     EXISTING=1
   else
     red "Fresh node cannot continue without 3x-ui."; exit 1
@@ -486,12 +487,30 @@ fi
 # Fresh official credentials are shown in full; existing panel creds are exported where retrievable.
 bash "$ROOT/linux/03d-export-panel-handoff.sh" "$NODE_MODE"
 
-if [ "$NODE_MODE" = "EXISTING" ] && ! grep -q '^PANEL_PASSWORD=' "$HANDOFF_FILE" 2>/dev/null; then
-  if noq "Existing panel password is not safely recoverable. Rotate panel username/password to new random values and show them now? (3x-ui will log out existing sessions; credential reset may disable existing 2FA)"; then
+# A complete handoff must carry a panel account/password that really logs in.
+# The old v0.9.x implementation checked only for a plaintext line, which left
+# stale or hashed values in the exported form.  Validate retained values and
+# require an explicit rotation when they cannot be proven.
+PANEL_STORED_USER="$(credential_value_from_file "$HANDOFF_FILE" PANEL_USERNAME 2>/dev/null || true)"
+PANEL_STORED_PASSWORD="$(credential_value_from_file "$HANDOFF_FILE" PANEL_PASSWORD 2>/dev/null || true)"
+if [ -n "$PANEL_STORED_USER" ] && [ -n "$PANEL_STORED_PASSWORD" ] && xui_password_login_works "$PANEL_STORED_USER" "$PANEL_STORED_PASSWORD"; then
+  credential_store_set PANEL_USERNAME "$PANEL_STORED_USER"
+  credential_store_set PANEL_PASSWORD "$PANEL_STORED_PASSWORD"
+  green "PANEL_LOGIN_CREDENTIALS_VERIFIED_AND_RETAINED"
+else
+  credential_store_delete_pair PANEL
+  handoff_delete PANEL_USERNAME
+  handoff_delete PANEL_PASSWORD
+  if human_yesq \
+    "完整交接表必须包含可实际登录的面板账号和密码。当前明文不可验证；是否现在轮换为新的随机账号密码？这会注销旧会话，并可能关闭原有 2FA。" \
+    "A complete handoff must contain a panel account and password that really log in. The current plaintext is unavailable or failed verification. Rotate to new random credentials now? Existing sessions will be logged out and 2FA may be disabled."; then
     bash "$ROOT/linux/03c-rotate-panel-credentials.sh"
     SHOW="$("$XUI" setting -show 2>/dev/null || true)"
     PANEL_PORT="$(printf '%s\n' "$SHOW" | sed -nE 's/^[[:space:]]*(port|panelPort):[[:space:]]*([0-9]+).*$/\2/p' | sed -n '1p')"
     RAW_PATH="$(printf '%s\n' "$SHOW" | sed -nE 's/^[[:space:]]*(webBasePath|web base path):[[:space:]]*(.*)$/\2/p' | sed -n '1p')"
+  else
+    red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: panel credentials were not rotated; refusing a partial handoff."
+    exit 83
   fi
 fi
 
@@ -534,21 +553,42 @@ step "SSH / VPS LOGIN CREDENTIALS"
 # Windows launcher installs and verifies SSH key BEFORE this wizard.
 # Fresh node: rotate provider-supplied password by default.
 # Existing node: do not surprise-rotate on every maintenance run.
-if [ ! -f "$PRIVATE_DIR/vps-password-generated.marker" ]; then
-  if [ "$NODE_MODE" = "EXISTING" ]; then
-    if noq "Rotate VPS login password for '$LOGIN_USER' to a new random value and show it in full?"; then
-      bash "$ROOT/linux/01a-rotate-vps-password.sh" "$LOGIN_USER"
-      touch "$PRIVATE_DIR/vps-password-generated.marker"; chmod 600 "$PRIVATE_DIR/vps-password-generated.marker"
-    fi
-  else
-    if yesq "Replace the provider-supplied VPS password for '$LOGIN_USER' with a new random value now?"; then
-      bash "$ROOT/linux/01a-rotate-vps-password.sh" "$LOGIN_USER"
-      touch "$PRIVATE_DIR/vps-password-generated.marker"; chmod 600 "$PRIVATE_DIR/vps-password-generated.marker"
-    fi
-  fi
+STORED_VPS_USER="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_USER 2>/dev/null || true)"
+STORED_VPS_PASSWORD="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_PASSWORD 2>/dev/null || true)"
+VPS_PASSWORD_READY=0
+if [ -f "$PRIVATE_DIR/vps-password-generated.marker" ] && [ -n "$(credential_value_from_file "$HANDOFF_FILE" VPS_LOGIN_PASSWORD 2>/dev/null || true)" ]; then
+  green "A runbook-generated VPS password is already present; not rotating it again automatically."
+  VPS_PASSWORD_READY=1
+elif [ "$STORED_VPS_USER" = "$LOGIN_USER" ] && [ -n "$STORED_VPS_PASSWORD" ]; then
+  # Re-apply a retained password only when this run has not already generated
+  # one. The SSH key remains the transport anchor during this operation.
+  printf '%s:%s\n' "$LOGIN_USER" "$STORED_VPS_PASSWORD" | chpasswd
+  handoff_set VPS_LOGIN_USER "$LOGIN_USER"
+  handoff_set VPS_LOGIN_PASSWORD "$STORED_VPS_PASSWORD"
+  green "VPS_LOGIN_CREDENTIALS_REAPPLIED_AND_RETAINED"
+  VPS_PASSWORD_READY=1
 else
-  green "A runbook-generated VPS password already has a local marker; not rotating it again automatically."
+  if [ "$NODE_MODE" = "EXISTING" ]; then
+    ROTATE_VPS_PROMPT_ZH="完整交接表必须包含当前 VPS 账号和真实密码。程序没有可复用的已保存密码；是否现在生成并写入新的随机密码？SSH key 已验证，不会因此失联。"
+    ROTATE_VPS_PROMPT_EN="A complete handoff must contain the current VPS account and real password. No reusable stored password exists. Generate and apply a new random password now? The verified SSH key prevents lockout."
+  else
+    ROTATE_VPS_PROMPT_ZH="是否将服务商提供的 VPS 密码替换为新的随机密码并写入完整交接单？SSH key 已验证，不会因此失联。"
+    ROTATE_VPS_PROMPT_EN="Replace the provider-supplied VPS password with a new random value and include it in the complete handoff? The verified SSH key prevents lockout."
+  fi
+  if human_yesq "$ROTATE_VPS_PROMPT_ZH" "$ROTATE_VPS_PROMPT_EN"; then
+    bash "$ROOT/linux/01a-rotate-vps-password.sh" "$LOGIN_USER"
+    touch "$PRIVATE_DIR/vps-password-generated.marker"; chmod 600 "$PRIVATE_DIR/vps-password-generated.marker"
+    VPS_PASSWORD_READY=1
+  else
+    red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: VPS password was not established; refusing a partial handoff."
+    exit 84
+  fi
 fi
+[ "$VPS_PASSWORD_READY" -eq 1 ] || { red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: VPS password was not established."; exit 84; }
+handoff_login_form_complete || {
+  red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: refusing to print or copy a partial credential handoff."
+  exit 85
+}
 
 echo
 echo "Server SSH host public-key fingerprint:"
@@ -785,9 +825,20 @@ fi
 
 step "FINAL CREDENTIAL HANDOFF"
 bash "$ROOT/linux/03d-export-panel-handoff.sh" "$NODE_MODE" || true
-if [ "$GRAY_ROUTE" -eq 1 ] || [ "$ROUTE_MODE" = keep ]; then
-  bash "$ROOT/linux/04e-export-reality-handoff.sh" "$PUBLIC_IP" || true
+# Export every protocol that is present.  The exporter is read-only with
+# respect to x-ui and only refreshes the protected handoff file; orange-only
+# runs may still have a direct Reality listener worth preserving.
+bash "$ROOT/linux/04e-export-reality-handoff.sh" "$PUBLIC_IP" || true
+if [ "$ORANGE_ROUTE" -eq 1 ]; then
+  bash "$ROOT/linux/04f-xhttp-cdn-api.sh" link "$ORANGE_DOMAIN" 8443 || true
+elif [ "$ROUTE_MODE" = keep ] && [ -r /root/.config/text-node-assistant/cdn-xhttp.env ]; then
+  RETAINED_XHTTP_DOMAIN="$(sed -n 's/^XHTTP_DOMAIN=//p' /root/.config/text-node-assistant/cdn-xhttp.env 2>/dev/null | sed -n '1p')"
+  if [ -n "$RETAINED_XHTTP_DOMAIN" ]; then
+    bash "$ROOT/linux/04f-xhttp-cdn-api.sh" link "$RETAINED_XHTTP_DOMAIN" 8443 || true
+  fi
 fi
+# Re-read the SS2022 secret/link after any migration or allowlist changes.
+bash "$ROOT/linux/23-ss2022-tcp.sh" handoff || true
 if [ "$GRAY_ROUTE" -eq 1 ]; then
   handoff_set "COVER_DOMAIN" "$GRAY_DOMAIN"
 elif [ "$ROUTE_MODE" = keep ]; then
@@ -796,7 +847,17 @@ elif [ "$ROUTE_MODE" = keep ]; then
 fi
 handoff_set "PUBLIC_IP_AT_HANDOFF" "$PUBLIC_IP"
 handoff_set "SSH_PORT" "$SSH_PORT"
-handoff_show
+handoff_login_form_complete || {
+  red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: refusing to print or copy a partial credential handoff."
+  exit 85
+}
+if [ "${PROXY_RUNBOOK_GUI_MODE:-0}" = "1" ]; then
+  # GUI clients fetch the verified handoff through their protected parser.
+  # Do not stream the raw credential block into the normal workflow log.
+  printf 'CREDENTIAL_HANDOFF_READY=1\n'
+else
+  handoff_show
+fi
 
 step "FINAL DOCTOR"
 if [ "$ROUTE_MODE" != keep ]; then

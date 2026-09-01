@@ -29,6 +29,9 @@ const (
 	toolkitBuildRevision    = 102
 	toolkitInstallDir       = "/opt/proxy-node-assistant-v1.0.0"
 	toolkitArchive          = "proxy-node-assistant-toolkit-v1.0.0.tar.gz"
+	sessionTempPrefix       = "ProxyNodeAssistant-v1.0.0-session-"
+	legacySessionTempPrefix = "ProxyNodeAssistant-v0.9.0-session-"
+	hostKeyTempPrefix       = "ProxyNodeAssistant-v1.0.0-hostkey-"
 )
 
 var managedToolkitDirs = []string{
@@ -625,7 +628,7 @@ func (a *App) promptConnection(mode AuthMode) (Connection, error) {
 	}
 	c := Connection{Host: host, User: user, Port: port, AuthMode: mode}
 	if mode == AuthTemporaryPassword {
-		dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.0-session-")
+		dir, err := os.MkdirTemp("", sessionTempPrefix)
 		if err != nil {
 			return Connection{}, err
 		}
@@ -761,7 +764,7 @@ func isolatedSSHHostKeyArgs(c Connection, path string) []string {
 
 func scanHostKeysViaSSH(c Connection) (string, hostKeyScanAttempt) {
 	attempt := hostKeyScanAttempt{Method: "isolated-ssh-fallback", ExitCode: -1}
-	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.0-hostkey-")
+	dir, err := os.MkdirTemp("", hostKeyTempPrefix)
 	if err != nil {
 		attempt.Diagnostic = err.Error()
 		return "", attempt
@@ -997,7 +1000,8 @@ func validTemporaryKeyDir(dir string) bool {
 		return false
 	}
 	candidate, err := filepath.Abs(dir)
-	if err != nil || !strings.HasPrefix(filepath.Base(candidate), "ProxyNodeAssistant-v0.9.0-session-") {
+	baseName := filepath.Base(candidate)
+	if err != nil || (!strings.HasPrefix(baseName, sessionTempPrefix) && !strings.HasPrefix(baseName, legacySessionTempPrefix)) {
 		return false
 	}
 	relative, err := filepath.Rel(base, candidate)
@@ -1222,7 +1226,7 @@ func (a *App) authenticateActionConnection(c *Connection) error {
 }
 
 func (a *App) promptlessTemporaryConnection(host, user string, port int) (Connection, error) {
-	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.0-session-")
+	dir, err := os.MkdirTemp("", sessionTempPrefix)
 	if err != nil {
 		return Connection{}, err
 	}
@@ -1239,6 +1243,10 @@ func (a *App) cleanupActionTemporaryAuth() error {
 	return a.cleanupTemporaryConnection(c)
 }
 
+// runRemoteAction is the lifecycle wrapper for every remote action.  Each
+// action still selects ordinary SSH password/key authentication independently;
+// there is deliberately no local controller identity, admission gate, or
+// remote operation lease in the reset line.
 func (a *App) runRemoteAction(action func() error) (returnErr error) {
 	a.actionConnection = nil
 	defer func() {
@@ -1276,12 +1284,23 @@ func revokedKeyRoot() (string, error) {
 
 const managedKeyInfoFile = "PNA-KEY-INFO.txt"
 
+// v0.9.5 wrote the same metadata under the old product name.  Keep it as a
+// read-only fallback so an in-place upgrade can recover stable identity data.
+const legacyManagedKeyInfoFile = "TNA-KEY-INFO.txt"
+
 type managedKeyMetadata struct {
-	Host      string
-	User      string
-	Port      int
-	Status    string
-	UpdatedAt time.Time
+	Host             string
+	User             string
+	Port             int
+	Status           string
+	UpdatedAt        time.Time
+	NodeID           string
+	ServerID         string
+	HostKeySHA256    string
+	MachineIDHash    string
+	FirstKnownPublic string
+	CurrentPublic    string
+	SSHAuthKeyID     string
 }
 
 type managedKeyEntry struct {
@@ -1292,10 +1311,18 @@ type managedKeyEntry struct {
 }
 
 func encodeManagedKeyMetadata(info managedKeyMetadata) []byte {
-	return []byte(fmt.Sprintf("FORMAT=1\nHOST_B64=%s\nUSER_B64=%s\nPORT=%d\nSTATUS=%s\nUPDATED_AT=%s\n",
+	format := "1"
+	extra := ""
+	if info.NodeID != "" || info.ServerID != "" || info.HostKeySHA256 != "" || info.MachineIDHash != "" {
+		format = "2"
+		extra = fmt.Sprintf("NODE_ID=%s\nSERVER_ID=%s\nHOST_KEY_SHA256=%s\nMACHINE_ID_SHA256=%s\nFIRST_KNOWN_PUBLIC_IP=%s\nCURRENT_PUBLIC_IP=%s\nSSH_AUTH_KEY_ID=%s\n",
+			info.NodeID, info.ServerID, info.HostKeySHA256, info.MachineIDHash, info.FirstKnownPublic, info.CurrentPublic, info.SSHAuthKeyID)
+	}
+	return []byte(fmt.Sprintf("FORMAT=%s\nHOST_B64=%s\nUSER_B64=%s\nPORT=%d\nSTATUS=%s\nUPDATED_AT=%s\n%s",
+		format,
 		base64.StdEncoding.EncodeToString([]byte(info.Host)),
 		base64.StdEncoding.EncodeToString([]byte(info.User)), info.Port, info.Status,
-		info.UpdatedAt.UTC().Format(time.RFC3339Nano)))
+		info.UpdatedAt.UTC().Format(time.RFC3339Nano), extra))
 }
 
 func parseManagedKeyMetadata(data []byte) (managedKeyMetadata, error) {
@@ -1310,16 +1337,41 @@ func parseManagedKeyMetadata(data []byte) (managedKeyMetadata, error) {
 	userData, userErr := base64.StdEncoding.DecodeString(values["USER_B64"])
 	port, portErr := strconv.Atoi(values["PORT"])
 	updated, timeErr := time.Parse(time.RFC3339Nano, values["UPDATED_AT"])
-	info := managedKeyMetadata{Host: string(hostData), User: string(userData), Port: port, Status: values["STATUS"], UpdatedAt: updated}
-	if values["FORMAT"] != "1" || hostErr != nil || userErr != nil || portErr != nil || timeErr != nil ||
+	info := managedKeyMetadata{
+		Host: string(hostData), User: string(userData), Port: port, Status: values["STATUS"], UpdatedAt: updated,
+		NodeID: values["NODE_ID"], ServerID: values["SERVER_ID"], HostKeySHA256: values["HOST_KEY_SHA256"],
+		MachineIDHash: values["MACHINE_ID_SHA256"], FirstKnownPublic: values["FIRST_KNOWN_PUBLIC_IP"], CurrentPublic: values["CURRENT_PUBLIC_IP"],
+		SSHAuthKeyID: values["SSH_AUTH_KEY_ID"],
+	}
+	if (values["FORMAT"] != "1" && values["FORMAT"] != "2") || hostErr != nil || userErr != nil || portErr != nil || timeErr != nil ||
 		!validRecentTarget(RecentTarget{Host: info.Host, User: info.User, Port: info.Port}) {
 		return managedKeyMetadata{}, errors.New("invalid managed-key metadata")
+	}
+	if values["FORMAT"] == "2" {
+		_, firstErr := canonicalPublicIPv4(info.FirstKnownPublic)
+		_, currentErr := canonicalPublicIPv4(info.CurrentPublic)
+		if !nodeIDPattern.MatchString(info.NodeID) || !serverIDPattern.MatchString(info.ServerID) ||
+			!sha256FingerprintPattern.MatchString(info.HostKeySHA256) || !sha256HexPattern.MatchString(info.MachineIDHash) ||
+			firstErr != nil || currentErr != nil || (info.SSHAuthKeyID != "" && !sha256FingerprintPattern.MatchString(info.SSHAuthKeyID)) {
+			return managedKeyMetadata{}, errors.New("invalid stable node identity metadata")
+		}
 	}
 	return info, nil
 }
 
 func writeManagedKeyMetadata(dir string, c Connection, status string) error {
 	info := managedKeyMetadata{Host: c.Host, User: c.User, Port: c.Port, Status: status, UpdatedAt: time.Now().UTC()}
+	if existing, err := loadManagedKeyMetadata(dir); err == nil {
+		// Preserve the stable node identity while status/endpoint metadata is
+		// refreshed (for example after an IP rebind or key archival).
+		info.NodeID = existing.NodeID
+		info.ServerID = existing.ServerID
+		info.HostKeySHA256 = existing.HostKeySHA256
+		info.MachineIDHash = existing.MachineIDHash
+		info.FirstKnownPublic = existing.FirstKnownPublic
+		info.CurrentPublic = existing.CurrentPublic
+		info.SSHAuthKeyID = existing.SSHAuthKeyID
+	}
 	if !validRecentTarget(RecentTarget{Host: info.Host, User: info.User, Port: info.Port}) {
 		return errors.New("invalid managed-key metadata target")
 	}
@@ -1328,6 +1380,9 @@ func writeManagedKeyMetadata(dir string, c Connection, status string) error {
 
 func loadManagedKeyMetadata(dir string) (managedKeyMetadata, error) {
 	data, err := os.ReadFile(filepath.Join(dir, managedKeyInfoFile))
+	if os.IsNotExist(err) {
+		data, err = os.ReadFile(filepath.Join(dir, legacyManagedKeyInfoFile))
+	}
 	if err != nil {
 		return managedKeyMetadata{}, err
 	}
@@ -1887,7 +1942,11 @@ func (a *App) readyConn() (Connection, error) {
 	return *c, nil
 }
 
-func (a *App) remoteToolkitProbe(c Connection) (ToolkitProbe, error) {
+// remoteToolkitProbeCommand is kept separate from the SSH call so the
+// completeness contract can be unit-tested without a live VPS.  The command
+// is read-only: it selects the first known current/legacy root, reads marker
+// files, and checks every script/data file required by the v1 menus.
+func remoteToolkitProbeCommand() string {
 	command := "printf '%s\\n' " + shQuote(toolkitBegin) + "; " +
 		"probe_root=" + shQuote(remoteRoot) + "; " +
 		"[ -r \"$probe_root/TOOLKIT_VERSION\" ] || probe_root=" + shQuote(legacyTextRemoteRoot) + "; " +
@@ -1896,10 +1955,21 @@ func (a *App) remoteToolkitProbe(c Connection) (ToolkitProbe, error) {
 		"version=''; IFS= read -r version < \"$probe_root/TOOLKIT_VERSION\" || true; version=${version%$'\\r'}; " +
 		"build=''; if [ -r \"$probe_root/TOOLKIT_BUILD_ID\" ]; then IFS= read -r build < \"$probe_root/TOOLKIT_BUILD_ID\" || true; build=${build%$'\\r'}; fi; " +
 		"revision=''; if [ -r \"$probe_root/TOOLKIT_BUILD_REVISION\" ]; then IFS= read -r revision < \"$probe_root/TOOLKIT_BUILD_REVISION\" || true; revision=${revision%$'\\r'}; fi; " +
-		"complete=0; test -x \"$probe_root/linux/00-auto-install-or-optimize.sh\" && test -x \"$probe_root/linux/18-panel-metadata.sh\" && test -x \"$probe_root/linux/19-prune-backups-current-config.sh\" && test -x \"$probe_root/linux/20-adaptive-performance.sh\" && test -x \"$probe_root/linux/21-traffic-status.sh\" && test -x \"$probe_root/linux/22-dismantle-managed-node.sh\" && test -x \"$probe_root/linux/23-ss2022-tcp.sh\" && test -s \"$probe_root/templates/cover-sites/MANIFEST.tsv\" && test -s \"$probe_root/templates/cover-sites/15-signal-runner.html\" && test -s \"$probe_root/TOOLKIT_BUILD_ID\" && complete=1; " +
+		// Keep this list aligned with the scripts called by the desktop menus
+		// and by 00-auto-install-or-optimize.sh.  A version file alone is not a
+		// usable toolkit: treating a partial upload as complete is what strands
+		// in-place upgrades on the legacy root.  Drive/device-admission helpers
+		// are intentionally absent from the v1 reset line and therefore are not
+		// completeness requirements.
+		"complete=0; test -s \"$probe_root/THIRD_PARTY_LOCK.env\" && test -x \"$probe_root/linux/00-bootstrap-toolkit.sh\" && test -x \"$probe_root/linux/00-preflight-vps.sh\" && test -x \"$probe_root/linux/00-migrate-legacy-state.sh\" && test -x \"$probe_root/linux/00-auto-install-or-optimize.sh\" && test -x \"$probe_root/linux/00c-retire-v095-device-drive.sh\" && test -x \"$probe_root/linux/01-safe-backup.sh\" && test -x \"$probe_root/linux/01a-rotate-vps-password.sh\" && test -x \"$probe_root/linux/02-install-base.sh\" && test -x \"$probe_root/linux/02b-firewall-safe.sh\" && test -x \"$probe_root/linux/03-install-3xui.sh\" && test -x \"$probe_root/linux/03b-lockdown-panel.sh\" && test -x \"$probe_root/linux/03c-rotate-panel-credentials.sh\" && test -x \"$probe_root/linux/03d-export-panel-handoff.sh\" && test -x \"$probe_root/linux/04-generate-reality.sh\" && test -x \"$probe_root/linux/04a-reality-api.sh\" && test -x \"$probe_root/linux/04b-open-test-port-current-ssh.sh\" && test -x \"$probe_root/linux/04c-close-test-port.sh\" && test -x \"$probe_root/linux/04d-optimize-existing-reality-shadow.sh\" && test -x \"$probe_root/linux/04e-export-reality-handoff.sh\" && test -x \"$probe_root/linux/04f-xhttp-cdn-api.sh\" && test -x \"$probe_root/linux/05-cover-bootstrap.sh\" && test -x \"$probe_root/linux/05a-cloudflare-dns-upsert.sh\" && test -x \"$probe_root/linux/05b-cover-site-polished.sh\" && test -x \"$probe_root/linux/05c-optimize-cover-backend.sh\" && test -x \"$probe_root/linux/05d-configure-subscription.sh\" && test -x \"$probe_root/linux/05e-cdn-xhttp-nginx.sh\" && test -x \"$probe_root/linux/05f-cloudflare-origin-lock.sh\" && test -x \"$probe_root/linux/05g-cdn-xhttp-validate.sh\" && test -x \"$probe_root/linux/05h-ensure-cdn-certificate.sh\" && test -x \"$probe_root/linux/06-warp-install.sh\" && test -x \"$probe_root/linux/07-warp-configure-proxy.sh\" && test -x \"$probe_root/linux/07a-apply-warp-route-local.sh\" && test -x \"$probe_root/linux/08-warp-check.sh\" && test -x \"$probe_root/linux/09-status-node.sh\" && test -x \"$probe_root/linux/10-emergency-network-dump.sh\" && test -x \"$probe_root/linux/11-safe-upgrade-audit.sh\" && test -x \"$probe_root/linux/12-restore-iptables-vnc-only.sh\" && test -x \"$probe_root/linux/13-maintenance-menu.sh\" && test -x \"$probe_root/linux/14-node-doctor.sh\" && test -x \"$probe_root/linux/15-show-current-node.sh\" && test -x \"$probe_root/linux/16-auto-diagnose.sh\" && test -x \"$probe_root/linux/17-safe-auto-repair.sh\" && test -x \"$probe_root/linux/18-panel-metadata.sh\" && test -x \"$probe_root/linux/19-prune-backups-current-config.sh\" && test -x \"$probe_root/linux/20-adaptive-performance.sh\" && test -x \"$probe_root/linux/21-traffic-status.sh\" && test -x \"$probe_root/linux/22-dismantle-managed-node.sh\" && test -x \"$probe_root/linux/23-node-identity.sh\" && test -x \"$probe_root/linux/23-ss2022-tcp.sh\" && test -x \"$probe_root/linux/24-security-baseline.sh\" && test -x \"$probe_root/linux/25-security-events.sh\" && test -x \"$probe_root/linux/27-ip-rebind.sh\" && test -x \"$probe_root/linux/28-topology-reconcile.sh\" && test -x \"$probe_root/linux/28a-install-transaction.sh\" && test -x \"$probe_root/linux/lib-deployment-state.sh\" && test -x \"$probe_root/linux/lib-dns-quorum.sh\" && test -x \"$probe_root/linux/lib-gui-prompt.sh\" && test -x \"$probe_root/linux/lib-handoff.sh\" && test -x \"$probe_root/linux/lib-third-party.sh\" && test -x \"$probe_root/linux/lib-xui-api.sh\" && test -s \"$probe_root/linux/32-subscription-rewrite.py\" && test -s \"$probe_root/templates/cover-sites/MANIFEST.tsv\" && test -s \"$probe_root/templates/cover-sites/15-signal-runner.html\" && test -s \"$probe_root/TOOLKIT_BUILD_ID\" && test -s \"$probe_root/TOOLKIT_BUILD_REVISION\" && complete=1; " +
 		"printf 'TOOLKIT_PRESENT=1\\nTOOLKIT_VERSION=%s\\nTOOLKIT_BUILD_ID=%s\\nTOOLKIT_BUILD_REVISION=%s\\nTOOLKIT_COMPLETE=%s\\n' \"$version\" \"$build\" \"$revision\" \"$complete\"; " +
 		"else printf 'TOOLKIT_PRESENT=0\\n'; fi; " +
 		"printf '%s\\n' " + shQuote(toolkitEnd)
+	return command
+}
+
+func (a *App) remoteToolkitProbe(c Connection) (ToolkitProbe, error) {
+	command := remoteToolkitProbeCommand()
 	result := a.rootCapture(c, command)
 	if !result.OK() {
 		return ToolkitProbe{}, fmt.Errorf("toolkit version probe failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
@@ -2139,8 +2209,24 @@ printf 'PROXY_RUNBOOK_UNINSTALL_END\n'
 }
 
 func (a *App) fetchHandoff(c Connection) (string, error) {
+	// A v0.9.x node may still keep its truth handoff under the legacy
+	// text-node-assistant directory.  Emit archived runs first (oldest to
+	// newest by mtime), then the live files.  parseKV's last-value-wins
+	// behavior lets a newer run override stale fields while preserving protocol
+	// fields absent from that run.  The find expressions are intentionally
+	// read-only and only target the two root-owned handoff directories; no
+	// arbitrary paths or secret values enter argv.
 	command := "printf '%s\\n' " + shQuote(handoffBegin) + "; " +
-		"cat /root/.config/proxy-runbook/HANDOFF-SECRETS.txt 2>/dev/null || true; " +
+		// Stored handoffs can contain a complete marker block copied from an
+		// older run.  Do not let those nested markers terminate the outer
+		// transport block before newer archive/live files are emitted.  Keep the
+		// filtering in the remote command so raw files remain untouched.
+		"emit_file() { [ -r \"$1\" ] || return 0; awk '!/^[[:space:]]*__(PNA|TNA)_HANDOFF_(BEGIN|END)__[[:space:]]*$/' \"$1\"; }; " +
+		"emit_archive() { find \"$1\" -maxdepth 1 -type f -name 'HANDOFF-*.txt' -printf '%T@ %p\\n' 2>/dev/null | sort -n | while IFS= read -r entry; do f=\"${entry#* }\"; [ -f \"$f\" ] && emit_file \"$f\"; done; }; " +
+		"emit_archive /root/.config/text-node-assistant/handoff-archive; " +
+		"[ -r /root/.config/text-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/text-node-assistant/HANDOFF-SECRETS.txt || true; " +
+		"emit_archive /root/.config/proxy-runbook/handoff-archive; " +
+		"[ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true; " +
 		"printf '%s\\n' " + shQuote(handoffEnd)
 	result := a.rootCapture(c, command)
 	if !result.OK() {
@@ -2150,7 +2236,12 @@ func (a *App) fetchHandoff(c Connection) (string, error) {
 }
 
 func (a *App) panelMetadata(c Connection) (PanelMetadata, error) {
-	result := a.rootCapture(c, "bash "+remoteRoot+"/linux/18-panel-metadata.sh")
+	command := "set -u; root=" + shQuote(remoteRoot) + "; " +
+		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyTextRemoteRoot) + "; " +
+		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyRunbookRemoteRoot) + "; " +
+		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || { echo PANEL_METADATA_ERROR=SCRIPT_MISSING >&2; exit 12; }; " +
+		"bash \"$root/linux/18-panel-metadata.sh\""
+	result := a.rootCapture(c, command)
 	if !result.OK() {
 		return PanelMetadata{}, fmt.Errorf("panel metadata command failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}
@@ -2159,6 +2250,8 @@ func (a *App) panelMetadata(c Connection) (PanelMetadata, error) {
 
 func (a *App) remoteRunStatus(c Connection) map[string]string {
 	command := "printf '%s\\n' " + shQuote(statusBegin) + "; " +
+		"cat /etc/text-node-assistant/last-run.env 2>/dev/null || true; " +
+		"cat /etc/text-node-assistant/cover-last-run.env 2>/dev/null || true; " +
 		"cat /etc/proxy-runbook/last-run.env 2>/dev/null || true; " +
 		"cat /etc/proxy-runbook/cover-last-run.env 2>/dev/null || true; " +
 		"printf '%s\\n' " + shQuote(statusEnd)

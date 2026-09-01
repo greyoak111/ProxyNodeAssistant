@@ -72,6 +72,47 @@ Assert-Match $workflow 'proxy-node-assistant-auto-input-\$\{randomToken\(\)\}\.e
 $appUi = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppUi.kt"
 Assert-Match $appUi 'BUILD 1\.0\.0-R102 / ANDROID' "Android UI build label is not revision R102"
 
+# Opening a connection dialog must not silently select the first history row.
+# The list remains visible, while the user explicitly taps a card to copy its
+# host/user/port into the form.  Password deliberately remains non-saveable so
+# a transient secret is never persisted by Compose.
+Assert-Match $appUi 'var host by rememberSaveable\(action\.code\) \{ mutableStateOf\(""\) \}' "Connection dialog host no longer starts blank"
+Assert-Match $appUi 'var user by rememberSaveable\(action\.code\) \{ mutableStateOf\("root"\) \}' "Connection dialog user default is not root"
+Assert-Match $appUi 'var port by rememberSaveable\(action\.code\) \{ mutableStateOf\("22"\) \}' "Connection dialog port default is not 22"
+Assert-NoMatch $appUi 'targets\.firstOrNull\(\)\?\.(id|host|user|port)' "Connection dialog still auto-fills from the first recent target"
+Assert-Match $appUi 'clickable \{ host = target\.host; user = target\.user; port = target\.port\.toString\(\) \}' "Recent-target cards no longer explicitly apply on click"
+Assert-Match $appUi 'var password by remember \{ mutableStateOf\(""\) \}' "Connection dialog password became saveable"
+
+$desktopGui = Read-RepoFile "gui/ProxyNodeAssistant.Gui.cs"
+Assert-Match $desktopGui 'string legacy = IOPath\.Combine\(root, "TextNodeAssistant", "recent-targets\.tsv"\)' "Desktop history fallback does not use the legacy TextNodeAssistant path"
+Assert-Match $desktopGui 'if \(remoteForm\) RefreshRecentTargets\(false\)' "Desktop operation form still auto-applies the latest history entry"
+Assert-NoMatch $desktopGui 'if \(remoteForm\) RefreshRecentTargets\(true\)' "Desktop operation form still contains an implicit history apply"
+Assert-Match $desktopGui 'connectionHostInput\.Text == ""[\s\S]*historyUseButton\.RaiseEvent' "History smoke no longer verifies blank fields before explicit Use"
+Assert-Match $desktopGui 'historyUseButton\.RaiseEvent[\s\S]*connectionHostInput\.Text == target\.Host' "History smoke no longer verifies explicit Use applies the selected row"
+
+$installer = Read-RepoFile "runbook/proxy-node-assistant-v1.0.0/linux/00-auto-install-or-optimize.sh"
+$guiGuardIndex = $installer.IndexOf('PROXY_RUNBOOK_GUI_MODE')
+$guiReadyIndex = $installer.IndexOf('CREDENTIAL_HANDOFF_READY=1')
+$cliShowMatches = [regex]::Matches($installer, '(?m)^[ \t]*handoff_show[ \t]*$')
+$cliShowIndex = if ($cliShowMatches.Count -gt 0) { $cliShowMatches[$cliShowMatches.Count - 1].Index } else { -1 }
+if ($guiGuardIndex -lt 0 -or $guiReadyIndex -lt 0 -or $cliShowIndex -lt 0 -or
+    $guiGuardIndex -ge $guiReadyIndex -or $guiReadyIndex -ge $cliShowIndex) {
+    throw "Runbook still streams the raw credential handoff in GUI mode"
+}
+
+# Handoff/panel rendering must also work when an in-place v0.9.x upgrade has
+# not yet moved 18-panel-metadata.sh to the renamed toolkit root.
+Assert-Match $workflow 'private fun panelMetadataCommand\(\)' "Android panel metadata fallback helper is missing"
+Assert-Match $workflow ([regex]::Escape('root=''$REMOTE_ROOT''')) "Panel metadata helper no longer probes the current root"
+Assert-Match $workflow ([regex]::Escape('root=''$LEGACY_TEXT_REMOTE_ROOT''')) "Panel metadata helper lost the text-node legacy root"
+Assert-Match $workflow ([regex]::Escape('root=''$LEGACY_REMOTE_ROOT''')) "Panel metadata helper lost the proxy-runbook legacy root"
+$panelHelperIndex = $workflow.IndexOf('private fun panelMetadataCommand()')
+$handoffPanelIndex = $workflow.IndexOf('ProtocolParsers.panel(checked(handle, panelMetadataCommand(), emit = false)')
+$openPanelIndex = $workflow.IndexOf('val meta = ProtocolParsers.panel(checked(handle, panelMetadataCommand(), emit = false)')
+if ($panelHelperIndex -lt 0 -or $handoffPanelIndex -lt 0 -or $openPanelIndex -lt 0) {
+    throw "Android handoff/open-panel paths do not use the legacy-aware panel metadata helper"
+}
+
 $androidBuilder = Read-RepoFile "android/build-android.ps1"
 Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/00-bootstrap-toolkit\.sh' "Android build no longer verifies the fresh-VPS bootstrap entry"
 Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/28-topology-reconcile\.sh' "Android build no longer verifies the explicit route reconciler"
@@ -132,6 +173,7 @@ if ($archiveEntries | Where-Object { $_ -notlike 'proxy-node-assistant-v1.0.0/*'
 }
 foreach ($entry in @(
     'proxy-node-assistant-v1.0.0/TOOLKIT_VERSION',
+    'proxy-node-assistant-v1.0.0/THIRD_PARTY_LOCK.env',
     'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID',
     'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION',
     'proxy-node-assistant-v1.0.0/linux/00-bootstrap-toolkit.sh',

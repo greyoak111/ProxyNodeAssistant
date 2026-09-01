@@ -8,8 +8,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 STATE_DIR="/root/.config/text-node-assistant"
 STATE_FILE="$STATE_DIR/cdn-xhttp.env"
-REMARK="tna-cdn-xhttp"
-LEGACY_REMARK="pna-cdn-xhttp"
+# v0.9.x used text-node-assistant; reset-line installs may have already
+# migrated this state below proxy-runbook.  Prefer an explicitly requested
+# directory, otherwise select whichever managed state exists.  Keeping the
+# legacy default preserves old scripts and in-place upgrades.
+if [ -n "${PNA_XHTTP_STATE_DIR:-}" ]; then
+  STATE_DIR="$PNA_XHTTP_STATE_DIR"
+  STATE_FILE="$STATE_DIR/cdn-xhttp.env"
+elif [ ! -r "$STATE_FILE" ] && [ -r /root/.config/proxy-runbook/cdn-xhttp.env ]; then
+  STATE_DIR="/root/.config/proxy-runbook"
+  STATE_FILE="$STATE_DIR/cdn-xhttp.env"
+fi
+# v1 owns the PNA-labelled profile.  The text-node-assistant spelling is kept
+# as an exact import/migration alias so an in-place upgrade can repair an old
+# inbound without creating a second XHTTP listener.  Nothing new is emitted
+# with a TNA or v0.9.5 label.
+REMARK="pna-cdn-xhttp"
+LEGACY_REMARK="tna-cdn-xhttp"
+EXTERNAL_PROXY_REMARK="pna-cdn-xhttp-orange"
+LEGACY_EXTERNAL_PROXY_REMARK="tna-cdn-xhttp-orange"
+CLIENT_COMMENT="pna-cdn-xhttp-v1.0.0"
 
 [ "$(id -u)" -eq 0 ] || { echo 'ERROR: run as root.' >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo 'ERROR: jq is required.' >&2; exit 1; }
@@ -58,8 +76,8 @@ verify_object() {
 
 external_proxy_payload() {
   local object="$1" domain="$2" public_port="${3:-8443}"
-  jq -c --arg domain "$domain" --argjson public_port "$public_port" '
-    {enable,remark,listen,port,protocol,expiryTime,total,settings,streamSettings,sniffing,
+  jq -c --arg domain "$domain" --argjson public_port "$public_port" --arg remark "$EXTERNAL_PROXY_REMARK" --arg inbound_remark "$REMARK" --arg client_comment "$CLIENT_COMMENT" '
+    {enable,remark:$inbound_remark,listen,port,protocol,expiryTime,total,settings,streamSettings,sniffing,
      tag,allocate,subSortIndex,trafficReset,trafficResetDay,shareAddrStrategy,shareAddr}
     # The loopback inbound intentionally has stream security=none.  The
     # external proxy is a separate public TLS endpoint, so `same` would make
@@ -67,7 +85,13 @@ external_proxy_payload() {
     # client link without TLS/SNI/Host.  Explicitly force TLS for that public
     # endpoint; the hosts metadata below carries the same settings for APIs
     # that render links from host groups.
-    | .streamSettings.externalProxy=[{forceTls:"tls",dest:$domain,port:$public_port,remark:"tna-cdn-xhttp-orange"}]
+    # A known legacy client comment is presentation metadata, not a user
+    # supplied note.  Normalize it during the same in-place repair while
+    # leaving arbitrary user comments untouched.
+    | .settings.clients = ((.settings.clients // []) | map(
+        if ((.comment // "") == "tna-cdn-xhttp-v0.9.5" or (.comment // "") == "pna-cdn-xhttp-v0.9.5")
+        then .comment=$client_comment else . end))
+    | .streamSettings.externalProxy=[{forceTls:"tls",dest:$domain,port:$public_port,remark:$remark}]
   ' <<<"$object"
 }
 
@@ -77,19 +101,20 @@ external_proxy_payload() {
 # inbound share dialog can fall back to the loopback security=none profile.
 get_host_group() {
   xui_api_get '/panel/api/hosts/list' |
-    jq -c --arg group "$REMARK" '.obj[]? | select(.groupId == $group)' |
+    jq -c --arg group "$REMARK" --arg legacy "$LEGACY_REMARK" '.obj[]? | select(.groupId == $group or .groupId == $legacy)' |
     sed -n '1p'
 }
 
 host_group_payload() {
-  local object="$1" domain="$2" public_port="$3" inbound_id path
+  local object="$1" domain="$2" public_port="$3" group_id="${4:-$REMARK}" inbound_id path
   inbound_id="$(jq -r '.id // empty' <<<"$object")"
   path="$(jq -r '.streamSettings.xhttpSettings.path // empty' <<<"$object")"
   jq -nc \
-    --arg group "$REMARK" --arg domain "$domain" --arg endpoint "$domain:$public_port" \
+    --arg group "$group_id" --arg domain "$domain" --arg endpoint "$domain:$public_port" \
+    --arg remark "$EXTERNAL_PROXY_REMARK" \
     --arg path "$path" --argjson inbound_id "$inbound_id" --argjson public_port "$public_port" \
     '{groupId:$group,inboundIds:[$inbound_id],hosts:[$endpoint],sortOrder:0,
-      remark:"tna-cdn-xhttp-orange",serverDescription:"managed CDN XHTTP",
+      remark:$remark,serverDescription:"managed CDN XHTTP",
       isDisabled:false,isHidden:false,tags:[],port:$public_port,security:"tls",
       sni:$domain,hostHeader:$domain,path:$path,alpn:[],fingerprint:"chrome",
       overrideSniFromAddress:false,keepSniBlank:false,pinnedPeerCertSha256:[],
@@ -99,16 +124,21 @@ host_group_payload() {
 }
 
 sync_host_group() {
-  local domain="$1" public_port="${2:-8443}" object group payload response inbound_id endpoint current
+  local domain="$1" public_port="${2:-8443}" object group group_id payload response inbound_id endpoint current
   object="$(get_managed)"
   [ -n "$object" ] || { echo 'TNA_XHTTP_ERROR=INBOUND_MISSING' >&2; return 91; }
   inbound_id="$(jq -r '.id // empty' <<<"$object")"
   case "$inbound_id" in ''|*[!0-9]*) echo 'TNA_XHTTP_ERROR=INBOUND_ID_INVALID' >&2; return 100;; esac
   endpoint="$domain:$public_port"
-  payload="$(host_group_payload "$object" "$domain" "$public_port")"
+  group_id="$REMARK"
   group="$(get_host_group || true)"
   if [ -n "$group" ]; then
-    response="$(xui_api_post_json "/panel/api/hosts/update/${REMARK}" "$payload")" || {
+    group_id="$(jq -r '.groupId // empty' <<<"$group")"
+    [ -n "$group_id" ] || group_id="$REMARK"
+  fi
+  payload="$(host_group_payload "$object" "$domain" "$public_port" "$group_id")"
+  if [ -n "$group" ]; then
+    response="$(xui_api_post_json "/panel/api/hosts/update/${group_id}" "$payload")" || {
       echo 'TNA_XHTTP_ERROR=HOST_GROUP_UPDATE_FAILED' >&2
       return 105
     }
@@ -275,15 +305,16 @@ create_managed() {
   uuid="$(xui_new_uuid)"
   path="/$(openssl rand -hex 16)/"
   sub_id="$(openssl rand -hex 16)"
-  email="tna-cdn-$(date +%Y%m%d%H%M%S)"
+  email="pna-cdn-$(date +%Y%m%d%H%M%S)"
   payload="$(jq -nc \
     --arg remark "$REMARK" --arg uuid "$uuid" --arg email "$email" --arg sub "$sub_id" \
+    --arg comment "$CLIENT_COMMENT" --arg external_remark "$EXTERNAL_PROXY_REMARK" \
     --arg domain "$domain" \
     --arg path "$path" --argjson port "$port" \
     '{enable:true,remark:$remark,listen:"127.0.0.1",port:$port,protocol:"vless",
       expiryTime:0,total:0,shareAddrStrategy:"custom",shareAddr:"",
-      settings:{clients:[{id:$uuid,email:$email,flow:"",limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,comment:"tna-cdn-xhttp-v0.9.5"}],decryption:"none",encryption:"none",fallbacks:[]},
-      streamSettings:{network:"xhttp",security:"none",xhttpSettings:{path:$path,host:"",mode:"packet-up"},externalProxy:[{forceTls:"tls",dest:$domain,port:8443,remark:"tna-cdn-xhttp-orange"}]},
+      settings:{clients:[{id:$uuid,email:$email,flow:"",limitIp:0,totalGB:0,expiryTime:0,enable:true,tgId:0,subId:$sub,comment:$comment}],decryption:"none",encryption:"none",fallbacks:[]},
+      streamSettings:{network:"xhttp",security:"none",xhttpSettings:{path:$path,host:"",mode:"packet-up"},externalProxy:[{forceTls:"tls",dest:$domain,port:8443,remark:$external_remark}]},
       sniffing:{enabled:true,destOverride:["http","tls","quic"],metadataOnly:false,routeOnly:false}}')"
   response="$(xui_api_post_json '/panel/api/inbounds/add' "$payload")"
   jq -e '.success == true' <<<"$response" >/dev/null || { jq '{success,msg}' <<<"$response" >&2; return 99; }
@@ -316,12 +347,15 @@ create_managed() {
   handoff_set CDN_XHTTP_UUID "$uuid"
   handoff_set CDN_XHTTP_PATH "$path"
   handoff_set CDN_XHTTP_LOCAL_PORT "$port"
+  handoff_set CDN_XHTTP_SUB_ID "$sub_id"
+  handoff_set CDN_XHTTP_DOMAIN "$domain"
+  handoff_set CDN_XHTTP_PUBLIC_PORT 8443
   echo "TNA_XHTTP_CREATED id=$id port=$port listen=127.0.0.1 mode=packet-up"
   show_managed
 }
 
 build_link() {
-  local domain="$1" public_port="${2:-8443}" port path uuid stored_domain object encoded_path link label
+  local domain="$1" public_port="${2:-8443}" port path uuid sub_id stored_domain object encoded_path link label
   valid_domain "$domain" || { echo 'TNA_XHTTP_ERROR=DOMAIN_INVALID' >&2; return 96; }
   [ "$public_port" = 8443 ] || { echo 'TNA_XHTTP_ERROR=PUBLIC_PORT_MUST_BE_8443' >&2; return 101; }
   stored_domain="$(state_value XHTTP_DOMAIN || true)"
@@ -334,16 +368,29 @@ build_link() {
   verify_object "$object" "$port" "$path" "$uuid"
   runtime_verify "$port"
   encoded_path="$(uri "$path")"
-  label='TNA-CDN-XHTTP-ORANGE'
+  label='PNA-CDN-XHTTP-ORANGE'
   link="vless://${uuid}@${domain}:${public_port}?encryption=none&security=tls&sni=$(uri "$domain")&fp=chrome&type=xhttp&host=$(uri "$domain")&path=${encoded_path}&mode=packet-up#$(uri "$label")"
   handoff_set CDN_XHTTP_LINK "$link"
+  # Keep an explicit stage alias for older handoff consumers.  The current
+  # topology intentionally validates XHTTP on 8443 before any promotion.
+  handoff_set CDN_XHTTP_STAGE_LINK "$link"
+  sub_id="$(state_value XHTTP_SUB_ID || true)"
+  if [ -n "$sub_id" ]; then
+    handoff_set CDN_XHTTP_SUB_ID "$sub_id"
+    handoff_set CDN_XHTTP_DOMAIN "$domain"
+    handoff_set CDN_XHTTP_PUBLIC_PORT "$public_port"
+    handoff_set CDN_XHTTP_SUBSCRIPTION_URL "https://${domain}/sub/${sub_id}"
+    if ! grep -q '^SUBSCRIPTION_URL=' "$HANDOFF_FILE" 2>/dev/null; then
+      handoff_set SUBSCRIPTION_URL "https://${domain}/sub/${sub_id}"
+    fi
+  fi
   printf '__TNA_XHTTP_LINK_BEGIN__\n'
   printf 'XHTTP_PUBLIC_PORT=%s\nXHTTP_LINK=%s\n' "$public_port" "$link"
   printf '__TNA_XHTTP_LINK_END__\n'
 }
 
 delete_managed() {
-  local port path uuid object id response
+  local port path uuid object id response group group_id
   [ -s "$STATE_FILE" ] || { echo 'TNA_XHTTP_NOT_INSTALLED'; return 0; }
   port="$(state_value XHTTP_LOCAL_PORT || true)"
   path="$(state_value XHTTP_PATH || true)"
@@ -351,8 +398,11 @@ delete_managed() {
   object="$(get_by_port "$port")"
   verify_object "$object" "$port" "$path" "$uuid"
   id="$(jq -r '.id' <<<"$object")"
-  if [ -n "$(get_host_group || true)" ]; then
-    response="$(xui_auth_curl -X POST "${XUI_BASE}/panel/api/hosts/del/${REMARK}")" || {
+  group="$(get_host_group || true)"
+  if [ -n "$group" ]; then
+    group_id="$(jq -r '.groupId // empty' <<<"$group")"
+    [ -n "$group_id" ] || group_id="$REMARK"
+    response="$(xui_auth_curl -X POST "${XUI_BASE}/panel/api/hosts/del/${group_id}")" || {
       echo 'TNA_XHTTP_ERROR=HOST_GROUP_DELETE_FAILED' >&2
       return 102
     }
@@ -370,6 +420,10 @@ delete_managed() {
   handoff_delete CDN_XHTTP_UUID
   handoff_delete CDN_XHTTP_PATH
   handoff_delete CDN_XHTTP_LOCAL_PORT
+  handoff_delete CDN_XHTTP_SUB_ID
+  handoff_delete CDN_XHTTP_DOMAIN
+  handoff_delete CDN_XHTTP_PUBLIC_PORT
+  handoff_delete CDN_XHTTP_SUBSCRIPTION_URL
   handoff_delete CDN_XHTTP_LINK
   handoff_delete CDN_XHTTP_STAGE_LINK
   echo "TNA_XHTTP_DELETED id=$id port=$port"

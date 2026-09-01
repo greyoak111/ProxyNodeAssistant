@@ -26,9 +26,17 @@ fi
 
 handoff_set "PANEL_USERNAME" "$USERNAME"
 handoff_set "PANEL_PASSWORD" "$PASSWORD"
+credential_store_set "PANEL_USERNAME" "$USERNAME"
+credential_store_set "PANEL_PASSWORD" "$PASSWORD"
 [ -n "$PORT" ] && handoff_set "PANEL_PORT" "$PORT"
 [ -n "$PATH_RAW" ] && handoff_set "PANEL_WEB_BASE_PATH" "$PATH_RAW"
 [ -n "$TOKEN" ] && handoff_set "PANEL_API_TOKEN" "$TOKEN"
+
+xui_password_login_works "$USERNAME" "$PASSWORD" || {
+  echo "ERROR: new 3x-ui credentials did not pass a real localhost login check." >&2
+  exit 1
+}
+echo "PANEL_PASSWORD_LOGIN_VERIFIED=1"
 
 echo
 echo "================ REAL 3X-UI CREDENTIALS ================="

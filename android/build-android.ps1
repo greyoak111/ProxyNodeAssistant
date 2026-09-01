@@ -99,18 +99,112 @@ if ($toolkitEntries | Where-Object { $_ -notlike "proxy-node-assistant-v1.0.0/*"
     throw "Current toolkit archive has a stale or unexpected top-level directory; rebuild the repository archive first"
 }
 $requiredToolkitEntries = @(
+    # Release metadata and the complete non-retired surface used by the
+    # Android workflow probe.  Keeping this list here (rather than checking
+    # only the bootstrap script) prevents an apparently successful APK build
+    # from carrying an archive that will fail TOOLKIT_COMPLETE after upload.
     "proxy-node-assistant-v1.0.0/TOOLKIT_VERSION",
+    "proxy-node-assistant-v1.0.0/THIRD_PARTY_LOCK.env",
     "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID",
     "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION",
     "proxy-node-assistant-v1.0.0/linux/00-bootstrap-toolkit.sh",
+    "proxy-node-assistant-v1.0.0/linux/00-preflight-vps.sh",
+    "proxy-node-assistant-v1.0.0/linux/00-migrate-legacy-state.sh",
     "proxy-node-assistant-v1.0.0/linux/00-auto-install-or-optimize.sh",
+    # This one-shot file only retires old v0.9.x state.  It is not an active
+    # device-admission, drive, or Copyparty feature, but remains required so
+    # an upgrade can finish its guarded cleanup step.
+    "proxy-node-assistant-v1.0.0/linux/00c-retire-v095-device-drive.sh",
+    "proxy-node-assistant-v1.0.0/linux/01-safe-backup.sh",
+    "proxy-node-assistant-v1.0.0/linux/01a-rotate-vps-password.sh",
+    "proxy-node-assistant-v1.0.0/linux/02-install-base.sh",
+    "proxy-node-assistant-v1.0.0/linux/02b-firewall-safe.sh",
+    "proxy-node-assistant-v1.0.0/linux/03-install-3xui.sh",
+    "proxy-node-assistant-v1.0.0/linux/03b-lockdown-panel.sh",
+    "proxy-node-assistant-v1.0.0/linux/03c-rotate-panel-credentials.sh",
+    "proxy-node-assistant-v1.0.0/linux/03d-export-panel-handoff.sh",
+    "proxy-node-assistant-v1.0.0/linux/04-generate-reality.sh",
+    "proxy-node-assistant-v1.0.0/linux/04a-reality-api.sh",
+    "proxy-node-assistant-v1.0.0/linux/04b-open-test-port-current-ssh.sh",
+    "proxy-node-assistant-v1.0.0/linux/04c-close-test-port.sh",
+    "proxy-node-assistant-v1.0.0/linux/04d-optimize-existing-reality-shadow.sh",
+    "proxy-node-assistant-v1.0.0/linux/04e-export-reality-handoff.sh",
+    "proxy-node-assistant-v1.0.0/linux/04f-xhttp-cdn-api.sh",
+    "proxy-node-assistant-v1.0.0/linux/05-cover-bootstrap.sh",
+    "proxy-node-assistant-v1.0.0/linux/05a-cloudflare-dns-upsert.sh",
+    "proxy-node-assistant-v1.0.0/linux/05b-cover-site-polished.sh",
+    "proxy-node-assistant-v1.0.0/linux/05c-optimize-cover-backend.sh",
+    "proxy-node-assistant-v1.0.0/linux/05d-configure-subscription.sh",
+    "proxy-node-assistant-v1.0.0/linux/05e-cdn-xhttp-nginx.sh",
+    "proxy-node-assistant-v1.0.0/linux/05f-cloudflare-origin-lock.sh",
+    "proxy-node-assistant-v1.0.0/linux/05g-cdn-xhttp-validate.sh",
+    "proxy-node-assistant-v1.0.0/linux/05h-ensure-cdn-certificate.sh",
+    "proxy-node-assistant-v1.0.0/linux/06-warp-install.sh",
+    "proxy-node-assistant-v1.0.0/linux/07-warp-configure-proxy.sh",
+    "proxy-node-assistant-v1.0.0/linux/07a-apply-warp-route-local.sh",
+    "proxy-node-assistant-v1.0.0/linux/08-warp-check.sh",
+    "proxy-node-assistant-v1.0.0/linux/09-status-node.sh",
+    "proxy-node-assistant-v1.0.0/linux/10-emergency-network-dump.sh",
+    "proxy-node-assistant-v1.0.0/linux/11-safe-upgrade-audit.sh",
+    "proxy-node-assistant-v1.0.0/linux/12-restore-iptables-vnc-only.sh",
+    "proxy-node-assistant-v1.0.0/linux/13-maintenance-menu.sh",
+    "proxy-node-assistant-v1.0.0/linux/14-node-doctor.sh",
+    "proxy-node-assistant-v1.0.0/linux/15-show-current-node.sh",
+    "proxy-node-assistant-v1.0.0/linux/16-auto-diagnose.sh",
+    "proxy-node-assistant-v1.0.0/linux/17-safe-auto-repair.sh",
+    "proxy-node-assistant-v1.0.0/linux/18-panel-metadata.sh",
+    "proxy-node-assistant-v1.0.0/linux/19-prune-backups-current-config.sh",
+    "proxy-node-assistant-v1.0.0/linux/20-adaptive-performance.sh",
+    "proxy-node-assistant-v1.0.0/linux/21-traffic-status.sh",
+    "proxy-node-assistant-v1.0.0/linux/22-dismantle-managed-node.sh",
+    "proxy-node-assistant-v1.0.0/linux/23-node-identity.sh",
+    "proxy-node-assistant-v1.0.0/linux/23-ss2022-tcp.sh",
+    "proxy-node-assistant-v1.0.0/linux/24-security-baseline.sh",
+    "proxy-node-assistant-v1.0.0/linux/25-security-events.sh",
+    "proxy-node-assistant-v1.0.0/linux/27-ip-rebind.sh",
     "proxy-node-assistant-v1.0.0/linux/28-topology-reconcile.sh",
-    "proxy-node-assistant-v1.0.0/linux/23-ss2022-tcp.sh"
+    "proxy-node-assistant-v1.0.0/linux/28a-install-transaction.sh",
+    "proxy-node-assistant-v1.0.0/linux/32-subscription-rewrite.py",
+    "proxy-node-assistant-v1.0.0/linux/lib-deployment-state.sh",
+    "proxy-node-assistant-v1.0.0/linux/lib-dns-quorum.sh",
+    "proxy-node-assistant-v1.0.0/linux/lib-gui-prompt.sh",
+    "proxy-node-assistant-v1.0.0/linux/lib-handoff.sh",
+    "proxy-node-assistant-v1.0.0/linux/lib-third-party.sh",
+    "proxy-node-assistant-v1.0.0/linux/lib-xui-api.sh",
+    # Runtime cover/subscription assets used by 05b/05d and the topology
+    # reconciler.  The retired marker is documentation only and is omitted.
+    "proxy-node-assistant-v1.0.0/templates/NODE_REGISTRY.csv",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/MANIFEST.tsv",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/01-atlas-journal.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/02-northstar-studio.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/03-cedar-stone.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/04-field-lab.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/05-harbor-weather.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/06-local-library.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/07-ember-cafe.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/08-trail-guide.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/09-signal-status.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/10-mono-docs.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/11-analog-radio.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/12-city-calendar.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/13-pixel-gallery.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/14-quiet-finance.html",
+    "proxy-node-assistant-v1.0.0/templates/cover-sites/15-signal-runner.html",
+    "proxy-node-assistant-v1.0.0/templates/systemd/proxy-node-assistant-subscription-proxy.service"
 )
 foreach ($entry in $requiredToolkitEntries) {
     if ($toolkitEntries -notcontains $entry) {
         throw "Current toolkit archive is missing an Android fresh-install entry: $entry"
     }
+}
+# A retirement note and the one-shot 00c cleanup helper are allowed.  Any
+# active admission/drive/Copyparty path indicates that a stale archive was
+# assembled and must never be embedded into the client.
+$unexpectedRetiredEntries = @($toolkitEntries | Where-Object {
+    $_ -match '(?i)(^|/)26[^/]*(device|admission)|(^|/)(copyparty|private-drive|drive-credential)(/|\.|$)'
+} | Where-Object { $_ -notmatch '(?i)00c-retire-v095-device-drive\.sh$' })
+if ($unexpectedRetiredEntries.Count -gt 0) {
+    throw "Current toolkit archive contains retired active entries: $($unexpectedRetiredEntries -join ', ')"
 }
 $archiveVersion = (& tar -xOf $toolkitSource "proxy-node-assistant-v1.0.0/TOOLKIT_VERSION" | Out-String).Trim()
 $archiveBuildId = (& tar -xOf $toolkitSource "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID" | Out-String).Trim()

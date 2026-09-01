@@ -30,6 +30,21 @@ data class ManagedKeyRecord(
     val createdEpochMs: Long = System.currentTimeMillis(),
 )
 
+/**
+ * Stable identity reported by the node-identity protocol.  This is a safety
+ * binding for an endpoint change (for example a provider-assigned public IP
+ * change); it is deliberately unrelated to per-client admission or storage features.
+ */
+data class StableNodeIdentity(
+    val targetId: String,
+    val serverId: String,
+    val nodeId: String,
+    val machineIdSha256: String,
+    val hostKeySha256: String,
+    val firstKnownPublicIp: String,
+    val currentPublicIp: String,
+)
+
 enum class KeyStatus { BOUND, BACKUP }
 
 enum class PromptKind { TEXT, SECRET, YES_NO, HOST_KEY, EXACT_CONFIRMATION, CHOICE }
@@ -72,6 +87,9 @@ data class ToolkitProbe(
     val version: String = "",
     val buildId: String = "",
     val buildRevision: Int = 0,
+    /** Optional identity fields emitted by newer probes; old probes omit them. */
+    val brand: String = "",
+    val root: String = "",
 )
 
 data class KiwiUsage(
@@ -124,7 +142,7 @@ object ActionCatalog {
         ActionSpec("6", "随机化 3x-ui 账号密码", "Rotate panel credentials", "更新面板身份并输出经过校验的交接单。", "Rotate panel identity and return a validated handoff.", ActionGroup.SECURITY),
         ActionSpec("7", "显示当前凭据交接单", "Show credential handoff", "读取并验证当前真实凭据。", "Read and validate current real credentials.", ActionGroup.ACCESS),
         ActionSpec("8", "优化伪装网站与 Nginx", "Optimize cover site and Nginx", "随机或指定 15 套本地模板，不依赖第三方 CDN。", "Random or exact selection from 15 local templates without third-party CDN.", ActionGroup.MAINTENANCE),
-        ActionSpec("9", "完整灾难恢复备份", "Full disaster-recovery backup", "含程序和身份，体积较大。", "Includes programs and identities; potentially large.", ActionGroup.BACKUP),
+        ActionSpec("9", "完整灾难恢复备份", "Full disaster-recovery backup", "仅含程序与远端节点配置，体积较大。", "Contains the program and remote-node configuration; potentially large.", ActionGroup.BACKUP),
         ActionSpec("10", "生成紧急诊断报告", "Emergency diagnostic report", "生成后通过 SSH 下载到手机指定位置。", "Generate and download through SSH to a user-selected document.", ActionGroup.BACKUP),
         ActionSpec("11", "绑定 / 轮换 SSH 登录密钥", "Bind / rotate SSH key", "先验证新钥，再撤旧钥。", "Verify the new key before revoking the old key.", ActionGroup.SECURITY),
         ActionSpec("12", "清空应用内秘密剪贴板", "Clear secret clipboard", "清空本应用写入的剪贴板内容。", "Clear clipboard content written by this app.", ActionGroup.LOCAL, remote = false),
@@ -135,6 +153,11 @@ object ActionCatalog {
         ActionSpec("17", "SSH / vnStat 流量估算", "SSH / vnStat traffic estimate", "查看系统网卡累计流量，不等同厂商计费。", "View interface counters; not provider billing.", ActionGroup.MAINTENANCE),
         ActionSpec("18", "拆除所有施工并恢复基线", "Dismantle all managed changes", "先生成救援包，再拆除已知施工。", "Create a rescue archive before removing managed changes.", ActionGroup.MAINTENANCE, destructive = true),
         ActionSpec("19", "识别本机 IP 并管理 SS2022 白名单", "Detect local IP and manage SS2022 allowlist", "先在本机直连识别公网 IPv4，再与 VPS 看到的 SSH 来源核对；明确确认后才加入 SS2022 精确白名单。", "Detect the public IPv4 locally, compare it with the source seen by the VPS, and add it to the exact SS2022 allowlist only after explicit confirmation.", ActionGroup.SECURITY),
+        // v0.9.5 maintenance actions retained under their original codes;
+        // retired experimental enrollment/storage entries are intentionally absent.
+        ActionSpec("20", "访问与封禁日志", "Access and ban events", "按需读取 SSH、Fail2ban、防火墙和入口的聚合元数据；可明确确认后应用受管安全基线。", "Read bounded SSH, Fail2ban, firewall, and ingress metadata; apply the managed security baseline only after explicit confirmation.", ActionGroup.SECURITY),
+        ActionSpec("22", "CDN/XHTTP 线路控制中心", "CDN/XHTTP route control center", "保留 v0.9.5 的灰云/橙云/XHTTP 分阶段施工、边缘验收、真实客户端提交、回滚和组件清理；每个公网变更均需明确确认，不包含网盘或强制本机门槛。", "Retain the v0.9.5 gray/orange CDN-XHTTP staging, edge validation, real-client commit, rollback, and component cleanup flow; every public mutation requires explicit confirmation, with no drive or forced local-device gate.", ActionGroup.MAINTENANCE),
+        ActionSpec("23", "更换公网 IP 后安全重绑定", "Safely rebind a changed public IP", "复用原 SSH key，并在 Host Key、machine-id、NODE_ID/SERVER_ID 全部一致后才提交新地址。", "Reuse the original SSH key and commit a new endpoint only after host key, machine-id, and NODE_ID/SERVER_ID all match.", ActionGroup.SECURITY),
         ActionSpec("T", "服务商流量中心", "Provider traffic center", "KiwiVM 临时 API Key 或经确认加密保存；其他厂商按能力接入。", "Temporary KiwiVM API key or confirmed encrypted storage; other providers by capability.", ActionGroup.LOCAL, remote = false),
         ActionSpec("K", "管理节点 SSH key", "Manage node SSH keys", "查看、备份态、恢复、轮换和解绑。", "Inspect, archive, restore, rotate, and unbind keys.", ActionGroup.SECURITY, remote = false),
         ActionSpec("H", "管理 VPS 历史", "Manage VPS history", "快速选择、编辑或一键删除历史。", "Quickly select, edit, or delete history.", ActionGroup.LOCAL, remote = false),

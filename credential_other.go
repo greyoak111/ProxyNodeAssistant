@@ -13,11 +13,6 @@ import (
 	"time"
 )
 
-// errCredentialManagerUnsupported is retained as the cross-platform sentinel
-// used by callers. On Unix it means that no supported OS credential backend is
-// installed or available, rather than referring specifically to Windows.
-var errCredentialManagerUnsupported = errors.New("no supported Unix credential store is available")
-
 const unixCredentialCommandTimeout = 15 * time.Second
 
 type unixCredentialBackend struct {
@@ -143,12 +138,15 @@ func credentialWrite(target, userName, secret string) error {
 		return err
 	case "linux":
 		// secret-tool reads the secret from stdin, avoiding argv/process-list
-		// exposure. The target is the sole lookup attribute so credentialRead
-		// and credentialDelete can address it without retaining the account ID.
+		// exposure. Keep the target as the sole lookup attribute: credentialRead
+		// and credentialDelete receive only that stable target, so adding
+		// userName here would create an entry that those operations could not
+		// address consistently. The username is metadata for Windows Keychain
+		// compatibility; target namespaces already include the logical account
+		// where callers need separation.
 		args := []string{
 			"store", "--label", "ProxyNodeAssistant",
 			"proxy-node-assistant-target", target,
-			"proxy-node-assistant-user", userName,
 		}
 		_, err := runUnixCredentialCommand(backend, args, secret+"\n")
 		return err

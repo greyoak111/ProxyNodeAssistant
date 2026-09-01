@@ -94,9 +94,19 @@ esac`)
 	if err := credentialDelete("profile-target"); err != nil {
 		t.Fatalf("credentialDelete failed: %v", err)
 	}
+	logBytes, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	logText := string(logBytes)
-	if !strings.Contains(logText, "store") {
-		t.Fatalf("store invocation missing: %q", logText)
+	if !strings.Contains(logText, "store") || !strings.Contains(logText, "lookup") || !strings.Contains(logText, "clear") {
+		t.Fatalf("store/lookup/clear invocation missing: %q", logText)
+	}
+	if strings.Count(logText, "proxy-node-assistant-target profile-target") != 3 {
+		t.Fatalf("secret-tool target attribute was not consistent across operations: %q", logText)
+	}
+	if strings.Contains(logText, "proxy-node-assistant-user") || strings.Contains(logText, "round-trip-secret") {
+		t.Fatalf("secret-tool invocation leaked unsupported/user or secret data: %q", logText)
 	}
 }
 

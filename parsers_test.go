@@ -449,7 +449,7 @@ func TestAllRemoteMenuItemsUseUniversalActionLifecycle(t *testing.T) {
 }
 
 func TestTemporaryKeyCleanupPathGuard(t *testing.T) {
-	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v0.9.0-session-")
+	dir, err := os.MkdirTemp("", sessionTempPrefix)
 	if err != nil {
 		t.Fatal(err)
 	}

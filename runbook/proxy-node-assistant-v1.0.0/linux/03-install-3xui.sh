@@ -4,6 +4,9 @@ umask 077
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root."; exit 1; }
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT/linux/lib-third-party.sh"
+
 if [ -x /usr/local/x-ui/x-ui ]; then
   echo "3x-ui already exists. This script will NOT reinstall or upgrade it."
   exit 0
@@ -17,7 +20,7 @@ read -r -p "Type INSTALL to continue: " ans
 export XUI_NONINTERACTIVE=1
 export XUI_SSL_MODE=none
 export XUI_DB_TYPE=sqlite
-bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh)
+tna_install_3xui_pinned "$ROOT"
 
 echo
 echo "===== REAL GENERATED 3X-UI CREDENTIALS ====="

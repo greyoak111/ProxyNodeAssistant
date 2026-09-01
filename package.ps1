@@ -18,10 +18,18 @@ try {
         (Join-Path $Root "dist\ProxyNodeAssistant-v$Version-win32.exe"),
         (Join-Path $Root "dist\ProxyNodeAssistant-v$Version-win-arm64.exe")
     )
-    # Unix CLI archives are produced by build-unix.ps1.  Keep them optional so
-    # the Windows-only packaging flow remains usable, but include every
-    # validated Darwin/Linux artifact whenever that build has been run.
-    $unixArchives = @(Get-ChildItem -LiteralPath (Join-Path $Root "dist") -File -Filter "ProxyNodeAssistant-v$Version-cli-*.tar.gz" -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object FullName)
+    # The official v1.0.0 package promises Linux and macOS CLI builds.  Resolve
+    # the four exact targets instead of globbing an optional subset; a partial
+    # build must fail loudly rather than silently producing a release that
+    # omits one platform or architecture.  Run build-unix.ps1 with its
+    # default -Target all -Architecture all before invoking this packager.
+    $unixArchiveNames = @(
+        "ProxyNodeAssistant-v$Version-cli-linux-amd64.tar.gz",
+        "ProxyNodeAssistant-v$Version-cli-linux-arm64.tar.gz",
+        "ProxyNodeAssistant-v$Version-cli-darwin-amd64.tar.gz",
+        "ProxyNodeAssistant-v$Version-cli-darwin-arm64.tar.gz"
+    )
+    $unixArchives = @($unixArchiveNames | ForEach-Object { Join-Path $Root "dist\$_" })
     $preview = Join-Path $Root "dist\ProxyNodeAssistant-v$Version-gui-preview.png"
     $workflowPreview = Join-Path $Root "dist\ProxyNodeAssistant-v$Version-workflow-preview.png"
     $toolkit = Join-Path $Root "assets\proxy-node-assistant-toolkit-v$ToolkitVersion.tar.gz"
@@ -35,6 +43,10 @@ try {
     $androidApk = Join-Path $Root "android\dist\ProxyNodeAssistant-v$Version-android-universal.apk"
     $iconPng = Join-Path $Root "gui\ProxyNodeAssistant-v$Version-app-icon.png"
     $iconIco = Join-Path $Root "gui\ProxyNodeAssistant-v$Version.ico"
+    $missingUnix = @($unixArchives | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+    if ($missingUnix.Count -gt 0) {
+        throw "Missing required Unix CLI archives: $($missingUnix -join ', '). Run build-unix.ps1 -Target all -Architecture all first."
+    }
     foreach ($required in @($executables + $unixArchives + @($preview, $workflowPreview, $toolkit, $manual, $beginnerGuide, $notes, $readme, $license, $androidManual, $androidApk, $iconPng, $iconIco))) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Required release input is missing: $required"

@@ -38,7 +38,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AdminPanelSettings
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Close
@@ -166,7 +165,7 @@ private fun PnaTopBar(page: AppPage, language: Language, workflow: WorkflowUiSta
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Panel),
         title = {
             Column {
-                Text("TNA // NODE OPS", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text("PNA // NODE OPS", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 Text(if (language == Language.ZH) "ANDROID 1.0.0 / 本地控制 / 失败即停止" else "ANDROID 1.0.0 / LOCAL CONTROL / FAIL-CLOSED", color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
         },
@@ -265,14 +264,19 @@ private fun ConnectionDialog(
     onLaunch: (NodeTarget, AuthMode, String?) -> Unit,
 ) {
     val context = LocalContext.current
-    var host by rememberSaveable { mutableStateOf(targets.firstOrNull()?.host.orEmpty()) }
-    var user by rememberSaveable { mutableStateOf(targets.firstOrNull()?.user ?: "root") }
-    var port by rememberSaveable { mutableStateOf((targets.firstOrNull()?.port ?: 22).toString()) }
-    var mode by rememberSaveable { mutableStateOf(AuthMode.MANAGED_KEY) }
+    // A newly opened operation starts with neutral connection fields.  Recent
+    // targets are deliberately display-only until the user taps one of the
+    // cards below; otherwise merely opening a form can silently target an old
+    // VPS.  Action-scoped saveable state still survives rotation while this
+    // dialog is open, and the password remains a non-saveable field.
+    var host by rememberSaveable(action.code) { mutableStateOf("") }
+    var user by rememberSaveable(action.code) { mutableStateOf("root") }
+    var port by rememberSaveable(action.code) { mutableStateOf("22") }
+    var mode by rememberSaveable(action.code) { mutableStateOf(AuthMode.MANAGED_KEY) }
     var password by remember { mutableStateOf("") }
-    var showPassword by rememberSaveable { mutableStateOf(false) }
+    var showPassword by rememberSaveable(action.code) { mutableStateOf(false) }
     val vpnActive = remember { isVpnActive(context) }
-    var vpnAcknowledged by rememberSaveable { mutableStateOf(false) }
+    var vpnAcknowledged by rememberSaveable(action.code) { mutableStateOf(false) }
     val valid = Validation.validHost(host) && Validation.validUser(user) && port.toIntOrNull()?.let(Validation::validPort) == true
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(), color = Ink) {
@@ -395,7 +399,10 @@ private fun WorkflowScreen(state: WorkflowUiState, prompt: WorkflowPrompt?, tunn
         state.secretHandoff?.let { secret ->
             Column(Modifier.fillMaxWidth().background(Panel).border(1.dp, Amber).padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.AdminPanelSettings, null, tint = Amber); Spacer(Modifier.width(8.dp)); Text(uiText(language, "已校验的秘密交接单", "VERIFIED SECRET HANDOFF"), color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    // A handoff is a credential bundle, not an on-device
+                    // account or access gate.  Use the key icon so the UI
+                    // cannot be mistaken for a privileged setup screen.
+                    Icon(Icons.Outlined.Key, null, tint = Amber); Spacer(Modifier.width(8.dp)); Text(uiText(language, "已校验的秘密交接单", "VERIFIED SECRET HANDOFF"), color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f)); TextButton(onClick = { revealSecrets = !revealSecrets }) { Text(if (revealSecrets) uiText(language, "隐藏", "HIDE") else uiText(language, "显示", "REVEAL")) }
                 }
                 if (revealSecrets) SelectionContainer { Text(secret, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 9, overflow = TextOverflow.Ellipsis) }

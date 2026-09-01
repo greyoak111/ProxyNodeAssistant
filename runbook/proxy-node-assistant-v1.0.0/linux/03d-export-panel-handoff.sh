@@ -7,8 +7,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/linux/lib-xui-api.sh"
 
 MODE="${1:-existing}"
-XUI="/usr/local/x-ui/x-ui"
-[ -x "$XUI" ] || exit 0
+XUI="$(xui_find_bin 2>/dev/null || true)"
+[ -n "$XUI" ] || exit 0
 
 if [ "$MODE" = "FRESH" ] && [ -r /etc/x-ui/install-result.env ]; then
   while IFS='=' read -r k v; do
@@ -21,6 +21,22 @@ if [ "$MODE" = "FRESH" ] && [ -r /etc/x-ui/install-result.env ]; then
     esac
   done < /etc/x-ui/install-result.env
 fi
+
+# Seed the protected login store before rendering any handoff, then restore
+# values retained from a legacy handoff.  This helper is also exposed as a
+# standalone maintenance action (without the installer's handoff_begin_run),
+# so migration must run here as well as in the full install path.  The store
+# contains only the four operator-entered login fields and is never printed.
+credential_store_seed_from_handoffs
+if [ "$MODE" = "FRESH" ]; then
+  FRESH_USERNAME="$(credential_value_from_file "$HANDOFF_FILE" PANEL_USERNAME 2>/dev/null || true)"
+  FRESH_PASSWORD="$(credential_value_from_file "$HANDOFF_FILE" PANEL_PASSWORD 2>/dev/null || true)"
+  if [ -n "$FRESH_USERNAME" ] && [ -n "$FRESH_PASSWORD" ]; then
+    credential_store_set PANEL_USERNAME "$FRESH_USERNAME"
+    credential_store_set PANEL_PASSWORD "$FRESH_PASSWORD"
+  fi
+fi
+handoff_restore_stored_login_credentials
 
 SHOW="$("$XUI" setting -show 2>/dev/null || true)"
 PORT="$(printf '%s\n' "$SHOW" | sed -nE 's/^[[:space:]]*(port|panelPort):[[:space:]]*([0-9]+).*$/\2/p' | sed -n '1p')"
@@ -40,11 +56,10 @@ fi
 [ -n "$TOKEN" ] && handoff_set "PANEL_API_TOKEN" "$TOKEN"
 
 echo
-echo "================ CURRENT 3X-UI HANDOFF =================="
+echo "===== PROXYNODEASSISTANT PANEL CREDENTIAL HANDOFF v1.0.0 ====="
 grep -E '^PANEL_' "$HANDOFF_FILE" || true
-echo "========================================================="
+echo "===== END PROXYNODEASSISTANT PANEL CREDENTIAL HANDOFF v1.0.0 ====="
 if ! grep -q '^PANEL_PASSWORD=' "$HANDOFF_FILE"; then
-  echo "PANEL_PASSWORD=UNKNOWN_NOT_RECOVERABLE"
-  echo "The current hashed panel password cannot be truthfully reconstructed."
-  echo "Choose explicit credential rotation if you want a new real password shown in full."
+  echo "PANEL_CREDENTIAL_FORM_INCOMPLETE=1"
+  echo "The current hashed panel password cannot be truthfully reconstructed; a complete handoff requires explicit rotation."
 fi

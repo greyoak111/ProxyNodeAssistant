@@ -336,7 +336,10 @@ namespace ProxyNodeAssistant.Gui
             if (!String.IsNullOrWhiteSpace(overridePath)) return IOPath.GetFullPath(overridePath.Trim());
             string root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             string current = IOPath.Combine(root, "ProxyNodeAssistant", "recent-targets.tsv");
-            string legacy = IOPath.Combine(root, "ProxyNodeAssistant", "recent-targets.tsv");
+            // v0.9.x stored the list under the old product name.  Keep it as a
+            // read/write migration fallback, but never confuse it with the
+            // canonical v1 directory.
+            string legacy = IOPath.Combine(root, "TextNodeAssistant", "recent-targets.tsv");
             return File.Exists(current) || !File.Exists(legacy) ? current : legacy;
         }
 
@@ -477,16 +480,12 @@ namespace ProxyNodeAssistant.Gui
             values.RemoveAll(delegate(RecentTarget value) { return RecentTargetKey(value) == key; });
             SaveRecentTargets(values);
             RefreshRecentTargets(false);
-            if (connectionHistory.SelectedItem is RecentTarget)
-            {
-                ApplySelectedRecentTarget();
-            }
-            else
-            {
-                connectionHostInput.Text = "";
-                connectionUserInput.Text = "root";
-                connectionPortInput.Text = "22";
-            }
+            // Deleting a row must never implicitly copy another saved target
+            // into the active form.  Only the explicit Use button is allowed
+            // to populate host/user/port; keep the form at its safe defaults.
+            connectionHostInput.Text = "";
+            connectionUserInput.Text = "root";
+            connectionPortInput.Text = "22";
             footerStatus.Text = english ? "Selected VPS history entry deleted" : "已删除所选 VPS 历史";
         }
 
@@ -810,7 +809,10 @@ namespace ProxyNodeAssistant.Gui
 
             bool remoteForm = UsesStandardRemoteForm(operation);
             remoteConnectionForm.Visibility = remoteForm ? Visibility.Visible : Visibility.Collapsed;
-            if (remoteForm) RefreshRecentTargets(true);
+            // Loading history must not silently choose a target.  The user
+            // explicitly clicks "Use" when they want a saved endpoint copied
+            // into this operation's form.
+            if (remoteForm) RefreshRecentTargets(false);
             if (fullMenu)
             {
                 operationHeaderTitle.Text = english ? "Full workflow menu" : "完整图形工作流菜单";
@@ -1664,10 +1666,17 @@ namespace ProxyNodeAssistant.Gui
                     SaveRecentTargets(new List<RecentTarget> { target });
                     OpenActionForCommandLine("1");
                     success = connectionHistory.Items.Count == 1 &&
+                              connectionHostInput.Text == "" &&
+                              connectionUserInput.Text == "root" &&
+                              connectionPortInput.Text == "22";
+                    // Selecting a history row only highlights it.  The
+                    // explicit Use button is the sole action that may fill the
+                    // connection fields.
+                    historyUseButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    success = success &&
                               connectionHostInput.Text == target.Host &&
                               connectionUserInput.Text == target.User &&
                               connectionPortInput.Text == target.Port.ToString();
-                    connectionHistory.SelectedIndex = 0;
                     DeleteSelectedRecentTarget();
                     success = success && LoadRecentTargets().Count == 0;
                     string path = RecentTargetsPath();
@@ -1845,7 +1854,7 @@ namespace ProxyNodeAssistant.Gui
                 Op("6", "security", "随机化 3x-ui 账号密码", "Rotate 3x-ui credentials", "更新面板账号密码并输出经过校验的凭据交接单。", "Update panel credentials and produce a validated credential handoff.", "#FBBF24"),
                 Op("7", "access", "显示当前凭据交接单", "Show current credential handoff", "读取真实面板元数据并复制到 Windows 剪贴板。", "Read validated panel metadata and copy the handoff to the clipboard.", "#38BDF8"),
                 Op("8", "maintain", "切换 15 套伪装站与优化 Nginx", "Switch 15 cover templates and optimize Nginx", "随机、按域名稳定选择或指定 1—15；包含原创离线像素跑酷。", "Choose random, stable-per-domain, or exact 1-15; includes an original offline pixel runner.", "#34D399"),
-                Op("9", "backup", "完整灾难恢复备份", "Full disaster-recovery backup", "包含程序与身份，适合迁移或严重故障恢复，体积较大。", "Includes programs and identity for migration or major recovery; larger archive.", "#A78BFA"),
+                Op("9", "backup", "完整灾难恢复备份", "Full disaster-recovery backup", "包含程序与远端节点配置，适合迁移或严重故障恢复，体积较大。", "Includes the program and remote-node configuration for migration or recovery; larger archive.", "#A78BFA"),
                 Op("10", "backup", "生成紧急诊断报告", "Generate emergency report", "采集经过裁剪的故障证据并下载到当前 Windows。", "Collect a bounded diagnostic package and download it to this Windows PC.", "#A78BFA"),
                 Op("11", "access", "绑定 / 重新生成 SSH key", "Bind / regenerate SSH key", "先验证新钥匙，再撤销旧公钥；避免把自己锁在 VPS 外。", "Verify the new key before revoking the old one to prevent lockout.", "#38BDF8"),
                 Op("12", "local", "清空 Windows 剪贴板", "Clear Windows clipboard", "立即清除可能仍包含密码或密钥的本地剪贴板。", "Immediately remove passwords or keys that may remain on the clipboard.", "#94A3B8"),
@@ -1855,6 +1864,10 @@ namespace ProxyNodeAssistant.Gui
                 Op("16", "maintain", "自适应性能档位", "Adaptive performance profiles", "检测硬件后选择低配、标准、高配或自动档；改动前备份，支持一键回滚。", "Detect capacity, then apply low, standard, high, or auto settings with backup and one-step rollback.", "#34D399"),
                 Op("17", "maintain", "SSH / vnStat 流量估算", "SSH / vnStat traffic estimate", "通过 VPS 本地计数估算当期流量，并在 70%、85%、95% 分级预警。", "Estimate period traffic from VPS counters with tiered warnings at 70%, 85%, and 95%.", "#34D399"),
                 Op("18", "security", "全量拆除与恢复基线", "Full dismantle and baseline restore", "高风险双重确认；先把完整救援包下载到 Windows，再拆除受管节点栈并保留 SSH 救援通道。", "High-risk double confirmation; download a full Windows rescue first, then remove the managed node stack while preserving SSH rescue access.", "#FB7185"),
+                Op("19", "security", "识别本机 IP 并管理 SS2022 白名单", "Detect local IP and manage SS2022 allowlist", "先在本机直连识别公网 IPv4，再与 VPS 看到的 SSH 来源核对；明确确认后才加入 SS2022 精确白名单。", "Detect the public IPv4 locally, compare it with the source seen by the VPS, and add it to the exact SS2022 TCP allowlist only after explicit confirmation.", "#FBBF24"),
+                Op("20", "security", "访问与封禁日志", "Access and ban events", "按需读取 SSH、Fail2ban、防火墙和入口的聚合元数据；可明确确认后应用受管安全基线。", "Read bounded SSH, Fail2ban, firewall, and ingress metadata; apply the managed security baseline only after explicit confirmation.", "#FBBF24"),
+                Op("22", "maintain", "CDN/XHTTP 线路控制中心", "CDN/XHTTP route control center", "保留灰云/橙云/XHTTP 分阶段施工、边缘验收、真实客户端提交、回滚和组件清理；每个公网变更均需明确确认。", "Retain gray/orange CDN-XHTTP staging, edge validation, real-client commit, rollback, and component cleanup; every public mutation requires explicit confirmation.", "#22D3EE"),
+                Op("23", "security", "更换公网 IP 后安全重绑定", "Safely rebind a changed public IP", "复用原 SSH key，并在 Host Key、machine-id、NODE_ID/SERVER_ID 全部一致后才提交新地址。", "Reuse the original SSH key and commit a new endpoint only after host key, machine-id, and NODE_ID/SERVER_ID all match.", "#A78BFA"),
                 Op("T", "local", "服务商流量中心", "Provider traffic center", "KiwiVM 精确 API、兼容 API 与 Windows Credential Manager；不保存服务商网站密码。", "Exact KiwiVM API, compatible APIs, and Windows Credential Manager; provider website passwords are never stored.", "#94A3B8"),
                 Op("K", "access", "管理已绑定节点 key", "Manage bound node keys", "查看、恢复或归档；支持一次清空全部绑定位置且不自动填充。", "Inspect, restore, or archive every bound position without auto-fill.", "#38BDF8"),
                 Op("H", "local", "管理 VPS 登录历史", "Manage VPS login history", "查看、删除单条或清空地址历史；不保存密码和 key。", "View, delete, or clear target history; passwords and keys are never stored.", "#94A3B8")

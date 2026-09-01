@@ -67,6 +67,19 @@ class ManagedKeyRepository(context: Context, private val vault: EncryptedVault) 
         return keys.size
     }
 
+    /**
+     * Move the active key binding to a newly addressed endpoint after the
+     * remote identity and host key have been verified.  The old record remains
+     * available as BACKUP evidence; no key material is regenerated.
+     */
+    fun rebind(oldTargetId: String, newTargetId: String): Boolean {
+        if (oldTargetId == newTargetId || get(newTargetId, KeyStatus.BOUND) != null) return false
+        val record = get(oldTargetId, KeyStatus.BOUND) ?: return false
+        put(record.copy(targetId = newTargetId, status = KeyStatus.BOUND))
+        archive(oldTargetId)
+        return get(newTargetId, KeyStatus.BOUND)?.publicKeyOpenSsh == record.publicKeyOpenSsh
+    }
+
     fun restore(targetId: String, createdEpochMs: Long? = null): Boolean {
         if (get(targetId, KeyStatus.BOUND) != null) return false
         val entry = entries().filter { it.targetId == targetId && it.status == KeyStatus.BACKUP }

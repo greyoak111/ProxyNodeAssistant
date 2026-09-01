@@ -38,10 +38,11 @@ VPS host private keys：
 
 ## 2. 3x-ui unattended install
 
-当前官方 installer 支持：
+当前官方 installer 通过工具包内的锁定清单调用（不再追踪可变的 `master`）：
 
 ```bash
-XUI_NONINTERACTIVE=1 bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
+. "$ROOT/linux/lib-third-party.sh"
+XUI_NONINTERACTIVE=1 tna_install_3xui_pinned "$ROOT"
 ```
 
 未显式指定时，脚本安装会为每个实例随机生成：

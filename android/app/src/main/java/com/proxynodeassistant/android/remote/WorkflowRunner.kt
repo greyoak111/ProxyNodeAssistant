@@ -1,10 +1,14 @@
 package com.proxynodeassistant.android.remote
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.util.Base64
 import com.proxynodeassistant.android.core.PromptBroker
 import com.proxynodeassistant.android.core.Validation
+import com.proxynodeassistant.android.data.HostKeyRepository
 import com.proxynodeassistant.android.data.ManagedKeyRepository
+import com.proxynodeassistant.android.data.StableNodeIdentityRepository
 import com.proxynodeassistant.android.data.TargetRepository
 import com.proxynodeassistant.android.model.ActionSpec
 import com.proxynodeassistant.android.model.AuthMode
@@ -12,7 +16,9 @@ import com.proxynodeassistant.android.model.KeyStatus
 import com.proxynodeassistant.android.model.Language
 import com.proxynodeassistant.android.model.NodeTarget
 import com.proxynodeassistant.android.model.PromptKind
+import com.proxynodeassistant.android.model.RemoteResult
 import com.proxynodeassistant.android.model.RunStatus
+import com.proxynodeassistant.android.model.StableNodeIdentity
 import com.proxynodeassistant.android.model.ToolkitProbe
 import com.proxynodeassistant.android.model.WorkflowUiState
 import com.proxynodeassistant.android.service.TunnelRegistry
@@ -29,6 +35,12 @@ import kotlinx.coroutines.launch
 import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.Socket
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
+import java.security.MessageDigest
 import java.util.Locale
 
 class WorkflowRunner(
@@ -37,6 +49,8 @@ class WorkflowRunner(
     private val managedKeys: ManagedKeyRepository,
     private val targets: TargetRepository,
     private val prompts: PromptBroker,
+    private val hostKeys: HostKeyRepository? = null,
+    private val stableNodes: StableNodeIdentityRepository? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow(WorkflowUiState())
@@ -55,6 +69,16 @@ class WorkflowRunner(
             try {
                 targets.remember(target)
                 log("PNA_ANDROID_WORKFLOW action=${action.code} target=${target.id}")
+                // IP rebind is deliberately a pre-connect flow.  It must use the
+                // old endpoint's pinned host key and managed key, then connect to
+                // the proposed endpoint under a fail-closed identity check.
+                if (action.code.equals("23", true)) {
+                    handle = rebindPublicIp(target)
+                    activeHandle = handle
+                    _state.update { it.copy(status = RunStatus.RUNNING) }
+                    _state.update { it.copy(status = RunStatus.SUCCEEDED) }
+                    return@launch
+                }
                 // Actions 3 and 19 deliberately inspect the handset before SSH is opened.
                 // This keeps the local egress observation separate from the VPS view and
                 // prevents a proxy/TUN setting from being silently presented as the source.
@@ -75,6 +99,10 @@ class WorkflowRunner(
                 activeHandle = handle
                 _state.update { it.copy(status = RunStatus.RUNNING) }
                 tunnelTransferred = execute(action.code.uppercase(), handle, localObservation)
+                // Persist the VPS stable identity opportunistically for future
+                // safe IP rebinds.  Failure is non-fatal for legacy nodes that
+                // predate the identity script; it never creates a new identity.
+                if (action.code != "23") syncStableNodeIdentity(handle)
                 _state.update { it.copy(status = RunStatus.SUCCEEDED) }
             } catch (_: CancellationException) {
                 _state.update { it.copy(status = RunStatus.CANCELLED, error = tr("操作已安全取消", "Operation cancelled safely")) }
@@ -167,6 +195,9 @@ class WorkflowRunner(
         "17" -> { ensureToolkit(handle); trafficEstimate(handle); false }
         "18" -> { ensureToolkit(handle); dismantle(handle); false }
         "19" -> { ensureToolkit(handle); manageSS2022Allowlist(handle, localObservation); false }
+        "20" -> { ensureToolkit(handle); securityEvents(handle); false }
+        "22" -> { ensureToolkit(handle); cdnXhttpControl(handle); false }
+        "23" -> error("IP rebind must run before opening the old endpoint session")
         "T" -> { ensureToolkit(handle); trafficEstimate(handle); log("Provider API profiles are managed from the local Provider screen."); false }
         else -> error(tr("操作 $code 属于本地功能或远端执行器暂不支持", "Action $code is local or unsupported in the remote runner"))
     }
@@ -253,15 +284,52 @@ class WorkflowRunner(
             cat /etc/text-node-assistant/cloudflare/edge-state.env 2>/dev/null || true
             cat /root/.config/text-node-assistant/topology.env 2>/dev/null || true
             cat /root/.config/proxy-node-assistant/topology.env 2>/dev/null || true
-            if systemctl is-active --quiet tna-ss2022-112-trial.service 2>/dev/null; then
+            # Read both product and legacy SS2022 metadata.  The legacy file
+            # is a compatibility source only; it is never sourced as shell
+            # code, so arbitrary values cannot execute during diagnostics.
+            cat /etc/text-node-assistant/ss2022/service.env 2>/dev/null || true
+            cat /etc/proxy-runbook/ss2022/service.env 2>/dev/null || true
+            # Select one validated port for the probe.  Keep the same
+            # precedence as the upgrade planner (managed service metadata,
+            # public compatibility metadata, then old JSON/trial state) and
+            # emit a single marker last so stale files cannot override it.
+            ss_port=""
+            for file in /etc/proxy-runbook/ss2022/service.env /etc/text-node-assistant/ss2022/service.env /etc/proxy-runbook/public.env /etc/text-node-assistant/public.env; do
+              [ -r "${'$'}file" ] || continue
+              case "${'$'}file" in
+                */ss2022/service.env)
+                  value="${'$'}(awk -F= '${'$'}1=="PORT" || ${'$'}1=="SS2022_PORT" || ${'$'}1=="PNA_SS2022_PORT" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", ${'$'}2); print ${'$'}2; exit}' "${'$'}file" 2>/dev/null || true)"
+                  ;;
+                *)
+                  value="${'$'}(awk -F= '${'$'}1=="SS2022_PORT" || ${'$'}1=="PNA_SS2022_PORT" {gsub(/^[[:space:]]+|[[:space:]]+$/, "", ${'$'}2); print ${'$'}2; exit}' "${'$'}file" 2>/dev/null || true)"
+                  ;;
+              esac
+              case "${'$'}value" in
+                ''|*[!0-9]*) ;;
+                *) if [ "${'$'}value" -ge 1024 ] 2>/dev/null && [ "${'$'}value" -le 65535 ] 2>/dev/null; then ss_port="${'$'}value"; break; fi ;;
+              esac
+            done
+            if [ -z "${'$'}ss_port" ] && command -v jq >/dev/null 2>&1; then
+              for file in /etc/proxy-runbook/ss2022/server.json /etc/text-node-assistant/ss2022/server.json /etc/proxy-runbook/server.json /etc/text-node-assistant/server.json /etc/proxy-runbook/xray/server.json /etc/text-node-assistant/xray/server.json; do
+                [ -r "${'$'}file" ] || continue
+                value="${'$'}(jq -r '.inbounds[]? | select(.protocol == "shadowsocks") | select((.settings.method? // "") | startswith("2022-")) | .port // empty' "${'$'}file" 2>/dev/null | head -n 1 || true)"
+                case "${'$'}value" in
+                  ''|*[!0-9]*) ;;
+                  *) if [ "${'$'}value" -ge 1024 ] 2>/dev/null && [ "${'$'}value" -le 65535 ] 2>/dev/null; then ss_port="${'$'}value"; break; fi ;;
+                esac
+              done
+            fi
+            if [ -z "${'$'}ss_port" ] && systemctl is-active --quiet tna-ss2022-112-trial.service 2>/dev/null; then
               trial_port=""
               if [ -r /run/tna-ss2022-112-trial.json ] && command -v jq >/dev/null 2>&1; then
                 trial_port="${'$'}(jq -r '.inbounds[0].port // empty' /run/tna-ss2022-112-trial.json 2>/dev/null || true)"
               fi
-              [ -n "${'$'}trial_port" ] || trial_port="${Ss2022PortPolicy.TRIAL_PORT}"
-              printf 'SS2022_PORT=%s\n' "${'$'}trial_port"
+              case "${'$'}trial_port" in
+                ''|*[!0-9]*) ;;
+                *) if [ "${'$'}trial_port" -ge 1024 ] 2>/dev/null && [ "${'$'}trial_port" -le 65535 ] 2>/dev/null; then ss_port="${'$'}trial_port"; fi ;;
+              esac
             fi
-            cat /etc/proxy-runbook/ss2022/service.env 2>/dev/null || true
+            [ -n "${'$'}ss_port" ] && printf 'SS2022_PORT=%s\n' "${'$'}ss_port"
         """.trimIndent()
         return try {
             val result = checked(handle, command, emit = false)
@@ -351,6 +419,11 @@ class WorkflowRunner(
 
     private suspend fun deploy(handle: SshHandle): Boolean {
         val probe = probe(handle)
+        // Recover an interrupted convergence before collecting a new plan.  The
+        // transaction helper is present in v1 and in the compatible v0.9.x
+        // toolkit; a legacy endpoint without it is reported explicitly and is
+        // never silently treated as an active transaction.
+        recoverInterruptedInstallTransaction(handle)
         val comparison = if (probe.installed) ProtocolParsers.compareVersions(probe.version, VERSION) else -1
         val needsUpload = when {
             !probe.installed -> true
@@ -381,36 +454,178 @@ class WorkflowRunner(
         when (plan.routeMode) {
             InstallRouteMode.GRAY -> waitForDns(plan.gray.domain, publicIp)
             InstallRouteMode.DUAL -> {
+                guideCloudflareCertificatePrerequisites(plan.orange.domain)
                 waitForDns(plan.gray.domain, publicIp)
                 waitForOrangeDns(plan.orange.domain, publicIp)
             }
-            InstallRouteMode.ORANGE -> waitForOrangeDns(plan.orange.domain, publicIp)
+            InstallRouteMode.ORANGE -> {
+                guideCloudflareCertificatePrerequisites(plan.orange.domain)
+                waitForOrangeDns(plan.orange.domain, publicIp)
+            }
             InstallRouteMode.KEEP -> Unit
         }
 
+        // A fresh VPS has no transaction helper until the embedded toolkit is
+        // uploaded.  Uploading is still guarded by APPLY above; once the exact
+        // toolkit is present we capture the native baseline and start the
+        // atomic convergence transaction before touching services/config.
         if (needsUpload) {
             log(if (probe.installed) "TOOLKIT_UPGRADE ${probe.version.ifBlank { "missing" }} -> $VERSION" else "TOOLKIT_MISSING; installing v$VERSION")
             uploadToolkit(handle)
         } else {
             log("TOOLKIT_SAME_BUILD; upload and bootstrap skipped")
         }
-
-        val oneRunName = "proxy-node-assistant-auto-input-${randomToken()}.env"
-        val oneRunPath = "/tmp/$oneRunName"
-        handle.upload(installAutoInput(plan).toByteArray(), oneRunName, "/tmp", "0600")
+        captureOriginalBaseline(handle)
+        ensureInstallNodeIdentity(handle)
+        val transactionId = beginInstallTransaction(handle)
+        var transactionActive = true
         try {
-            val command = installEnvironment(handle, plan, oneRunPath) + " bash $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh"
-            checked(handle, command, interactive = true)
+            val oneRunName = "proxy-node-assistant-auto-input-${randomToken()}.env"
+            val oneRunPath = "/tmp/$oneRunName"
+            handle.upload(installAutoInput(plan).toByteArray(), oneRunName, "/tmp", "0600")
+            try {
+                val command = installEnvironment(handle, plan, oneRunPath) + " bash $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh"
+                checked(handle, command, interactive = true)
+            } finally {
+                runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(oneRunPath)}", root = true) }
+            }
+            reconcileRoute(handle, plan, publicIp)
+            showHandoff(handle)
+            commitInstallTransaction(handle, transactionId)
+            transactionActive = false
         } finally {
-            runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(oneRunPath)}", root = true) }
+            if (transactionActive) {
+                runCatching { rollbackInstallTransaction(handle, transactionId) }
+                    .onFailure { log("INSTALL_TRANSACTION_ROLLBACK_FAILED: ${safeError(it)}") }
+            }
         }
-        reconcileRoute(handle, plan, publicIp)
-        showHandoff(handle)
         if (plan.pruneAfterSuccess) {
             pruneBackups(handle, exactConfirmation = false)
         }
         return if (plan.openPanelOnSuccess) openPanel(handle) else false
     }
+
+    /**
+     * Restore a previous unfinished install before planning a new one.  The
+     * parser intentionally accepts only the explicit status markers emitted by
+     * 28a; malformed/unknown states stop the workflow rather than risking a
+     * second mutation on top of an uncertain snapshot.
+     */
+    private suspend fun recoverInterruptedInstallTransaction(handle: SshHandle) {
+        val command = """
+            set -u
+            root='$REMOTE_ROOT'
+            [ -x \"${'$'}root/linux/28a-install-transaction.sh\" ] || root='$LEGACY_TEXT_REMOTE_ROOT'
+            [ -x \"${'$'}root/linux/28a-install-transaction.sh\" ] || root='$LEGACY_REMOTE_ROOT'
+            if [ -x \"${'$'}root/linux/28a-install-transaction.sh\" ]; then
+              bash \"${'$'}root/linux/28a-install-transaction.sh\" status
+            else
+              printf 'TNA_INSTALL_TRANSACTION_STATUS_BEGIN\nTRANSACTION_STATUS=NONE\nTNA_INSTALL_TRANSACTION_STATUS_END\n'
+            fi
+        """.trimIndent()
+        val statusOutput = checked(handle, command, emit = false).stdout
+        val statusPayload = ProtocolParsers.markedBlockCurrentOrLegacy(
+            statusOutput,
+            "TNA_INSTALL_TRANSACTION_STATUS_BEGIN",
+            "TNA_INSTALL_TRANSACTION_STATUS_END",
+            "TNA_INSTALL_TRANSACTION_STATUS_BEGIN",
+            "TNA_INSTALL_TRANSACTION_STATUS_END",
+        )
+        val status = ProtocolParsers.kv(statusPayload)
+        when (status["TRANSACTION_STATUS"]) {
+            null, "NONE" -> Unit
+            "PREPARING", "ACTIVE", "ROLLING_BACK", "ROLLBACK_FAILED" -> {
+                log(tr("检测到上次未提交施工，先恢复事务快照，禁止在半成品上叠加。", "A prior install was not committed; restore its transaction snapshot before planning another one."))
+                val rollback = checked(handle, transactionCommand("rollback"), emit = false)
+                require(
+                    "TNA_INSTALL_TRANSACTION_ROLLED_BACK=1" in rollback.stdout ||
+                        "TNA_INSTALL_TRANSACTION_ROLLBACK=PREPARE_ABORTED" in rollback.stdout ||
+                        "TNA_INSTALL_TRANSACTION_ROLLBACK=NOT_NEEDED" in rollback.stdout,
+                ) { "Interrupted install rollback did not return complete evidence" }
+            }
+            else -> error("Unsupported install transaction state: ${status["TRANSACTION_STATUS"]}")
+        }
+    }
+
+    private suspend fun captureOriginalBaseline(handle: SshHandle) {
+        val command = """
+            set -u
+            root='$REMOTE_ROOT'
+            [ -x \"${'$'}root/linux/22-dismantle-managed-node.sh\" ] || root='$LEGACY_TEXT_REMOTE_ROOT'
+            [ -x \"${'$'}root/linux/22-dismantle-managed-node.sh\" ] || root='$LEGACY_REMOTE_ROOT'
+            [ -x \"${'$'}root/linux/22-dismantle-managed-node.sh\" ] || { echo TNA_BASELINE_CAPTURE=UNAVAILABLE >&2; exit 63; }
+            bash \"${'$'}root/linux/22-dismantle-managed-node.sh\" --capture-baseline
+        """.trimIndent()
+        val result = checked(handle, command, emit = false)
+        require(
+            listOf("ORIGINAL_BASELINE_CAPTURED_EXACT", "ORIGINAL_BASELINE_ALREADY_CAPTURED", "ORIGINAL_BASELINE_LEGACY_UNCERTAIN").any { it in result.stdout },
+        ) { "Pre-construction baseline capture returned no accepted evidence" }
+        log(tr("[GOOD] 原生基线已捕获或复核，后续施工可回滚。", "[GOOD] Native baseline captured or verified; subsequent construction can be rolled back."))
+    }
+
+    /**
+     * Ensure the VPS has a stable, machine-bound identity before convergence.
+     * This is endpoint continuity metadata (machine-id/host-key), not a
+     * per-client enrollment check. Existing identities are only read and
+     * persisted locally; a missing identity is initialized by the signed
+     * toolkit script with its own atomic state file.
+     */
+    private suspend fun ensureInstallNodeIdentity(handle: SshHandle) {
+        val repository = stableNodes ?: return
+        runCatching { readStableNodeIdentity(handle) }.onSuccess {
+            repository.put(it)
+            log("NODE_IDENTITY_EXISTING_VERIFIED")
+            return
+        }
+        val command = """
+            set -u
+            root='$REMOTE_ROOT'
+            [ -x \"${'$'}root/linux/23-node-identity.sh\" ] || root='$LEGACY_TEXT_REMOTE_ROOT'
+            [ -x \"${'$'}root/linux/23-node-identity.sh\" ] || root='$LEGACY_REMOTE_ROOT'
+            [ -x \"${'$'}root/linux/23-node-identity.sh\" ] || { echo TNA_NODE_IDENTITY_ERROR=SCRIPT_MISSING >&2; exit 62; }
+            bash \"${'$'}root/linux/23-node-identity.sh\" --init
+        """.trimIndent()
+        val initialized = checked(handle, command, emit = false)
+        val identity = ProtocolParsers.stableNodeIdentity(initialized.stdout, handle.target.id)
+        repository.put(identity)
+        log("NODE_IDENTITY_INITIALIZED_AND_VERIFIED")
+    }
+
+    private suspend fun beginInstallTransaction(handle: SshHandle): String {
+        val result = checked(handle, transactionCommand("begin standalone 0"), emit = false)
+        require("TNA_INSTALL_TRANSACTION_BEGAN=1" in result.stdout) { "install transaction begin marker missing" }
+        return ProtocolParsers.kv(result.stdout)["TRANSACTION_ID"].orEmpty().also {
+            require(Regex("^tna-install-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}$").matches(it)) { "invalid install transaction id" }
+        }
+    }
+
+    private suspend fun rollbackInstallTransaction(handle: SshHandle, transactionId: String) {
+        val status = ProtocolParsers.kv(checked(handle, transactionCommand("status"), emit = false).stdout)
+        if (status["TRANSACTION_STATUS"] == "NONE") return
+        require(status["TRANSACTION_ID"] == transactionId) { "Refusing to roll back another install transaction" }
+        val result = checked(handle, transactionCommand("rollback"), emit = false)
+        require("TNA_INSTALL_TRANSACTION_ROLLED_BACK=1" in result.stdout) { "install transaction rollback marker missing" }
+        log(tr("[GOOD] 未提交施工已恢复到事务前状态。", "[GOOD] Uncommitted construction was restored to its pre-transaction state."))
+    }
+
+    private suspend fun commitInstallTransaction(handle: SshHandle, transactionId: String) {
+        val status = ProtocolParsers.kv(checked(handle, transactionCommand("status"), emit = false).stdout)
+        require(status["TRANSACTION_STATUS"] == "ACTIVE" && status["TRANSACTION_ID"] == transactionId) {
+            "install transaction status changed before commit"
+        }
+        val result = checked(handle, transactionCommand("commit"), emit = false)
+        require("TNA_INSTALL_TRANSACTION_COMMITTED=1" in result.stdout) { "install transaction commit marker missing" }
+        log(tr("[GOOD] 菜单 [1] 的远端阶段已原子提交。", "[GOOD] The remote stages of action 1 were committed atomically."))
+    }
+
+    /** Select a product root without exposing credentials or silently running a legacy script. */
+    private fun transactionCommand(arguments: String): String = """
+        root='$REMOTE_ROOT'
+        [ -x \"${'$'}root/linux/28a-install-transaction.sh\" ] || root='$LEGACY_TEXT_REMOTE_ROOT'
+        [ -x \"${'$'}root/linux/28a-install-transaction.sh\" ] || root='$LEGACY_REMOTE_ROOT'
+        [ -x \"${'$'}root/linux/28a-install-transaction.sh\" ] || { echo TNA_INSTALL_TRANSACTION_ERROR=SCRIPT_MISSING >&2; exit 64; }
+        bash \"${'$'}root/linux/28a-install-transaction.sh\" $arguments
+    """.trimIndent()
 
     private suspend fun detectExistingNode(handle: SshHandle): Boolean {
         val result = checked(
@@ -656,11 +871,51 @@ class WorkflowRunner(
                 emit = false,
             )
             val staged = checked(handle, "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --apply-input ${SshHandle.shellQuote(preferredRuntimePath)}", interactive = true)
-            require("TNA_TOPOLOGY_STAGED=1" in staged.stdout) { "CDN topology staging marker missing" }
-            val linkOutput = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(plan.orange.domain)} 8443", emit = false).stdout
-            val link = Regex("vless://[^\\s]+", RegexOption.IGNORE_CASE).find(linkOutput)?.value
+            val linkResult = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(plan.orange.domain)} 8443", emit = false)
+            val stageEvidence = ProtocolParsers.cdnStageEvidence(staged.stdout, staged.stderr, linkResult.stdout, linkResult.stderr)
+            // Keep the explicit topology marker check in addition to the
+            // structured parser.  This prevents a future parser broadening
+            // from turning a successful command with no staged transaction
+            // into a public route mutation.
+            require(
+                "TNA_TOPOLOGY_STAGED=1" in staged.stdout || "TNA_TOPOLOGY_STAGED=1" in staged.stderr,
+            ) { "CDN topology staged marker missing" }
+            require(
+                stageEvidence.topologyStaged && stageEvidence.certificateReady && stageEvidence.xhttpReady &&
+                    stageEvidence.nginxStaged && stageEvidence.originReady && stageEvidence.edgeValidated,
+            ) {
+                "CDN stage evidence incomplete: topology=${stageEvidence.topologyStaged}, cert=${stageEvidence.certificateReady}, " +
+                    "xhttp=${stageEvidence.xhttpReady}, nginx=${stageEvidence.nginxStaged}, origin=${stageEvidence.originReady}, edge=${stageEvidence.edgeValidated}"
+            }
+            val rawLink = Regex("vless://[^\\s]+", RegexOption.IGNORE_CASE).find(linkResult.stdout)?.value
                 ?: error(tr("远端没有生成可测试的 CDN/XHTTP 链接", "The server did not produce a testable CDN/XHTTP link"))
-            _state.update { it.copy(secretHandoff = link) }
+            // Legacy 0.9.x exporters may still return a TNA-* fragment. Read
+            // that spelling for upgrades, but never place it back into the
+            // protected v1 handoff or the real-browse prompt. The formatter
+            // changes only the fragment and preserves optional query knobs.
+            val link = ProtocolParsers.canonicalizeCdnXHttpLink(rawLink)
+            val profile = ProtocolParsers.cdnXHttpLink(link)
+            require(profile.domain.equals(plan.orange.domain, ignoreCase = true) && profile.port == 8443) {
+                "CDN/XHTTP link endpoint does not match the staged orange hostname"
+            }
+            // Keep the complete route handoff in the protected panel.  The link
+            // itself is never written to the ordinary workflow log.
+            _state.update {
+                it.copy(
+                    secretHandoff = buildString {
+                        appendLine("===== PROXYNODEASSISTANT CDN/XHTTP STAGE =====")
+                        appendLine("CDN_XHTTP_LINK=$link")
+                        appendLine("CDN_XHTTP_DOMAIN=${profile.domain}")
+                        appendLine("CDN_XHTTP_PORT=${profile.port}")
+                        appendLine("CDN_XHTTP_PATH=${profile.path}")
+                        appendLine("CDN_STAGE_CERTIFICATE=READY")
+                        appendLine("CDN_STAGE_XHTTP=READY")
+                        appendLine("CDN_STAGE_ORIGIN=READY_CLOUDFLARE_ONLY")
+                        appendLine("CDN_STAGE_EDGE=VALIDATED")
+                        append("REAL_BROWSE_REQUIRED_BEFORE_COMMIT=1")
+                    },
+                )
+            }
             val answer = prompts.ask(
                 tr("真实浏览验收", "Real browse verification"),
                 tr(
@@ -672,14 +927,36 @@ class WorkflowRunner(
                 danger = true,
             ).trim()
             if (answer != "REAL BROWSE OK") throw CancellationException("CDN client verification declined")
-            checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh --confirm-client ${SshHandle.shellQuote(plan.orange.domain)}", interactive = true)
+            val clientConfirmed = checked(handle, "bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh --confirm-client ${SshHandle.shellQuote(plan.orange.domain)}", interactive = true)
+            val clientEvidence = ProtocolParsers.cdnStageEvidence(clientConfirmed.stdout, clientConfirmed.stderr)
+            require(clientEvidence.clientConfirmed) { "CDN real-client confirmation marker missing" }
             val finalized = checked(handle, "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --finalize", interactive = true)
-            require("TNA_TOPOLOGY_RECONCILED=1" in finalized.stdout && "TOPOLOGY_MODE=${plan.routeMode.wireValue}" in finalized.stdout) {
-                "CDN topology finalization markers missing"
+            val finalState = checked(
+                handle,
+                "cat /etc/proxy-runbook/cloudflare/edge-state.env 2>/dev/null; cat /etc/text-node-assistant/cloudflare/edge-state.env 2>/dev/null",
+                emit = false,
+            )
+            val finalEvidence = ProtocolParsers.cdnStageEvidence(finalized.stdout, finalized.stderr, finalState.stdout, finalState.stderr)
+            require(
+                finalEvidence.topologyReconciled && finalEvidence.edgeValidated && finalEvidence.clientConfirmed &&
+                    finalEvidence.mode == plan.routeMode.wireValue,
+            ) {
+                "CDN topology finalization evidence incomplete: reconciled=${finalEvidence.topologyReconciled}, " +
+                    "mode=${finalEvidence.mode ?: "?"}, edge=${finalEvidence.edgeValidated}, client=${finalEvidence.clientConfirmed}"
             }
             completed = true
         } finally {
-            if (!completed) runCatching { handle.exec("bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --rollback-pending", root = true) }
+            if (!completed) {
+                val rollback = runCatching {
+                    handle.exec("bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --rollback-pending", root = true, log = { })
+                }.getOrNull()
+                val evidence = rollback?.let { ProtocolParsers.cdnStageEvidence(it.stdout, it.stderr) }
+                if (rollback?.ok == true && evidence?.rolledBack == true) {
+                    log("CDN_ROLLBACK_MARKER=TNA_TOPOLOGY_ROLLED_BACK=1")
+                } else {
+                    log("CDN_ROLLBACK_MARKER=FAILED")
+                }
+            }
             runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(tempPath)} ${SshHandle.shellQuote(preferredRuntimePath)}", root = true) }
         }
     }
@@ -696,8 +973,14 @@ class WorkflowRunner(
         }
         while (true) {
             val addresses = runCatching { InetAddress.getAllByName(domain).toList() }.getOrDefault(emptyList())
-            if (addresses.isNotEmpty() && addresses.none { it.hostAddress == publicIp }) {
-                log("ORANGE_DNS_READY; proxied hostname does not expose origin IPv4")
+            val localReady = addresses.isNotEmpty() && addresses.none { it.hostAddress == publicIp }
+            // A local resolver may be intercepted or stale on mobile networks;
+            // query two independent public DoH resolvers as a corroborating
+            // signal.  This remains a reachability check, not a Cloudflare API
+            // claim, and never sends credentials.
+            val dohReady = orangeDnsDohQuorum(domain, publicIp)
+            if (localReady || dohReady) {
+                log("ORANGE_DNS_READY local=$localReady doh_quorum=$dohReady; proxied hostname does not expose origin IPv4")
                 return
             }
             val answer = prompts.ask(
@@ -706,6 +989,679 @@ class WorkflowRunner(
                 PromptKind.TEXT,
             )
             if (answer.trim().equals("q", true)) throw CancellationException("Orange DNS verification cancelled")
+        }
+    }
+
+    private fun orangeDnsDohQuorum(domain: String, originIp: String): Boolean {
+        val endpoints = listOf(
+            "https://cloudflare-dns.com/dns-query?name=$domain&type=A",
+            "https://dns.google/resolve?name=$domain&type=A",
+        )
+        var successes = 0
+        endpoints.forEach { endpoint ->
+            val ok = runCatching {
+                val connection = URL(endpoint).openConnection(Proxy.NO_PROXY) as HttpsURLConnection
+                connection.connectTimeout = 8_000
+                connection.readTimeout = 8_000
+                connection.requestMethod = "GET"
+                connection.setRequestProperty("Accept", "application/dns-json")
+                try {
+                    val body = connection.inputStream.bufferedReader().use { it.readText() }
+                    val addresses = Regex("\\\"data\\\"\\s*:\\s*\\\"([0-9.]+)\\\"").findAll(body).map { it.groupValues[1] }.toList()
+                    connection.responseCode in 200..299 && addresses.isNotEmpty() && addresses.none { it == originIp }
+                } finally {
+                    connection.disconnect()
+                }
+            }.getOrDefault(false)
+            if (ok) successes++
+        }
+        return successes == endpoints.size
+    }
+
+    /**
+     * Explain the origin-certificate prerequisites explicitly.  Universal SSL
+     * (edge certificate) and the VPS origin certificate are different things;
+     * this gate prevents the common misconfiguration where an Access/challenge
+     * rule blocks HTTP-01 and the install later reports a misleading timeout.
+     */
+    private suspend fun guideCloudflareCertificatePrerequisites(domain: String) {
+        val steps = listOf(
+            tr("确认 $domain 的 A 记录指向当前 VPS 并已开启橙云 Proxied。", "Confirm $domain points to this VPS and is Cloudflare Proxied."),
+            tr("确认该 hostname 没有 Access、Turnstile、质询、Worker 或重定向拦截 /.well-known/acme-challenge/。", "Confirm no Access, Turnstile, challenge, Worker, or redirect intercepts /.well-known/acme-challenge/ on this hostname."),
+            tr("了解 Universal SSL 只覆盖客户端到 Cloudflare 边缘；VPS 源站证书仍由本流程用手填邮箱签发，不需要 Cloudflare API Token。", "Understand that Universal SSL covers client-to-edge only; this flow still issues the VPS origin certificate with the entered email and does not need a Cloudflare API token."),
+        )
+        steps.forEachIndexed { index, step ->
+            val answer = prompts.ask(
+                tr("橙云源站前置 ${index + 1}/${steps.size}", "Orange-origin prerequisite ${index + 1}/${steps.size}"),
+                "$step\n${tr("确认后按 Enter；输入 q 取消。", "Press Enter to confirm; type q to cancel.")}",
+                PromptKind.TEXT,
+            )
+            if (answer.trim().equals("q", true)) throw CancellationException("CLOUDFLARE_PREREQUISITE_CANCELLED")
+        }
+    }
+
+    /** Bounded security-event reader retained from v0.9.5 (no device/drive state). */
+    private suspend fun securityEvents(handle: SshHandle) {
+        while (true) {
+            val choice = required(
+                tr("访问与封禁日志", "Access and ban events"),
+                tr("1=最近24小时，2=选择范围，3=安装/修复受管 Fail2ban，4=查看基线，0=返回", "1=last 24 h, 2=choose range, 3=install/repair managed Fail2ban, 4=baseline status, 0=back"),
+                "1",
+            ) { it in setOf("0", "1", "2", "3", "4") }
+            when (choice) {
+                "0" -> return
+                "3" -> {
+                    if (!confirmYes(
+                            tr("应用受管 sshd jail（5 次/10 分钟，封禁 1 小时）和隐私化连接元数据规则？", "Apply the managed sshd jail (5 attempts/10 minutes, one-hour ban) and privacy-preserving connection metadata?"),
+                            false,
+                            allowNo = true,
+                        )) continue
+                    val applied = checked(handle, "bash $REMOTE_ROOT/linux/24-security-baseline.sh --apply 7", emit = false)
+                    require("TNA_SECURITY_BASELINE_APPLIED" in applied.stdout && "TNA_SECURITY_BASELINE_STATUS_END" in applied.stdout) {
+                        tr("安全基线返回不完整", "Security-baseline response was incomplete")
+                    }
+                    log(applied.stdout.trim())
+                }
+                "4" -> {
+                    val status = checked(handle, "bash $REMOTE_ROOT/linux/24-security-baseline.sh --status", emit = false)
+                    require("TNA_SECURITY_BASELINE_STATUS_BEGIN" in status.stdout && "TNA_SECURITY_BASELINE_STATUS_END" in status.stdout) {
+                        tr("安全基线状态返回不完整", "Security-baseline status was incomplete")
+                    }
+                    log(status.stdout.trim())
+                }
+                else -> {
+                    val since = if (choice == "2") required(
+                        tr("时间范围", "Time range"),
+                        "1h / 6h / 24h / 7d",
+                        "24h",
+                    ) { it in setOf("1h", "6h", "24h", "7d") } else "24h"
+                    val result = checked(handle, "bash $REMOTE_ROOT/linux/25-security-events.sh --protocol-v1 --since ${SshHandle.shellQuote(since)} --cursor 0 --limit 200", emit = false)
+                    require(result.stdout.count { it == '\n' } <= 1300) {
+                        tr("安全事件响应超过边界", "Security-event response exceeded its bound")
+                    }
+                    val bounded = result.stdout
+                    require(
+                        ("__TNA_SECURITY_V1_BEGIN__" in bounded || "__PNA_SECURITY_V1_BEGIN__" in bounded) &&
+                            ("__TNA_SECURITY_V1_END__" in bounded || "__PNA_SECURITY_V1_END__" in bounded) &&
+                            "SUMMARY\t" in bounded,
+                    ) { tr("安全事件协议返回不完整", "Security-event protocol response was incomplete") }
+                    log(tr("连接/失败事件不自动等同攻击；只有 Fail2ban 当前封禁具有明确封禁语义。", "Connection/failure events are not automatically attacks; only current Fail2ban bans have explicit ban semantics."))
+                    log(bounded.trim())
+                }
+            }
+        }
+    }
+
+    /**
+     * CDN/XHTTP control center retained from v0.9.5.  Route controls are
+     * deliberately separate from node/client identity: no enrollment gate or
+     * storage feature is involved.  Every mutating branch has an explicit
+     * confirmation and consumes the marker protocol emitted by 04f/05e/05f/
+     * 05g/05h; a zero exit status without the marker is treated as failure.
+     */
+    private suspend fun cdnXhttpControl(handle: SshHandle) {
+        val choice = prompts.ask(
+            tr("CDN / XHTTP 控制中心", "CDN / XHTTP control center"),
+            tr(
+                "[1] 脱敏状态  [2] 回环影子  [3] 生成并校验 8443 链接  [4] Cloudflare CIDR 计划\n[5] 签证并晋升 Cloudflare-only 8443  [6] 验证橙云边缘并生成链接  [7] 真机浏览后提交\n[8] 回滚公网 8443  [9] 删除 CDN/XHTTP 组件  [0] 返回",
+                "[1] Redacted status  [2] Loopback shadow  [3] Generate/validate the 8443 link  [4] Cloudflare CIDR plan\n[5] Issue certificate and promote Cloudflare-only 8443  [6] Validate the orange edge and generate a link  [7] Commit after real browsing\n[8] Roll back public 8443  [9] Remove CDN/XHTTP components  [0] Back",
+            ),
+            PromptKind.TEXT,
+            defaultValue = "1",
+        ).trim().ifEmpty { "1" }
+        when (choice) {
+            "0" -> return
+            "1" -> cdnStatus(handle)
+            "2" -> cdnLoopbackStage(handle)
+            "3" -> cdnStageLink(handle)
+            "4" -> cdnCloudflarePlan(handle)
+            "5" -> cdnPromotePublic(handle)
+            "6" -> cdnValidateEdge(handle)
+            "7" -> cdnConfirmClient(handle)
+            "8" -> cdnRollbackPublic(handle)
+            "9" -> cdnRemoveComponents(handle)
+            else -> error(tr("CDN/XHTTP 选项无效", "Invalid CDN/XHTTP selection"))
+        }
+    }
+
+    private suspend fun cdnStatus(handle: SshHandle) {
+        val command = """
+            set -u
+            if [ -r $REMOTE_ROOT/linux/lib-deployment-state.sh ]; then
+              . $REMOTE_ROOT/linux/lib-deployment-state.sh
+              type tna_state_init_direct_if_missing >/dev/null 2>&1 && tna_state_init_direct_if_missing || true
+              type tna_state_show >/dev/null 2>&1 && tna_state_show || true
+            fi
+            for file in /root/.config/proxy-node-assistant/topology.env /root/.config/text-node-assistant/topology.env /etc/proxy-runbook/topology.env /etc/text-node-assistant/topology.env; do
+              [ -r "${'$'}file" ] || continue
+              sed -n -E '/^(TOPOLOGY_MODE|ROUTE_MODE|GRAY_DOMAIN|ORANGE_DOMAIN|GRAY_DNS_VALIDATED|ORANGE_EDGE_VALIDATED|ACTIVE_MODE|DEPLOYMENT_MODE)=/p' "${'$'}file"
+            done
+            if [ -x $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh ] && bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh show >/dev/null 2>&1; then
+              echo XHTTP_COMPONENT=READY_LOOPBACK
+            else
+              echo XHTTP_COMPONENT=NOT_READY
+            fi
+            for file in /etc/proxy-runbook/cloudflare/edge-state.env /etc/text-node-assistant/cloudflare/edge-state.env; do
+              [ -r "${'$'}file" ] || continue
+              sed -n -E '/^(CDN_EDGE_VALIDATED|CDN_CLIENT_CONFIRMED|CDN_EDGE_DOMAIN|CDN_EDGE_PORT|CDN_ORIGIN_PORT)=/p' "${'$'}file"
+            done
+            if [ -x $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh ]; then
+              bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status 2>/dev/null || true
+            fi
+            echo TOPOLOGY_MUTATION=NONE
+            echo TOPOLOGY_CHANGE_ENTRY=ACTION_22_STATUS
+        """.trimIndent()
+        checked(handle, command)
+    }
+
+    /** Stage only the loopback shadow; no public listener or Cloudflare rule is opened. */
+    private suspend fun cdnLoopbackStage(handle: SshHandle) {
+        val domain = required(
+            tr("回环施工域名", "Loopback deployment hostname"),
+            tr("输入已由当前源站证书覆盖的域名；此操作只修改本机回环 Nginx/XHTTP。", "Enter a hostname covered by the current origin certificate; this only changes the local loopback Nginx/XHTTP stage."),
+        ) { Validation.validDomain(it) }.lowercase(Locale.ROOT)
+        confirmYes(
+            tr("确认只做回环影子验收，不公开 8443、不修改 Cloudflare/UFW？", "Confirm loopback-only staging: do not expose 8443 or change Cloudflare/UFW?"),
+            false,
+        )
+        val publicIp = cdnPublicIp(handle)
+        val create = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh create ${SshHandle.shellQuote(domain)}", emit = false)
+        val createEvidence = ProtocolParsers.cdnStageEvidence(create.stdout, create.stderr)
+        require(createEvidence.xhttpReady) { "04f XHTTP readiness marker missing" }
+        val stage = checked(handle, "bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage-local ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
+        val stageEvidence = ProtocolParsers.cdnStageEvidence(stage.stdout, stage.stderr)
+        require(stageEvidence.nginxStaged && "CDN_STAGE_SCOPE=LOCAL_ONLY" in stage.stdout) { "05e loopback stage marker missing" }
+        val local = checked(
+            handle,
+            "curl --noproxy '*' --fail --silent --show-error --max-time 10 --resolve ${SshHandle.shellQuote("$domain:8443:127.0.0.2")} ${SshHandle.shellQuote("https://$domain:8443/")} >/dev/null; " +
+                "! ss -H -lnt 2>/dev/null | awk -v a=${SshHandle.shellQuote("$publicIp:8443")} '\$4 == a {found=1} END{exit found ? 0 : 1}'; " +
+                "echo CDN_LOCAL_VALIDATION=PASS; echo PUBLIC_ORIGIN_8443=NOT_ENABLED",
+            emit = false,
+        )
+        require("CDN_LOCAL_VALIDATION=PASS" in local.stdout && "PUBLIC_ORIGIN_8443=NOT_ENABLED" in local.stdout) { "loopback validation marker missing" }
+        log(tr("[GOOD] 回环 XHTTP/Nginx 影子验收通过；公网 8443 与 Cloudflare 未修改。", "[GOOD] Loopback XHTTP/Nginx shadow passed; public 8443 and Cloudflare were not changed."))
+    }
+
+    private suspend fun cdnStageLink(handle: SshHandle) {
+        val domain = required(
+            tr("XHTTP 域名", "XHTTP hostname"),
+            tr("输入创建 XHTTP 入站时使用的域名", "Enter the hostname used when creating the XHTTP inbound"),
+        ) { Validation.validDomain(it) }.lowercase(Locale.ROOT)
+        val result = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(domain)} 8443", emit = false)
+        val rawLink = Regex("vless://[^\\s]+", RegexOption.IGNORE_CASE).find(result.stdout)?.value
+            ?: error(tr("远端没有返回 XHTTP 链接", "The server returned no XHTTP link"))
+        val link = ProtocolParsers.canonicalizeCdnXHttpLink(rawLink)
+        val profile = ProtocolParsers.cdnXHttpLink(link)
+        require(profile.domain.equals(domain, ignoreCase = true) && profile.port == 8443) { "XHTTP link endpoint mismatch" }
+        _state.update {
+            it.copy(
+                secretHandoff = buildString {
+                    appendLine("===== PROXYNODEASSISTANT CDN/XHTTP LINK =====")
+                    appendLine("CDN_XHTTP_STAGE_LINK=$link")
+                    appendLine("CDN_XHTTP_DOMAIN=${profile.domain}")
+                    appendLine("CDN_XHTTP_PORT=${profile.port}")
+                    append("CDN_XHTTP_PATH=${profile.path}")
+                },
+            )
+        }
+        log("CDN_XHTTP_LINK_VALIDATED port=${profile.port}; link is available only in the protected handoff panel")
+    }
+
+    private suspend fun cdnCloudflarePlan(handle: SshHandle) {
+        val status = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status", emit = false)
+        val values = ProtocolParsers.kv(status.stdout)
+        if (values["CLOUDFLARE_FIREWALL_APPLIED"] == "1") {
+            log(tr("8443 Cloudflare-only 锁已应用；如需刷新 CIDR，先使用 [8] 回滚。", "The Cloudflare-only 8443 lock is already applied; use [8] before refreshing CIDRs."))
+            log(status.stdout.trim())
+            return
+        }
+        val fetched = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh fetch", emit = false)
+        val plan = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh plan ${handle.target.port}", emit = false)
+        val planText = fetched.stdout + "\n" + plan.stdout
+        require("PLAN_ONLY=1" in planText && ("KEEP_PUBLIC_TCP_443_UNCHANGED=1" in planText || "KEEP_REALITY_PUBLIC_TCP=443" in planText)) {
+            "05f Cloudflare CIDR plan marker missing"
+        }
+        log(plan.stdout.trim())
+    }
+
+    /**
+     * Run the complete certificate → XHTTP → origin-lock → Nginx → origin
+     * validation sequence.  The operation is intentionally staged; edge and
+     * real-client confirmation remain separate choices below.
+     */
+    private suspend fun cdnPromotePublic(handle: SshHandle) {
+        val domain = required(
+            tr("施工域名", "Deployment hostname"),
+            tr("输入已配置或即将配置橙云的域名", "Enter the hostname configured (or about to be configured) for orange-cloud"),
+        ) { Validation.validDomain(it) }.lowercase(Locale.ROOT)
+        val email = required(
+            tr("证书邮箱", "Certificate email"),
+            tr("用于 ACME 源站证书；不会写入普通日志", "Used for the ACME origin certificate; never written to the ordinary log"),
+        ) { Validation.validEmail(it) }
+        confirmYes(
+            tr("将签发/复用源站证书，并把 8443 锁为 Cloudflare 官方 CIDR；SSH、443 和 Reality 不动。继续？", "Issue/reuse the origin certificate and lock 8443 to official Cloudflare CIDRs; SSH, 443, and Reality remain unchanged. Continue?"),
+            false,
+        )
+        val publicIp = cdnPublicIp(handle)
+        val input = cdnInputPaths(handle, domain, email, publicIp)
+        var lockAdded = false
+        var stageAttempted = false
+        try {
+            // 05h deliberately refuses to expose its temporary ACME listener
+            // until the Cloudflare-only :8443 allowlist is active.  Keep this
+            // ordering identical to the v0.9.5 reconciler: lock -> cert ->
+            // XHTTP -> permanent Nginx stage -> origin validation.
+            val lockStatus = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh status", emit = false)
+            if (ProtocolParsers.kv(lockStatus.stdout)["CLOUDFLARE_FIREWALL_APPLIED"] != "1") {
+                checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh fetch", emit = false)
+                val lockPlan = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh plan ${handle.target.port}", emit = false)
+                require("PLAN_ONLY=1" in lockPlan.stdout && ("KEEP_PUBLIC_TCP_443_UNCHANGED=1" in lockPlan.stdout || "KEEP_REALITY_PUBLIC_TCP=443" in lockPlan.stdout)) {
+                    "05f lock plan marker missing"
+                }
+                val applied = checked(handle, "bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh apply", emit = false)
+                val appliedEvidence = ProtocolParsers.cdnStageEvidence(applied.stdout, applied.stderr)
+                require("CLOUDFLARE_FIREWALL_APPLIED=1" in applied.stdout && "PUBLIC_TCP_443_POLICY=UNCHANGED" in applied.stdout) {
+                    "05f lock apply marker missing"
+                }
+                lockAdded = appliedEvidence.originReady || "CLOUDFLARE_FIREWALL_APPLIED=1" in applied.stdout
+            }
+
+            val certificate = checked(handle, "bash $REMOTE_ROOT/linux/05h-ensure-cdn-certificate.sh --input-file ${SshHandle.shellQuote(input.runtimePath)}", emit = false)
+            require(ProtocolParsers.cdnStageEvidence(certificate.stdout, certificate.stderr).certificateReady) { "05h certificate marker missing" }
+
+            val create = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh create ${SshHandle.shellQuote(domain)}", emit = false)
+            require(ProtocolParsers.cdnStageEvidence(create.stdout, create.stderr).xhttpReady) { "04f XHTTP marker missing" }
+
+            // Keep the original v0.9.5 safety sequence: validate the managed
+            // XHTTP/Nginx shadow on 127.0.0.2 before exposing the concrete
+            // public :8443 listener.  A failed local probe is rolled back by
+            // the transaction and never reaches Cloudflare.
+            stageAttempted = true
+            val localStage = checked(
+                handle,
+                "TNA_TARGET_TOPOLOGY=orange bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage-local ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}",
+                emit = false,
+            )
+            val localStageEvidence = ProtocolParsers.cdnStageEvidence(localStage.stdout, localStage.stderr)
+            require(localStageEvidence.nginxStaged && "CDN_STAGE_SCOPE=LOCAL_ONLY" in localStage.stdout) { "05e loopback stage marker missing" }
+            val localProbe = checked(
+                handle,
+                "curl --noproxy '*' --fail --silent --show-error --max-time 10 --resolve ${SshHandle.shellQuote("$domain:8443:127.0.0.2")} ${SshHandle.shellQuote("https://$domain:8443/")} >/dev/null; echo CDN_LOCAL_VALIDATION=PASS",
+                emit = false,
+            )
+            require("CDN_LOCAL_VALIDATION=PASS" in localProbe.stdout) { "local CDN/XHTTP probe marker missing" }
+
+            val stage = checked(handle, "TNA_TARGET_TOPOLOGY=orange bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh stage ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
+            val stageEvidence = ProtocolParsers.cdnStageEvidence(stage.stdout, stage.stderr)
+            require(stageEvidence.nginxStaged && "CDN_STAGE_SCOPE=CLOUDFLARE_ONLY" in stage.stdout) { "05e public stage marker missing" }
+            val origin = checked(handle, "TNA_TARGET_TOPOLOGY=orange bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh --origin-ready ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
+            require(ProtocolParsers.cdnStageEvidence(origin.stdout, origin.stderr).originReady) { "05g origin marker missing" }
+            verifyDirectOriginBlocked(publicIp)
+            log("CDN_PUBLIC_ORIGIN_READY=1 CDN_ORIGIN_SCOPE=CLOUDFLARE_ONLY CDN_ORIGIN_PORT=8443")
+            log(tr("[GOOD] 8443 已锁定为 Cloudflare-only；请在 Cloudflare 配置橙云、Full(strict)、缓存绕过后运行 [6]。", "[GOOD] 8443 is locked to Cloudflare-only; configure orange-cloud, Full(strict), and cache bypass in Cloudflare, then run [6]."))
+            log("CLOUDFLARE_DASHBOARD_OPENED=${openCloudflareDnsDashboard()}")
+        } catch (error: Throwable) {
+            if (stageAttempted || lockAdded) {
+                val rolled = rollbackCdnPublic(handle, removeStage = stageAttempted, removeLock = lockAdded, resetEdge = true)
+                log("CDN_PUBLIC_ORIGIN_ROLLBACK=${if (rolled) "1" else "FAILED"}")
+            }
+            throw error
+        } finally {
+            runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(input.tempPath)} ${SshHandle.shellQuote(input.runtimePath)}", root = true, log = { }) }
+        }
+    }
+
+    private suspend fun cdnValidateEdge(handle: SshHandle) {
+        val domain = required(
+            tr("橙云施工域名", "Orange-cloud hostname"),
+            tr("输入已经配置橙云与必要 Origin Rule 的域名", "Enter the hostname with orange-cloud and the required Origin Rule configured"),
+        ) { Validation.validDomain(it) }.lowercase(Locale.ROOT)
+        confirmYes(
+            tr("确认橙云、Full(strict)、8443 源站规则、缓存绕过且没有拦截规则？", "Confirm orange-cloud, Full(strict), the 8443 origin rule, cache bypass, and no interception rules?"),
+            false,
+        )
+        val publicIp = cdnPublicIp(handle)
+        verifyCloudflareEdge(domain, 8443)
+        verifyDirectOriginBlocked(publicIp)
+        val remote = checked(handle, "TNA_TARGET_TOPOLOGY=orange bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh --edge ${SshHandle.shellQuote(domain)} ${SshHandle.shellQuote(publicIp)}", emit = false)
+        require(ProtocolParsers.cdnStageEvidence(remote.stdout, remote.stderr).edgeValidated) { "05g edge marker missing" }
+        val result = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh link ${SshHandle.shellQuote(domain)} 8443", emit = false)
+        val rawLink = Regex("vless://[^\\s]+", RegexOption.IGNORE_CASE).find(result.stdout)?.value
+            ?: error(tr("没有生成 CDN/XHTTP 链接", "No CDN/XHTTP link was generated"))
+        val link = ProtocolParsers.canonicalizeCdnXHttpLink(rawLink)
+        val profile = ProtocolParsers.cdnXHttpLink(link)
+        require(profile.domain.equals(domain, ignoreCase = true) && profile.port == 8443) { "CDN edge link endpoint mismatch" }
+        _state.update {
+            it.copy(
+                secretHandoff = buildString {
+                    appendLine("===== PROXYNODEASSISTANT CDN/XHTTP EDGE =====")
+                    appendLine("CDN_XHTTP_LINK=$link")
+                    appendLine("CDN_EDGE_DOMAIN=${profile.domain}")
+                    appendLine("CDN_EDGE_PORT=${profile.port}")
+                    appendLine("CDN_ORIGIN_PORT=8443")
+                    appendLine("CDN_EDGE_VALIDATED=1")
+                    append("REAL_BROWSE_REQUIRED_BEFORE_COMMIT=1")
+                },
+            )
+        }
+        log("CDN_EDGE_VALIDATED=1; link is available only in the protected handoff panel")
+    }
+
+    private suspend fun cdnConfirmClient(handle: SshHandle) {
+        val domain = required(
+            tr("已验收域名", "Validated hostname"),
+            tr("输入刚才导入客户端并真实浏览的域名", "Enter the hostname imported into the client and used for real browsing"),
+        ) { Validation.validDomain(it) }.lowercase(Locale.ROOT)
+        val exact = prompts.ask(
+            tr("真机浏览确认", "Real-client confirmation"),
+            tr("真实浏览成功后输入大写 REAL BROWSE OK；其他输入不会提交活动状态。", "After real browsing succeeds, type uppercase REAL BROWSE OK; any other input leaves the active state uncommitted."),
+            PromptKind.EXACT_CONFIRMATION,
+            placeholder = "REAL BROWSE OK",
+            danger = true,
+        ).trim()
+        require(exact == "REAL BROWSE OK") { tr("未提交 CDN 活动状态", "CDN active state was not committed") }
+        val result = checked(handle, "TNA_TARGET_TOPOLOGY=orange bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh --confirm-client ${SshHandle.shellQuote(domain)}", emit = false)
+        require(ProtocolParsers.cdnStageEvidence(result.stdout, result.stderr).clientConfirmed) { "05g real-client marker missing" }
+
+        // If action [1] left a topology transaction waiting for this manual
+        // confirmation, finish it here.  A standalone manual promotion has no
+        // transaction and therefore only records the verified edge state.
+        val tx = runCatching { handle.exec("bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --status", root = true, log = { }) }.getOrNull()
+        if (tx?.ok == true && "TRANSACTION_STATUS=ACTIVE" in tx.stdout) {
+            val finalized = checked(handle, "bash $REMOTE_ROOT/linux/28-topology-reconcile.sh --finalize", interactive = true)
+            val evidence = ProtocolParsers.cdnStageEvidence(finalized.stdout, finalized.stderr)
+            require(evidence.topologyReconciled) { "topology finalization marker missing" }
+        }
+        log("CDN_REAL_CLIENT_CONFIRMED=1")
+    }
+
+    private suspend fun cdnRollbackPublic(handle: SshHandle) {
+        required(
+            tr("当前 CDN 域名", "Current CDN hostname"),
+            tr("输入当前 CDN/XHTTP 域名以确认目标", "Enter the current CDN/XHTTP hostname to identify the target"),
+        ) { Validation.validDomain(it) }
+        val exact = prompts.ask(
+            tr("撤回公网源站", "Roll back public origin"),
+            tr("输入大写 ROLLBACK CDN ORIGIN；回环影子和 Reality 443 保留。", "Type uppercase ROLLBACK CDN ORIGIN; the loopback shadow and Reality 443 remain."),
+            PromptKind.EXACT_CONFIRMATION,
+            placeholder = "ROLLBACK CDN ORIGIN",
+            danger = true,
+        ).trim()
+        require(exact == "ROLLBACK CDN ORIGIN") { tr("已取消撤回", "Rollback cancelled") }
+        require(rollbackCdnPublic(handle, removeStage = true, removeLock = true, resetEdge = true)) {
+            tr("公网 CDN 撤回未返回完整证据", "Public CDN rollback did not return complete evidence")
+        }
+    }
+
+    private suspend fun cdnRemoveComponents(handle: SshHandle) {
+        val exact = prompts.ask(
+            tr("删除 CDN/XHTTP 组件", "Remove CDN/XHTTP components"),
+            tr("输入大写 REMOVE XHTTP COMPONENTS；只删除本工具管理的 XHTTP/Nginx/8443 锁，不动 SSH、Reality 443 或伪装站模板。", "Type uppercase REMOVE XHTTP COMPONENTS; only this tool's XHTTP/Nginx/8443-lock components are removed. SSH, Reality 443, and cover templates are untouched."),
+            PromptKind.EXACT_CONFIRMATION,
+            placeholder = "REMOVE XHTTP COMPONENTS",
+            danger = true,
+        ).trim()
+        require(exact == "REMOVE XHTTP COMPONENTS") { tr("已取消删除", "Removal cancelled") }
+        require(rollbackCdnPublic(handle, removeStage = true, removeLock = true, resetEdge = true)) {
+            tr("删除前的 CDN 回滚未完成", "CDN rollback before removal did not complete")
+        }
+        val deleted = checked(handle, "bash $REMOTE_ROOT/linux/04f-xhttp-cdn-api.sh delete", interactive = true)
+        require("TNA_XHTTP_DELETED" in deleted.stdout || "TNA_XHTTP_NOT_INSTALLED" in deleted.stdout) { "04f deletion marker missing" }
+        log("PNA_CDN_MANAGED_COMPONENTS_REMOVED=1")
+    }
+
+    private data class CdnInputPaths(val tempPath: String, val runtimePath: String)
+
+    private suspend fun cdnInputPaths(handle: SshHandle, domain: String, email: String, publicIp: String): CdnInputPaths {
+        val token = randomToken()
+        val tempName = "proxy-node-assistant-cdn-manual-$token.env"
+        val tempPath = "/tmp/$tempName"
+        val runtimePath = "/root/.config/proxy-node-assistant/runtime-input/cdn-manual-$token.env"
+        val body = buildString {
+            appendLine("TNA_CDN_ROUTE_INPUT_VERSION=1")
+            appendLine("ROUTE_MODE_B64=${b64("orange")}")
+            appendLine("PUBLIC_IPV4_B64=${b64(publicIp)}")
+            appendLine("ORANGE_DOMAIN_B64=${b64(domain)}")
+            appendLine("ORANGE_EMAIL_B64=${b64(email)}")
+            appendLine("GRAY_DOMAIN_B64=${b64("")}")
+        }
+        handle.upload(body.toByteArray(), tempName, "/tmp", "0600")
+        checked(
+            handle,
+            "install -d -m 700 /root/.config/proxy-node-assistant/runtime-input; install -o root -g root -m 600 ${SshHandle.shellQuote(tempPath)} ${SshHandle.shellQuote(runtimePath)}; rm -f -- ${SshHandle.shellQuote(tempPath)}",
+            emit = false,
+        )
+        return CdnInputPaths(tempPath, runtimePath)
+    }
+
+    private suspend fun cdnPublicIp(handle: SshHandle): String {
+        val result = checked(
+            handle,
+            "ip=\$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true); [ -n \"\$ip\" ] || ip=\$(hostname -I | awk '{print \$1}'); printf '%s\\n' \"\$ip\"",
+            emit = false,
+        )
+        return result.stdout.lines().map { it.trim() }.firstOrNull { ProtocolParsers.validCanonicalPublicIpv4(it) }
+            ?: error(tr("无法确定 VPS 公网 IPv4", "Could not determine the VPS public IPv4"))
+    }
+
+    private fun verifyDirectOriginBlocked(publicIp: String) {
+        val reachable = runCatching {
+            Socket().use { socket -> socket.connect(InetSocketAddress(publicIp, 8443), 5_000) }
+        }.isSuccess
+        check(!reachable) {
+            tr("外部设备仍能直连源站 8443，拒绝宣称已锁源", "This device can still reach origin 8443 directly; the Cloudflare-only lock cannot be claimed")
+        }
+    }
+
+    private fun verifyCloudflareEdge(domain: String, port: Int) {
+        require(Validation.validDomain(domain) && port in 1..65535)
+        val connection = URL("https://$domain:$port/").openConnection(Proxy.NO_PROXY) as HttpsURLConnection
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 30_000
+        connection.instanceFollowRedirects = true
+        connection.requestMethod = "GET"
+        try {
+            val status = connection.responseCode
+            check(status in 200..399) { "Cloudflare edge returned HTTP $status" }
+            check(!connection.getHeaderField("Cf-Ray").isNullOrBlank()) { "Cloudflare edge response is missing Cf-Ray" }
+            // v0.9.5 nginx emits X-TNA-* headers; v1 emits the product-neutral
+            // X-PNA-* aliases.  Accept either exact marker while remaining
+            // fail-closed for missing or unexpected values.
+            val managedOrigin = sequenceOf(
+                connection.getHeaderField("X-PNA-Managed-Origin"),
+                connection.getHeaderField("X-TNA-Managed-Origin"),
+            ).mapNotNull { it?.trim() }.firstOrNull { it == "cdn-xhttp-v095" }
+            val originPort = sequenceOf(
+                connection.getHeaderField("X-PNA-Origin-Port"),
+                connection.getHeaderField("X-TNA-Origin-Port"),
+            ).mapNotNull { it?.trim() }.firstOrNull { it == "8443" }
+            check(managedOrigin != null) { "managed CDN origin marker is missing" }
+            check(originPort != null) { "origin port marker is missing" }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /** Roll back only managed CDN state and return true only with readback evidence. */
+    private suspend fun rollbackCdnPublic(handle: SshHandle, removeStage: Boolean, removeLock: Boolean, resetEdge: Boolean): Boolean {
+        var ok = true
+        suspend fun runOptional(command: String, tolerate: (String) -> Boolean = { false }): RemoteResult? {
+            val result = runCatching { handle.exec(command, root = true, log = { }) }.getOrNull() ?: run { ok = false; return null }
+            if (!result.ok && !tolerate(result.stdout + "\n" + result.stderr)) ok = false
+            return result
+        }
+        if (removeStage) {
+            runOptional("bash $REMOTE_ROOT/linux/05e-cdn-xhttp-nginx.sh disable-stage") { text -> "TNA_CDN_STAGE_NOT_INSTALLED" in text || "TNA_CDN_NGINX_ERROR=UNMANAGED_STAGE_CONFIG" in text }
+        }
+        if (removeLock) runOptional("bash $REMOTE_ROOT/linux/05f-cloudflare-origin-lock.sh remove")
+        if (resetEdge) runOptional("bash $REMOTE_ROOT/linux/05g-cdn-xhttp-validate.sh --reset")
+        // A loopback XHTTP inbound is intentionally retained after public
+        // rollback.  Check only non-loopback listeners; treating 127.0.0.1 /
+        // 127.0.0.2 as a public leak would make every safe rollback report a
+        // failure and would tempt callers to delete the useful shadow.
+        val listener = runOptional(
+            "! ss -H -lnt 2>/dev/null | awk '\$4 ~ /:8443$/ && \$4 !~ /^127\\.0\\.0\\.1:8443$/ && \$4 !~ /^127\\.0\\.0\\.2:8443$/ && \$4 !~ /^\\[::1\\]:8443$/ {found=1} END{exit found ? 0 : 1}'",
+        )
+        if (listener == null || !listener.ok) ok = false
+        if (ok) log("CDN_PUBLIC_ORIGIN_ROLLED_BACK=1 TNA_CDN_EDGE_STATE_RESET=1") else log("CDN_PUBLIC_ORIGIN_ROLLED_BACK=FAILED")
+        return ok
+    }
+
+    private suspend fun readStableNodeIdentity(handle: SshHandle): StableNodeIdentity {
+        val command = """
+            set -u
+            root=$REMOTE_ROOT
+            [ -x "${'$'}root/linux/23-node-identity.sh" ] || root=$LEGACY_TEXT_REMOTE_ROOT
+            [ -x "${'$'}root/linux/23-node-identity.sh" ] || root=$LEGACY_REMOTE_ROOT
+            [ -x "${'$'}root/linux/23-node-identity.sh" ] || { echo TNA_NODE_IDENTITY_ERROR=SCRIPT_MISSING >&2; exit 62; }
+            bash "${'$'}root/linux/23-node-identity.sh" --show
+        """.trimIndent()
+        return ProtocolParsers.stableNodeIdentity(checked(handle, command, emit = false).stdout, handle.target.id)
+    }
+
+    private suspend fun syncStableNodeIdentity(handle: SshHandle) {
+        val repository = stableNodes ?: return
+        runCatching { readStableNodeIdentity(handle) }.onSuccess(repository::put)
+    }
+
+    private fun sameStableNode(expected: StableNodeIdentity, actual: StableNodeIdentity): Boolean =
+        expected.serverId == actual.serverId && expected.nodeId == actual.nodeId &&
+            expected.machineIdSha256 == actual.machineIdSha256 && expected.hostKeySha256 == actual.hostKeySha256
+
+    private fun openCloudflareDnsDashboard(): Boolean = runCatching {
+        val uri = Uri.parse(CLOUDFLARE_DNS_DASHBOARD)
+        check(uri.scheme == "https" && uri.host == "dash.cloudflare.com")
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.isSuccess
+
+    private fun directDnsMatches(domain: String, ip: String): Boolean = runCatching {
+        val addresses = InetAddress.getAllByName(domain).mapNotNull { (it as? Inet4Address)?.hostAddress }.distinct()
+        addresses.isNotEmpty() && addresses.all { it == ip }
+    }.getOrDefault(false)
+
+    /**
+     * Safely rebind an existing VPS after a public-IP change.  The old
+     * endpoint's key and host-key pin are required; no new identity is minted.
+     */
+    private suspend fun rebindPublicIp(oldTarget: NodeTarget): SshHandle? {
+        val keyRepo = requireNotNull(managedKeys) { "LOCAL_KEY_RECORD_NOT_FOUND" }
+        val hostRepo = requireNotNull(hostKeys) { "LOCAL_HOST_KEY_RECORD_NOT_FOUND" }
+        val identityRepo = requireNotNull(stableNodes) { "LOCAL_NODE_IDENTITY_STORE_UNAVAILABLE" }
+        check(keyRepo.get(oldTarget.id) != null) { "LOCAL_KEY_RECORD_NOT_FOUND" }
+        check(hostRepo.get(oldTarget.id) != null) { "LOCAL_HOST_KEY_RECORD_NOT_FOUND" }
+
+        // Older v1 installs may not have been visited since node identity was
+        // introduced.  Seed the local binding by reading the remote identity
+        // over the old, already pinned endpoint; this does not enroll a device.
+        val expected = identityRepo.get(oldTarget.id) ?: run {
+            val oldHandle = ssh.connect(oldTarget, SessionCredential(AuthMode.MANAGED_KEY), language)
+            try {
+                readStableNodeIdentity(oldHandle).also(identityRepo::put)
+            } finally {
+                oldHandle.close()
+            }
+        }
+
+        val newIp = required(
+            tr("新公网 IPv4", "New public IPv4"),
+            tr("输入服务商已经分配给同一 VPS 的新公网 IPv4", "Enter the new public IPv4 already assigned to the same VPS"),
+        ) { ProtocolParsers.validCanonicalPublicIpv4(it) }
+        check(newIp != expected.currentPublicIp) { tr("新 IP 与旧 IP 相同，没有重绑定动作可做", "The new IP equals the old IP; there is nothing to rebind") }
+        val newPort = required(
+            tr("新 SSH 端口", "New SSH port"),
+            tr("默认沿用旧端口；可输入新端口", "Keep the old port by default, or enter a new port"),
+            oldTarget.port.toString(),
+        ) { it.toIntOrNull()?.let { port -> port in 1..65535 } == true }.toInt()
+        val newTarget = NodeTarget(newIp, oldTarget.user, newPort, oldTarget.label)
+
+        val session = runCatching { ssh.connectRebound(oldTarget, newTarget, null, language) }.getOrElse { first ->
+            check(first.message?.contains("PUBLICKEY_REJECTED") == true) { throw first }
+            val password = prompts.ask(
+                tr("当前 VPS 密码", "Current VPS password"),
+                tr("Host Key 已匹配但旧 key 被拒绝。密码只用于本次认证并重新安装同一公钥，不会保存或生成新 key。", "The host key matched but the old key was rejected. The password is used only for this authentication and reinstalling the same public key; it is not saved or used to generate a new key."),
+                PromptKind.SECRET,
+            )
+            ssh.connectRebound(oldTarget, newTarget, password, language)
+        }
+        val handle = session.handle
+        try {
+            if (session.usedPasswordFallback) {
+                val original = requireNotNull(keyRepo.get(oldTarget.id))
+                installPublicKey(handle, original.publicKeyOpenSsh)
+            }
+            val actual = readStableNodeIdentity(handle)
+            check(sameStableNode(expected, actual) && actual.currentPublicIp == expected.currentPublicIp) {
+                "IP_REBIND_BLOCKED_PRE_DNS: NODE_ID/SERVER_ID/machine-id/host-key mismatch"
+            }
+            val exactProbe = probe(handle)
+            check(exactProbe.installed && exactProbe.complete && exactProbe.version == VERSION && exactProbe.buildId == BUILD_ID && exactProbe.buildRevision == BUILD_REVISION) {
+                "IP_REBIND_BLOCKED_PRE_DNS: toolkit build mismatch"
+            }
+            val publicEnv = ProtocolParsers.kv(
+                checked(handle, "cat /etc/proxy-runbook/public.env 2>/dev/null; cat /etc/text-node-assistant/public.env 2>/dev/null", emit = false).stdout,
+            )
+            val oldDomain = publicEnv["COVER_DOMAIN"].orEmpty().lowercase(Locale.ROOT)
+            check(Validation.validDomain(oldDomain)) { "IP_REBIND_BLOCKED_PRE_DNS: invalid managed construction domain" }
+            val newDomain = required(
+                tr("新施工域名", "New construction domain"),
+                tr("直接确认表示保留原域名；更换域名会停在 Cloudflare 人工阶段", "Keep the default to retain the domain; changing it stops at the Cloudflare manual phase"),
+                oldDomain,
+            ) { Validation.validDomain(it) }.lowercase(Locale.ROOT)
+            val args = listOf(expected.currentPublicIp, newIp, oldDomain, newDomain).joinToString(" ") { SshHandle.shellQuote(it) }
+            val preflight = checked(handle, "bash $REMOTE_ROOT/linux/27-ip-rebind.sh preflight $args", emit = false)
+            val preflightPayload = ProtocolParsers.markedBlockCurrentOrLegacy(
+                preflight.stdout,
+                "__PNA_IP_REBIND_PREFLIGHT_V1_BEGIN__",
+                "__PNA_IP_REBIND_PREFLIGHT_V1_END__",
+                "__TNA_IP_REBIND_PREFLIGHT_V1_BEGIN__",
+                "__TNA_IP_REBIND_PREFLIGHT_V1_END__",
+            )
+            val values = ProtocolParsers.kv(preflightPayload)
+            check(
+                values["IP_REBIND_STATUS"] == "IP_REBIND_PREPARED" && values["SERVER_ID_MATCH"] == "1" &&
+                    values["NODE_ID_UNCHANGED"] == "1" && values["MACHINE_ID_MATCH"] == "1" &&
+                    values["REMOTE_PUBLIC_IP_MATCH"] == "1" && values["DNS_MUTATED"] == "0" &&
+                    values["CLOUDFLARE_MUTATION"] == "NONE",
+            ) { "IP_REBIND_BLOCKED_PRE_DNS: invalid preflight protocol" }
+            log(preflight.stdout.trim())
+
+            val direct = (values["DEPLOYMENT_MODE"] == "direct-reality" && values["ACTIVE_MODE"] == "ACTIVE_DIRECT") ||
+                (values["DEPLOYMENT_MODE"] == "dual-hot-switch" && values["ACTIVE_MODE"] == "DUAL_INSTALLED_ACTIVE_DIRECT")
+            if (!direct || newDomain != oldDomain) {
+                val wait = checked(handle, "bash $REMOTE_ROOT/linux/27-ip-rebind.sh wait-cloudflare $args", emit = false)
+                check("WAITING_FOR_CLOUDFLARE_MANUAL_ACTION" in wait.stdout)
+                log("CLOUDFLARE_DASHBOARD_OPENED=${openCloudflareDnsDashboard()}")
+                throw CancellationException(tr("事务已安全停在 Cloudflare 人工确认阶段；本机 key endpoint 尚未提交。", "The transaction is safely parked for Cloudflare manual validation; the local key endpoint is not committed."))
+            }
+            log("CLOUDFLARE_DASHBOARD_OPENED=${openCloudflareDnsDashboard()}")
+            while (!directDnsMatches(newDomain, newIp)) {
+                val answer = prompts.ask(
+                    tr("等待 DNS", "Waiting for DNS"),
+                    tr("把 A 记录改为新 IP 并保持 DNS only。按 Enter 重检，输入 q 在 DNS 前安全停止。", "Update the A record to the new IP and keep DNS only. Press Enter to retry, or q to stop safely before DNS."),
+                    PromptKind.TEXT,
+                )
+                if (answer.trim().equals("q", true)) {
+                    runCatching { checked(handle, "bash $REMOTE_ROOT/linux/27-ip-rebind.sh abort-pre-dns", emit = false) }
+                    throw CancellationException("IP_REBIND_ABORTED_PRE_DNS")
+                }
+            }
+            val commit = checked(handle, "bash $REMOTE_ROOT/linux/27-ip-rebind.sh commit-direct $args", emit = false)
+            check("IP_REBIND_STATUS=IP_REBIND_COMPLETE" in commit.stdout) { "IP_REBIND_BLOCKED_POST_DNS" }
+            val committedIdentity = readStableNodeIdentity(handle)
+            check(sameStableNode(expected, committedIdentity) && committedIdentity.currentPublicIp == newIp) {
+                "IP_REBIND_BLOCKED_POST_DNS: identity readback failed"
+            }
+            check(keyRepo.rebind(oldTarget.id, newTarget.id)) { "IP_REBIND_BLOCKED_POST_DNS: local managed-key endpoint commit failed" }
+            hostRepo.commitRebind(oldTarget.id, session.presentedHostKey)
+            identityRepo.rebind(oldTarget.id, committedIdentity)
+            targets.remember(newTarget)
+            log(commit.stdout.trim())
+            log("SSH_AUTH_KEY_ID_UNCHANGED=1")
+            showHandoff(handle)
+            return handle
+        } catch (error: Throwable) {
+            runCatching { handle.close() }
+            throw error
         }
     }
 
@@ -742,9 +1698,87 @@ class WorkflowRunner(
               version=${'$'}(head -n1 "${'$'}root/TOOLKIT_VERSION" | tr -d '\r')
               build=${'$'}(head -n1 "${'$'}root/TOOLKIT_BUILD_ID" 2>/dev/null | tr -d '\r' || true)
               revision=${'$'}(head -n1 "${'$'}root/TOOLKIT_BUILD_REVISION" 2>/dev/null | tr -d '\r' || true)
-              complete=0
-              test -x "${'$'}root/linux/00-auto-install-or-optimize.sh" && test -x "${'$'}root/linux/18-panel-metadata.sh" && test -x "${'$'}root/linux/22-dismantle-managed-node.sh" && test -x "${'$'}root/linux/23-ss2022-tcp.sh" && test -s "${'$'}root/templates/cover-sites/MANIFEST.tsv" && complete=1
-              printf 'TOOLKIT_PRESENT=1\nTOOLKIT_VERSION=%s\nTOOLKIT_BUILD_ID=%s\nTOOLKIT_BUILD_REVISION=%s\nTOOLKIT_COMPLETE=%s\n' "${'$'}version" "${'$'}build" "${'$'}revision" "${'$'}complete"
+              brand='PNA'
+              [ "${'$'}root" = "$LEGACY_TEXT_REMOTE_ROOT" ] && brand='TNA_LEGACY'
+              [ "${'$'}root" = "$LEGACY_REMOTE_ROOT" ] && brand='PNA_LEGACY'
+                complete=0
+                # The Android client still exposes the complete v0.9.5
+                # non-storage surface (backup, credential handoff, Reality,
+                # CDN/XHTTP, subscription, diagnostics, security, traffic,
+                # identity and rollback). Keep this list aligned with the
+                # desktop probe contract. The retirement helper is retained
+                # only as a migration cleanup primitive; active storage and
+                # admission entry points are deliberately not required.
+                if test -x "${'$'}root/linux/00-bootstrap-toolkit.sh" &&
+                   test -x "${'$'}root/linux/00-preflight-vps.sh" &&
+                   test -x "${'$'}root/linux/00-migrate-legacy-state.sh" &&
+                   test -x "${'$'}root/linux/00-auto-install-or-optimize.sh" &&
+                   # This one-shot helper only retires old v0.9.x state; it is
+                   # not an active storage or admission feature.
+                   test -x "${'$'}root/linux/00c-retire-v095-device-drive.sh" &&
+                   test -x "${'$'}root/linux/01-safe-backup.sh" &&
+                   test -x "${'$'}root/linux/01a-rotate-vps-password.sh" &&
+                   test -x "${'$'}root/linux/02-install-base.sh" &&
+                   test -x "${'$'}root/linux/02b-firewall-safe.sh" &&
+                   test -x "${'$'}root/linux/03-install-3xui.sh" &&
+                   test -x "${'$'}root/linux/03b-lockdown-panel.sh" &&
+                   test -x "${'$'}root/linux/03c-rotate-panel-credentials.sh" &&
+                   test -x "${'$'}root/linux/03d-export-panel-handoff.sh" &&
+                   test -x "${'$'}root/linux/04-generate-reality.sh" &&
+                   test -x "${'$'}root/linux/04a-reality-api.sh" &&
+                   test -x "${'$'}root/linux/04b-open-test-port-current-ssh.sh" &&
+                   test -x "${'$'}root/linux/04c-close-test-port.sh" &&
+                   test -x "${'$'}root/linux/04d-optimize-existing-reality-shadow.sh" &&
+                   test -x "${'$'}root/linux/04e-export-reality-handoff.sh" &&
+                   test -x "${'$'}root/linux/04f-xhttp-cdn-api.sh" &&
+                   test -x "${'$'}root/linux/05-cover-bootstrap.sh" &&
+                   test -x "${'$'}root/linux/05a-cloudflare-dns-upsert.sh" &&
+                   test -x "${'$'}root/linux/05b-cover-site-polished.sh" &&
+                   test -x "${'$'}root/linux/05c-optimize-cover-backend.sh" &&
+                   test -x "${'$'}root/linux/05d-configure-subscription.sh" &&
+                   test -x "${'$'}root/linux/05e-cdn-xhttp-nginx.sh" &&
+                   test -x "${'$'}root/linux/05f-cloudflare-origin-lock.sh" &&
+                   test -x "${'$'}root/linux/05g-cdn-xhttp-validate.sh" &&
+                   test -x "${'$'}root/linux/05h-ensure-cdn-certificate.sh" &&
+                   test -x "${'$'}root/linux/06-warp-install.sh" &&
+                   test -x "${'$'}root/linux/07-warp-configure-proxy.sh" &&
+                   test -x "${'$'}root/linux/07a-apply-warp-route-local.sh" &&
+                   test -x "${'$'}root/linux/08-warp-check.sh" &&
+                   test -x "${'$'}root/linux/09-status-node.sh" &&
+                   test -x "${'$'}root/linux/10-emergency-network-dump.sh" &&
+                   test -x "${'$'}root/linux/11-safe-upgrade-audit.sh" &&
+                   test -x "${'$'}root/linux/12-restore-iptables-vnc-only.sh" &&
+                   test -x "${'$'}root/linux/13-maintenance-menu.sh" &&
+                   test -x "${'$'}root/linux/14-node-doctor.sh" &&
+                   test -x "${'$'}root/linux/15-show-current-node.sh" &&
+                   test -x "${'$'}root/linux/16-auto-diagnose.sh" &&
+                   test -x "${'$'}root/linux/17-safe-auto-repair.sh" &&
+                   test -x "${'$'}root/linux/18-panel-metadata.sh" &&
+                   test -x "${'$'}root/linux/19-prune-backups-current-config.sh" &&
+                   test -x "${'$'}root/linux/20-adaptive-performance.sh" &&
+                   test -x "${'$'}root/linux/21-traffic-status.sh" &&
+                   test -x "${'$'}root/linux/22-dismantle-managed-node.sh" &&
+                   test -x "${'$'}root/linux/23-node-identity.sh" &&
+                   test -x "${'$'}root/linux/23-ss2022-tcp.sh" &&
+                   test -x "${'$'}root/linux/24-security-baseline.sh" &&
+                   test -x "${'$'}root/linux/25-security-events.sh" &&
+                   test -x "${'$'}root/linux/27-ip-rebind.sh" &&
+                   test -x "${'$'}root/linux/28-topology-reconcile.sh" &&
+                   test -x "${'$'}root/linux/28a-install-transaction.sh" &&
+                   test -s "${'$'}root/linux/32-subscription-rewrite.py" &&
+                   test -x "${'$'}root/linux/lib-deployment-state.sh" &&
+                   test -x "${'$'}root/linux/lib-dns-quorum.sh" &&
+                   test -x "${'$'}root/linux/lib-gui-prompt.sh" &&
+                   test -x "${'$'}root/linux/lib-handoff.sh" &&
+                   test -x "${'$'}root/linux/lib-third-party.sh" &&
+                   test -x "${'$'}root/linux/lib-xui-api.sh" &&
+                   test -s "${'$'}root/templates/cover-sites/MANIFEST.tsv" &&
+                   test -s "${'$'}root/templates/cover-sites/15-signal-runner.html" &&
+                   test -s "${'$'}root/TOOLKIT_BUILD_ID" &&
+                   test -s "${'$'}root/TOOLKIT_BUILD_REVISION"; then
+                  complete=1
+                fi
+              printf 'TOOLKIT_PRESENT=1\nTOOLKIT_BRAND=%s\nTOOLKIT_ROOT=%s\nTOOLKIT_VERSION=%s\nTOOLKIT_BUILD_ID=%s\nTOOLKIT_BUILD_REVISION=%s\nTOOLKIT_COMPLETE=%s\n' "${'$'}brand" "${'$'}root" "${'$'}version" "${'$'}build" "${'$'}revision" "${'$'}complete"
             else
               printf 'TOOLKIT_PRESENT=0\n'
             fi
@@ -763,16 +1797,167 @@ class WorkflowRunner(
     }
 
     private suspend fun showHandoff(handle: SshHandle) {
-        val command = "printf '%s\\n' '${ProtocolParsers.HANDOFF_BEGIN}'; cat /root/.config/proxy-runbook/HANDOFF-SECRETS.txt 2>/dev/null || true; printf '%s\\n' '${ProtocolParsers.HANDOFF_END}'"
+        // Prefer the renamed product directory but retain the v0.9.x path as
+        // a read-only migration source.  The wrapper markers are product
+        // neutral so either generation can be parsed without printing shell
+        // diagnostics into the handoff payload.
+        // Read both product roots and their archives in chronological order.
+        // A v0.9.x upgrade can leave the current proxy-runbook file present
+        // but incomplete while the usable credentials still live in the
+        // legacy root/archive; an if/else here would strand that handoff.
+        val command = """
+            printf '%s\n' '${ProtocolParsers.HANDOFF_BEGIN}'
+            emit_file() {
+                file="${'$'}1"
+                [ -r "${'$'}file" ] || return 0
+                # A stored handoff may itself contain a complete marker block.
+                # Strip nested PNA/TNA markers before concatenation so the
+                # outer transport marker remains unambiguous.  Raw files are
+                # left unchanged for legacy recovery/audit.
+                awk '!/^[[:space:]]*__(PNA|TNA)_HANDOFF_(BEGIN|END)__[[:space:]]*${'$'}/' "${'$'}file"
+            }
+            emit_archive() {
+                dir="${'$'}1"
+                [ -d "${'$'}dir" ] || return 0
+                find "${'$'}dir" -maxdepth 1 -type f -name 'HANDOFF-*.txt' -printf '%T@ %p\n' 2>/dev/null |
+                    sort -n |
+                    while IFS= read -r entry; do
+                        file="${'$'}{entry#* }"
+                        [ -f "${'$'}file" ] && emit_file "${'$'}file"
+                    done
+            }
+            emit_archive /root/.config/text-node-assistant/handoff-archive
+            [ -r /root/.config/text-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/text-node-assistant/HANDOFF-SECRETS.txt || true
+            emit_archive /root/.config/proxy-runbook/handoff-archive
+            [ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true
+            printf '%s\n' '${ProtocolParsers.HANDOFF_END}'
+        """.trimIndent()
         val result = checked(handle, command, emit = false)
-        val handoff = ProtocolParsers.handoff(result.stdout)
+        val legacy = ProtocolParsers.handoff(result.stdout)
+        // A handoff is useful only when the four login fields are complete.
+        // Do not silently downgrade to a partial/key-only block: callers need
+        // an actionable credential bundle for a new client or recovery path.
+        val login = ProtocolParsers.loginCredentialForm(legacy)
+        val fields = linkedMapOf<String, String>()
+        fields["PNA_VERSION"] = VERSION
+        fields["VPS_SSH_USER"] = handle.target.user
+        fields["VPS_SSH_PORT"] = handle.target.port.toString()
+        fields["VPS_PASSWORD_STATUS"] = "PRESENT_IN_PROTECTED_HANDOFF"
+        fields["FORM_VPS_ACCOUNT"] = login.getValue("FORM_VPS_ACCOUNT")
+        fields["FORM_VPS_PASSWORD"] = login.getValue("FORM_VPS_PASSWORD")
+        fields["FORM_PANEL_ACCOUNT"] = login.getValue("FORM_PANEL_ACCOUNT")
+        fields["FORM_PANEL_PASSWORD"] = login.getValue("FORM_PANEL_PASSWORD")
+        val boundKey = managedKeys.get(handle.target.id)
+        fields["SSH_AUTH_MODE"] = if (boundKey != null) "MANAGED_KEY" else "TEMPORARY_PASSWORD_ONE_RUN"
+        fields["SSH_KEY_ONLY"] = (boundKey != null).toString()
+        boundKey?.let {
+            fields["SSH_PRIVATE_KEY_STORAGE"] = "ANDROID_KEYSTORE_ENCRYPTED_APP_PRIVATE"
+            fields["SSH_AUTH_KEY_ID"] = sshAuthenticationKeyId(it.publicKeyOpenSsh)
+        }
+        // Preserve the complete non-storage handoff surface from v0.9.5.
+        // Links and subscription URLs are secrets in practice, so they are
+        // copied only into the protected handoff panel, never the ordinary
+        // workflow log.  CDN links are accepted only after strict parsing;
+        // malformed or placeholder values are omitted rather than surfaced as
+        // usable credentials.
+        // Keep the v0.9.5 protocol surface, but copy only fields that pass the
+        // typed allowlist/validators.  The raw stream is archive -> current;
+        // scan it in that order and retain the last *valid* occurrence rather
+        // than using kv()'s last-line-wins map, because an interrupted current
+        // run may append an empty/malformed value over a usable archive value.
+        // completeHandoff performs the same pass at its final rendering
+        // boundary, so direct callers and this workflow cannot diverge.
+        fields.putAll(ProtocolParsers.validatedHandoffProtocolFieldsFromRaw(legacy))
+        runCatching {
+            ProtocolParsers.kv(checked(handle, "cat /etc/proxy-runbook/public.env 2>/dev/null; cat /etc/text-node-assistant/public.env 2>/dev/null", emit = false).stdout)
+        }.getOrNull()?.let { runtime ->
+            runtime["PUBLIC_IP"]?.takeIf(ProtocolParsers::validCanonicalPublicIpv4)?.let { fields["VPS_PUBLIC_IP"] = it }
+            runtime["COVER_DOMAIN"]?.takeIf(Validation::validDomain)?.let { fields["CONSTRUCTION_DOMAIN"] = it.lowercase(Locale.ROOT) }
+            runtime["SS2022_PORT"]?.toIntOrNull()?.takeIf(Ss2022PortPolicy::valid)?.let { fields["SS2022_PORT"] = it.toString() }
+        }
+        runCatching {
+            ProtocolParsers.kv(checked(handle, "cat /etc/proxy-runbook/deployment-state.env 2>/dev/null; cat /etc/text-node-assistant/deployment-state.env 2>/dev/null", emit = false).stdout)
+        }.getOrNull()?.let { deployment ->
+            deployment["DEPLOYMENT_MODE"]?.takeIf { it.isNotBlank() }?.let { fields["DEPLOYMENT_MODE"] = it }
+            deployment["ACTIVE_MODE"]?.takeIf { it.isNotBlank() }?.let { fields["ACTIVE_MODE"] = it }
+            deployment["ORIGIN_HISTORY"]?.takeIf { it.isNotBlank() }?.let { fields["ORIGIN_HISTORY"] = it.replace(Regex("\\s+"), " ").take(240) }
+            val mode = deployment["DEPLOYMENT_MODE"].orEmpty()
+            val active = deployment["ACTIVE_MODE"].orEmpty()
+            fields["V095_CDN_STATUS"] = if (mode == "direct-reality") "NOT_CONFIGURED" else active.ifBlank { "UNKNOWN" }
+            fields["V095_PHASE_STATUS"] = if (mode == "direct-reality") "DIRECT_COMPATIBILITY_BASELINE" else "STAGED_ROUTE_RECONCILED"
+        }
+        // Include only non-secret CDN/topology state in the protected
+        // handoff.  Both product and legacy paths are read so an upgrade can
+        // still expose the v0.9.5 three-protocol route without moving secrets
+        // into ordinary logs.
+        runCatching {
+            ProtocolParsers.kv(
+                checked(
+                    handle,
+                    "cat /root/.config/proxy-node-assistant/topology.env 2>/dev/null; " +
+                        "cat /root/.config/text-node-assistant/topology.env 2>/dev/null; " +
+                        "cat /etc/proxy-runbook/topology.env 2>/dev/null; " +
+                        "cat /etc/text-node-assistant/topology.env 2>/dev/null; " +
+                        "cat /etc/proxy-runbook/cloudflare/edge-state.env 2>/dev/null; " +
+                        "cat /etc/text-node-assistant/cloudflare/edge-state.env 2>/dev/null",
+                    emit = false,
+                ).stdout,
+            )
+        }.getOrNull()?.let { topology ->
+            listOf(
+                "TOPOLOGY_MODE", "ROUTE_MODE", "ACTIVE_MODE", "ORANGE_DOMAIN", "GRAY_DOMAIN",
+                "CDN_EDGE_DOMAIN", "CDN_EDGE_PORT", "CDN_ORIGIN_PORT", "CDN_EDGE_VALIDATED",
+                "CDN_CLIENT_CONFIRMED", "CDN_ORIGIN_READY", "CDN_ORIGIN_SCOPE", "TNA_TOPOLOGY_RECONCILED",
+            ).forEach { key -> topology[key]?.trim()?.takeIf { it.isNotBlank() && it.length <= 512 }?.let { fields[key] = it } }
+        }
+        runCatching { readStableNodeIdentity(handle) }.getOrNull()?.let { identity ->
+            fields["SERVER_ID"] = identity.serverId
+            fields["NODE_ID"] = identity.nodeId
+            fields["MACHINE_ID_SHA256"] = identity.machineIdSha256
+            fields["SSH_HOST_KEY_SHA256"] = identity.hostKeySha256
+            fields["FIRST_KNOWN_PUBLIC_IP"] = identity.firstKnownPublicIp
+            fields["CURRENT_PUBLIC_IP"] = identity.currentPublicIp
+        }
+        runCatching { ProtocolParsers.panel(checked(handle, panelMetadataCommand(), emit = false).stdout) }.getOrNull()?.let { panel ->
+            fields["PANEL_REMOTE_LOOPBACK_PORT"] = panel.port.toString()
+            fields["PANEL_LOCAL_URL_TEMPLATE"] = "http://127.0.0.1:<LOCAL_TUNNEL_PORT>${panel.path}"
+            fields["PANEL_SSH_TUNNEL_INSTRUCTION"] = "Use Android operation 2; the application creates a localhost SSH tunnel."
+            fields["FORM_PANEL_LOCAL_URL"] = "http://127.0.0.1:<LOCAL_TUNNEL_PORT>${panel.path}"
+        }
+        val handoff = ProtocolParsers.completeHandoff(legacy, fields)
         _state.update { it.copy(secretHandoff = handoff) }
         log("CREDENTIAL_HANDOFF_VALIDATED; secrets are shown only in the protected handoff panel")
     }
 
+    /**
+     * Resolve panel metadata from the current toolkit first, then the two
+     * v0.9.x roots kept for in-place upgrades.  The probe is read-only and
+     * fails explicitly when none of the roots contains the script, rather
+     * than silently presenting a handoff without a usable panel URL.
+     */
+    private fun panelMetadataCommand(): String = """
+        set -u
+        root='$REMOTE_ROOT'
+        [ -x "${'$'}root/linux/18-panel-metadata.sh" ] || root='$LEGACY_TEXT_REMOTE_ROOT'
+        [ -x "${'$'}root/linux/18-panel-metadata.sh" ] || root='$LEGACY_REMOTE_ROOT'
+        [ -x "${'$'}root/linux/18-panel-metadata.sh" ] || {
+            echo PANEL_METADATA_ERROR=SCRIPT_MISSING >&2
+            exit 12
+        }
+        bash "${'$'}root/linux/18-panel-metadata.sh"
+    """.trimIndent()
+
+    private fun sshAuthenticationKeyId(publicKey: String): String {
+        val fields = publicKey.trim().split(Regex("\\s+"))
+        require(fields.size >= 2 && fields[0] == "ssh-ed25519") { "unsupported managed SSH public key" }
+        val blob = Base64.decode(fields[1], Base64.DEFAULT)
+        require(blob.size >= 32) { "invalid managed SSH public key" }
+        return "SHA256:" + Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(blob), Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
     private suspend fun openPanel(handle: SshHandle): Boolean {
         ensureToolkit(handle)
-        val meta = ProtocolParsers.panel(checked(handle, "bash $REMOTE_ROOT/linux/18-panel-metadata.sh", emit = false).stdout)
+        val meta = ProtocolParsers.panel(checked(handle, panelMetadataCommand(), emit = false).stdout)
         val forward = handle.openLocalForward(meta.port)
         val url = "http://127.0.0.1:${forward.localPort}${meta.path}"
         TunnelRegistry.install(context, handle, forward, url)
@@ -796,7 +1981,7 @@ class WorkflowRunner(
     }
 
     private suspend fun optimizeCover(handle: SshHandle) {
-        val env = ProtocolParsers.kv(checked(handle, "cat /etc/proxy-runbook/public.env", emit = false).stdout)
+        val env = ProtocolParsers.kv(checked(handle, "cat /etc/proxy-runbook/public.env 2>/dev/null; cat /etc/text-node-assistant/public.env 2>/dev/null", emit = false).stdout)
         val domain = env["COVER_DOMAIN"].orEmpty()
         require(Validation.validDomain(domain)) { tr("没有有效的运行时伪装域名，请先执行操作 [1]", "No valid runtime cover domain; run action 1 first") }
         log(checked(handle, "bash $REMOTE_ROOT/linux/05b-cover-site-polished.sh --list", emit = false).stdout.trim())
@@ -979,6 +2164,7 @@ class WorkflowRunner(
         const val INSTALL_ROOT = "/opt/proxy-node-assistant-v1.0.0"
         const val TOOLKIT_ASSET = "proxy-node-assistant-toolkit-v1.0.0.tgz"
         const val TOOLKIT_ARCHIVE = "proxy-node-assistant-toolkit-v1.0.0.tar.gz"
+        const val CLOUDFLARE_DNS_DASHBOARD = "https://dash.cloudflare.com/"
         val COVER_TEMPLATE_CATALOG = """
             1 atlas-journal   2 northstar-studio   3 cedar-stone
             4 field-lab       5 harbor-weather     6 local-library

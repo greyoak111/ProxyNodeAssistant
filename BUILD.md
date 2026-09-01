@@ -1,6 +1,6 @@
 # ProxyNodeAssistant v1.0.0 构建、验证与发行
 
-本文只描述当前的 **v1.0.0 精简重置线**。它以 v0.9.0 的可靠 SSH 运维主链路为基础，已经退役此前实验版引入的设备准入、controller、邀请、网盘和本机 admin。构建产物不得重新暴露这些入口。
+本文只描述当前的 **v1.0.0 精简重置线**。它以 v0.9.0 的可靠 SSH 运维主链路为基础，已经退役此前实验版引入的本机 admin/恢复门禁、UI 门禁、设备身份/准入、controller、邀请、租约和网盘。构建产物不得重新暴露这些入口；登录只使用普通 SSH 密码或长期 key，完整远端凭据交接仍必须保留并验证。
 
 ## 1. 版本与目录基线
 
@@ -183,7 +183,7 @@ pna-release-v1
 pna-v0.9.0-vault
 ```
 
-它们仅是 Android 原位升级签名和旧加密数据解密的兼容边界，不代表当前产品仍叫 ProxyNodeAssistant。改名、删除或重建签名身份会使已安装 APK 无法原位升级；改动 vault alias 会使旧加密数据不可读。应离线备份 keystore 及其 DPAPI 密码文件，不得提交仓库。
+它们仅是 Android 原位升级签名和旧加密数据解密的兼容边界，不影响当前产品名 `ProxyNodeAssistant`。改名、删除或重建签名身份会使已安装 APK 无法原位升级；改动 vault alias 会使旧加密数据不可读。应离线备份 keystore 及其 DPAPI 密码文件，不得提交仓库。
 
 ## 9. 发行打包
 
@@ -236,7 +236,7 @@ GitHub 发布时，中文文件会使用 `portable.zip`、`release-notes-zh-CN.m
 - [ ] x64/x86 运行时冒烟通过，ARM64 的验证范围如实标注；
 - [ ] Android 单元测试、签名和 `apksigner verify` 通过；
 - [ ] APK 内工具包和独立工具包来自同一 revision；
-- [ ] GUI/Android 不再显示设备准入、controller、邀请、网盘或本机 admin；
+- [ ] GUI/Android 不再显示本机 admin/恢复、UI 门禁、远端设备身份/准入、controller、邀请、租约或网盘入口；登录只使用普通 SSH 密码或长期 key；
 - [ ] 菜单 `[1]` 是唯一施工入口，并保留每项 SSH 临时密码/绑定 key 双模式；
 - [ ] 安装模式必须显式选择：已有节点才允许 `0 keep`，以及 `1 灰云 / 2 橙云 / 3 双路`；
 - [ ] 预览后必须输入精确 `APPLY` 才能上传或改远端；

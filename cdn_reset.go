@@ -24,6 +24,16 @@ var (
 		return a.remotePublicIP(c)
 	}
 	cdnRequestClientProof = func(a *App, link string) error {
+		// Existing nodes may still emit the v0.9.x TNA fragment.  Keep the
+		// legacy URI readable for validation, but canonicalize its presentation
+		// label before it is shown/copied by the protected handoff.  The helper
+		// preserves the raw query (including optional XHTTP x_padding_bytes and
+		// extra parameters) instead of rebuilding a reduced URI.
+		canonicalLink, canonicalErr := canonicalizeCDNXHTTPHandoffURL(link)
+		if canonicalErr != nil {
+			return fmt.Errorf("CDN validation link could not be canonicalized: %w", canonicalErr)
+		}
+		link = canonicalLink
 		if err := a.secretHandoff("CDN XHTTP 8443 VALIDATION LINK", link); err != nil {
 			return fmt.Errorf("could not hand off the CDN validation link: %w", err)
 		}

@@ -123,21 +123,10 @@ func (a *App) remotePublicIP(c Connection) (string, error) {
 	return "", errors.New(a.msg("无法可靠识别 VPS 公网 IPv4；停止 DNS/证书施工。", "Could not reliably determine the VPS public IPv4; stopping before DNS/certificate work."))
 }
 
-func domainPointsTo(domain, publicIP string) bool {
-	addresses, err := net.LookupIP(domain)
-	if err != nil {
-		return false
-	}
-	for _, address := range addresses {
-		if address.To4() != nil && address.String() == publicIP {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *App) waitForDNS(domain, publicIP string) bool {
-	if domainPointsTo(domain, publicIP) {
+	probe := domainDNSProbe(domain, publicIP)
+	a.println("DNS_RESOLVER_QUORUM " + probe.Summary())
+	if probe.Accepted() {
 		a.println(a.msg("DNS 已经指向这台 VPS。", "DNS already points to this VPS."))
 		return true
 	}
@@ -153,7 +142,9 @@ func (a *App) waitForDNS(domain, publicIP string) bool {
 			return false
 		}
 		a.println(a.msg("正在重新检测 DNS…", "Re-checking DNS..."))
-		if domainPointsTo(domain, publicIP) {
+		probe = domainDNSProbe(domain, publicIP)
+		a.println("DNS_RESOLVER_QUORUM " + probe.Summary())
+		if probe.Accepted() {
 			a.println(a.msg("DNS 已经指向这台 VPS。", "DNS already points to this VPS."))
 			return true
 		}
@@ -253,6 +244,31 @@ func (a *App) deployOptimize() error {
 			return fmt.Errorf(a.msg("工具包按需安装/升级失败：%w", "On-demand toolkit install/upgrade failed: %w"), err)
 		}
 	}
+	// The transaction helper is part of the v1 toolkit, but may be absent on
+	// an older v0.9.x node until the guarded upload above completes.  Recover
+	// any unfinished snapshot before taking a new baseline or touching the
+	// node; otherwise a second run could layer changes on a half-applied one.
+	if err := a.recoverInterruptedInstallTransaction(c); err != nil {
+		return fmt.Errorf(a.msg("上次未提交施工无法安全恢复：%w", "The previous uncommitted construction could not be recovered safely: %w"), err)
+	}
+	if err := a.captureOriginalBaseline(c); err != nil {
+		return err
+	}
+	transactionID, err := a.beginInstallTransaction(c)
+	if err != nil {
+		return err
+	}
+	transactionActive := true
+	defer func() {
+		if !transactionActive {
+			return
+		}
+		if rollbackErr := a.rollbackInstallTransaction(c, transactionID); rollbackErr != nil {
+			a.println(a.msg("未提交施工的事务回滚失败，请立即运行菜单 [3] 并保留远端救援信息：", "The uncommitted install transaction could not be rolled back; run menu [3] immediately and preserve the remote recovery details:") + " " + rollbackErr.Error())
+		} else {
+			a.println(a.msg("本次未提交施工已按事务快照回滚。", "The uncommitted construction was rolled back to its transaction snapshot."))
+		}
+	}()
 	if err := a.retireLegacyDeviceDriveIfPresent(c, legacyV095Audit); err != nil {
 		return err
 	}
@@ -304,11 +320,25 @@ func (a *App) deployOptimize() error {
 
 	handoff, handoffErr := a.fetchHandoff(c)
 	if handoffErr != nil {
-		a.println(a.msg("施工成功，但交接单未通过完整性校验：", "Convergence succeeded, but the handoff failed integrity checks:") + " " + handoffErr.Error())
-		a.println(a.msg("未复制任何内容；可在确认后使用菜单 [7] 重试。", "Nothing was copied; use menu [7] to retry after checking."))
-	} else if err := a.secretHandoff("CREDENTIAL HANDOFF", handoff); err != nil {
+		// The handoff is part of the install contract: it carries the VPS and
+		// panel credentials plus all three client links.  Do not commit a
+		// remotely-mutated node when that evidence cannot be validated/exported.
+		return fmt.Errorf(a.msg("施工阶段完成，但强制交接单未通过完整性校验；本次不会提交半交付状态：%w", "Construction stages completed, but the mandatory handoff failed integrity validation; a partially delivered state will not be committed: %w"), handoffErr)
+	}
+	complete, completeErr := a.buildCompleteHandoff(handoff, c)
+	if completeErr != nil {
+		return fmt.Errorf(a.msg("完整交接单追加块生成失败；本次不会提交半交付状态：%w", "Complete handoff appendix generation failed; a partially delivered state will not be committed: %w"), completeErr)
+	}
+	handoff = complete
+	if err := a.secretHandoff("CREDENTIAL HANDOFF", handoff); err != nil {
+		// Clipboard failure does not invalidate the remote state, but make the
+		// error visible and require the operator to save the printed block.
 		a.println(err.Error())
 	}
+	if err := a.commitInstallTransaction(c, transactionID); err != nil {
+		return err
+	}
+	transactionActive = false
 	if plan.Preferences.PruneAfterSuccess {
 		if err := a.pruneBackupsAndBackupCurrentConfigWithConn(c, false); err != nil {
 			return fmt.Errorf(a.msg("远端备份整理失败；为避免继续连锁操作，本次不打开面板：%w", "Remote backup cleanup failed; the panel will not be opened to avoid chained actions: %w"), err)
@@ -533,12 +563,19 @@ func (a *App) openPanelWithConn(c Connection) error {
 	a.println(a.msg("元数据来源：", "Metadata source:") + " " + meta.Source)
 	a.println(a.msg("EXE 退出时会终止自己创建的隧道。", "The tunnel is terminated automatically when this EXE exits."))
 	if handoff, err := a.fetchHandoff(c); err == nil {
-		kv := parseKV(handoff)
-		if kv["PANEL_USERNAME"] != "" {
-			a.println("PANEL_USERNAME=" + kv["PANEL_USERNAME"])
+		// This shortcut used to parse the raw concatenated handoff directly,
+		// bypassing the canonical formatter.  On an upgraded node that exposed
+		// the legacy PANEL_USERNAME/PASSWORD rows (and occasionally an older
+		// archived password) even though menu [7] showed the new form.  Resolve
+		// the same last-usable values used by the form and expose only the
+		// canonical account spelling here.
+		account := handoffCredentialValue(handoff, "PANEL_ACCOUNT", "PANEL_USERNAME")
+		password := handoffCredentialValue(handoff, "PANEL_PASSWORD")
+		if account != "" {
+			a.println("PANEL_ACCOUNT=" + account)
 		}
-		if kv["PANEL_PASSWORD"] != "" {
-			if copyClipboard(kv["PANEL_PASSWORD"]) == nil {
+		if password != "" {
+			if copyClipboard(password) == nil {
 				a.println(a.msg("PANEL_PASSWORD 已单独复制到剪贴板；粘贴后请用菜单 [12] 清空。", "PANEL_PASSWORD was copied alone; use menu [12] to clear it after pasting."))
 			}
 		}
@@ -673,6 +710,11 @@ func (a *App) rotateVPSPassword() error {
 	if err != nil {
 		return err
 	}
+	if complete, completeErr := a.buildCompleteHandoff(handoff, c); completeErr == nil {
+		handoff = complete
+	} else {
+		return completeErr
+	}
 	return a.secretHandoff("CREDENTIAL HANDOFF", handoff)
 }
 
@@ -697,6 +739,11 @@ func (a *App) rotatePanelCredentials() error {
 	if err != nil {
 		return err
 	}
+	if complete, completeErr := a.buildCompleteHandoff(handoff, c); completeErr == nil {
+		handoff = complete
+	} else {
+		return completeErr
+	}
 	return a.secretHandoff("CREDENTIAL HANDOFF", handoff)
 }
 
@@ -709,11 +756,19 @@ func (a *App) showHandoff() error {
 	if err != nil {
 		return fmt.Errorf(a.msg("当前没有可验证的交接单：%w", "No validated credential handoff is available: %w"), err)
 	}
+	if complete, completeErr := a.buildCompleteHandoff(handoff, c); completeErr == nil {
+		handoff = complete
+	} else {
+		return completeErr
+	}
 	return a.secretHandoff("CREDENTIAL HANDOFF", handoff)
 }
 
 func (a *App) runtimePublicEnv(c Connection) (map[string]string, error) {
-	result := a.rootCapture(c, "cat /etc/proxy-runbook/public.env 2>/dev/null || true")
+	// v0.9.x wrote this file below /etc/text-node-assistant.  Read legacy
+	// first and the reset-line path second so newer values win while old
+	// installations remain inspectable during migration.
+	result := a.rootCapture(c, "for f in /etc/text-node-assistant/public.env /etc/proxy-runbook/public.env; do [ -r \"$f\" ] && cat \"$f\"; done")
 	if !result.OK() {
 		return nil, fmt.Errorf("runtime metadata fetch failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}

@@ -242,7 +242,7 @@ func (a *App) printMenu() {
 		a.println("[6] 随机化 3x-ui 账号密码（显示真凭据 + 剪贴板）")
 		a.println("[7] 显示并复制当前凭据交接单")
 		a.println("[8] 切换 15 套伪装站（随机/编号）+ 优化 Nginx")
-		a.println("[9] 完整灾备（含程序/身份，体积较大）")
+		a.println("[9] 完整灾备（含程序/远端节点配置，体积较大）")
 		a.println("[10] 生成并下载紧急诊断报告")
 		a.println("[11] 绑定 / 重新生成 SSH 登录密钥（先验证再换旧钥）")
 		a.println("[12] 清空系统剪贴板")
@@ -253,6 +253,9 @@ func (a *App) printMenu() {
 		a.println("[17] SSH/vnStat 流量估算与 70/85/95% 预警")
 		a.println("[18] 全量拆除本工具施工并恢复原始基线（高风险，先下载救援包）")
 		a.println("[19] SS2022 来源白名单：识别当前本地公网 IP / 对照 VPS / 明确添加")
+		a.println("[20] 安全事件与基线：聚合 SSH / 防火墙 / Nginx / Fail2ban 记录")
+		a.println("[22] 线路拓扑：灰云 / 橙云 / 双路的状态、施工、切换与回滚")
+		a.println("[23] 更换 VPS 公网 IP 后安全重绑定（复用原 key；身份不符即停止）")
 		a.println("[T] 服务商流量中心：KiwiVM 精确 API / 兼容 API / 凭据管理器")
 		a.println("[K] 管理已绑定 key：查看 / 恢复 / 全部转入备份态并清空绑定位置")
 		a.println("[H] 管理 VPS 登录历史：查看 / 删除单条 / 清空全部")
@@ -269,7 +272,7 @@ func (a *App) printMenu() {
 		a.println("[6] Rotate 3x-ui credentials (real values + clipboard)")
 		a.println("[7] Show and copy the current credential handoff")
 		a.println("[8] Switch 15 cover templates (random/ID) + optimize Nginx")
-		a.println("[9] Full disaster backup (includes programs/identity; larger)")
+		a.println("[9] Full disaster backup (includes program/remote-node configuration; larger)")
 		a.println("[10] Generate and download an emergency report")
 		a.println("[11] Bind / regenerate the SSH login key (verify before replacing)")
 		a.println("[12] Clear the system clipboard")
@@ -280,6 +283,9 @@ func (a *App) printMenu() {
 		a.println("[17] SSH/vnStat traffic estimate with 70/85/95% warnings")
 		a.println("[18] Fully dismantle managed construction and restore the original baseline (high risk; rescue first)")
 		a.println("[19] SS2022 source allowlist: detect local public IP / compare VPS view / explicitly add")
+		a.println("[20] Security events and baseline: aggregate SSH / firewall / Nginx / Fail2ban evidence")
+		a.println("[22] Link topology: gray / orange / dual status, construction, switching, and rollback")
+		a.println("[23] Safely rebind a changed VPS public IP (reuse the original key; stop on identity mismatch)")
 		a.println("[T] Provider traffic center: exact KiwiVM API / compatible API / Credential Manager")
 		a.println("[K] Manage bound keys: inspect / restore / archive all and empty bound positions")
 		a.println("[H] Manage VPS login history: inspect / delete one / clear all")
@@ -373,6 +379,12 @@ func (a *App) executeActionChoice(choice string) (bool, error) {
 		return true, a.runRemoteAction(a.dismantleManagedNode)
 	case "19":
 		return true, a.runRemoteAction(a.manageSS2022Allowlist)
+	case "20":
+		return true, a.runRemoteAction(a.manageSecurityEvents)
+	case "22":
+		return true, a.runRemoteAction(a.manageCDNXHTTPPrototype)
+	case "23":
+		return true, a.runRemoteAction(a.rebindPublicIP)
 	case "t":
 		return true, a.providerTrafficCenter()
 	case "k":

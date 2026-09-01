@@ -85,6 +85,7 @@ xui_generate_token_once() {
 
 xui_api_context() {
   local xui show port raw_path clean_path public_file install_file handoff_file cache_file
+  local legacy_public_file legacy_handoff_file legacy_cache_file
   local token='' source='' generated='' i
   local -a tokens sources
 
@@ -96,13 +97,20 @@ xui_api_context() {
   install_file="${PNA_XUI_INSTALL_RESULT_FILE:-/etc/x-ui/install-result.env}"
   handoff_file="${PNA_XUI_HANDOFF_FILE:-/root/.config/proxy-runbook/HANDOFF-SECRETS.txt}"
   cache_file="${PNA_XUI_TOKEN_CACHE_FILE:-/root/.config/proxy-runbook/XUI_API_TOKEN}"
+  # Read-only compatibility fallbacks for nodes upgraded from v0.9.x.  New
+  # writes continue to use the ProxyNodeAssistant paths above.
+  legacy_public_file="${PNA_LEGACY_XUI_PUBLIC_FILE:-/etc/text-node-assistant/public.env}"
+  legacy_handoff_file="${PNA_LEGACY_XUI_HANDOFF_FILE:-/root/.config/text-node-assistant/HANDOFF-SECRETS.txt}"
+  legacy_cache_file="${PNA_LEGACY_XUI_TOKEN_CACHE_FILE:-/root/.config/text-node-assistant/XUI_API_TOKEN}"
 
   show="$("$xui" setting -show 2>/dev/null || true)"
   port="$(printf '%s\n' "$show" | sed -nE 's/^[[:space:]]*(port|panelPort):[[:space:]]*([0-9]+).*$/\2/p' | sed -n '1p')"
   raw_path="$(printf '%s\n' "$show" | sed -nE 's/^[[:space:]]*(webBasePath|web base path):[[:space:]]*(.*)$/\2/p' | sed -n '1p')"
   [ -n "$port" ] || port="$(xui_env_value "$public_file" PANEL_PORT 2>/dev/null || true)"
+  [ -n "$port" ] || port="$(xui_env_value "$legacy_public_file" PANEL_PORT 2>/dev/null || true)"
   [ -n "$port" ] || port="$(xui_env_value "$install_file" XUI_PANEL_PORT 2>/dev/null || true)"
   [ -n "$raw_path" ] || raw_path="$(xui_env_value "$public_file" WEB_BASE_PATH 2>/dev/null || true)"
+  [ -n "$raw_path" ] || raw_path="$(xui_env_value "$legacy_public_file" WEB_BASE_PATH 2>/dev/null || true)"
   [ -n "$raw_path" ] || raw_path="$(xui_env_value "$install_file" XUI_WEB_BASE_PATH 2>/dev/null || true)"
 
   case "$port" in
@@ -140,8 +148,10 @@ xui_api_context() {
     "$(xui_first_line "$cache_file" 2>/dev/null || true)"
     "$(xui_env_value "$handoff_file" PANEL_API_TOKEN 2>/dev/null || true)"
     "$(xui_env_value "$install_file" XUI_API_TOKEN 2>/dev/null || true)"
+    "$(xui_first_line "$legacy_cache_file" 2>/dev/null || true)"
+    "$(xui_env_value "$legacy_handoff_file" PANEL_API_TOKEN 2>/dev/null || true)"
   )
-  sources=(environment cache handoff install-result)
+  sources=(environment cache handoff install-result legacy-cache legacy-handoff)
   for i in "${!tokens[@]}"; do
     [ -n "${tokens[$i]}" ] || continue
     if xui_token_works "${tokens[$i]}"; then
@@ -172,6 +182,59 @@ xui_api_context() {
 xui_auth_curl() {
   # Bearer token is supplied over FD 3, not embedded in curl argv.
   curl -fsS -H @/dev/fd/3 "$@" 3<<<"Authorization: Bearer ${XUI_API_TOKEN}"
+}
+
+# Verify a username/password through the same CSRF + cookie flow used by the
+# 3x-ui browser.  Credentials are encoded on stdin and never placed in curl
+# arguments or diagnostic output.  The helper is intentionally independent of
+# the bearer-token API context so it can validate a newly rotated account.
+xui_password_login_works() {
+  local username="$1" password="$2" xui show port raw_path clean_path base body
+  local public_file legacy_public_file
+  local tmp_dir cookie_jar csrf_file response_file csrf_token csrf_code login_code i
+  [ -n "$username" ] && [ -n "$password" ] || return 1
+  case "$username$password" in *$'\r'*|*$'\n'*) return 1 ;; esac
+  xui="$(xui_find_bin)" || return 1
+  public_file="${PNA_XUI_PUBLIC_FILE:-/etc/proxy-runbook/public.env}"
+  legacy_public_file="${PNA_LEGACY_XUI_PUBLIC_FILE:-/etc/text-node-assistant/public.env}"
+  show="$("$xui" setting -show 2>/dev/null || true)"
+  port="$(printf '%s\n' "$show" | sed -nE 's/^[[:space:]]*(port|panelPort):[[:space:]]*([0-9]+).*$/\2/p' | sed -n '1p')"
+  raw_path="$(printf '%s\n' "$show" | sed -nE 's/^[[:space:]]*(webBasePath|web base path):[[:space:]]*(.*)$/\2/p' | sed -n '1p')"
+  [ -n "$port" ] || port="$(xui_env_value "$public_file" PANEL_PORT 2>/dev/null || true)"
+  [ -n "$port" ] || port="$(xui_env_value "$legacy_public_file" PANEL_PORT 2>/dev/null || true)"
+  [ -n "$port" ] || port="$(xui_env_value "${PNA_XUI_INSTALL_RESULT_FILE:-/etc/x-ui/install-result.env}" XUI_PANEL_PORT 2>/dev/null || true)"
+  [ -n "$raw_path" ] || raw_path="$(xui_env_value "$public_file" WEB_BASE_PATH 2>/dev/null || true)"
+  [ -n "$raw_path" ] || raw_path="$(xui_env_value "$legacy_public_file" WEB_BASE_PATH 2>/dev/null || true)"
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || return 1
+  clean_path="${raw_path#/}"; clean_path="${clean_path%/}"
+  base="http://127.0.0.1:${port}"
+  [ -z "$clean_path" ] || base="${base}/${clean_path}"
+  body="$(printf '%s\n%s' "$username" "$password" | python3 -c 'import sys, urllib.parse; u=sys.stdin.readline().rstrip("\n"); p=sys.stdin.read(); print(urllib.parse.urlencode({"username":u,"password":p,"twoFactorCode":""}), end="")')" || return 1
+  tmp_dir="$(mktemp -d)" || return 1
+  cookie_jar="$tmp_dir/cookies"
+  csrf_file="$tmp_dir/csrf.json"
+  response_file="$tmp_dir/login.json"
+  for i in 1 2 3 4 5 6 7 8; do
+    : > "$cookie_jar"
+    csrf_code="$(curl -sS --max-time 10 -c "$cookie_jar" -b "$cookie_jar" \
+      -H 'X-Requested-With: XMLHttpRequest' -o "$csrf_file" -w '%{http_code}' \
+      "${base}/csrf-token" 2>/dev/null || true)"
+    csrf_token="$(jq -r 'if .success == true and (.obj | type) == "string" then .obj else empty end' "$csrf_file" 2>/dev/null || true)"
+    if [ "$csrf_code" = "200" ] && [ -n "$csrf_token" ]; then
+      login_code="$(printf '%s' "$body" | curl -sS --max-time 10 -c "$cookie_jar" -b "$cookie_jar" \
+        -H 'X-Requested-With: XMLHttpRequest' -H "X-CSRF-Token: ${csrf_token}" \
+        -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8' \
+        --data-binary @- -o "$response_file" -w '%{http_code}' "${base}/login" 2>/dev/null || true)"
+      if [ "$login_code" = "200" ] && jq -e '(.success == true) or (.success == "true")' "$response_file" >/dev/null 2>&1; then
+        rm -rf -- "$tmp_dir"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  rm -rf -- "$tmp_dir"
+  return 1
 }
 
 xui_api_get() {
