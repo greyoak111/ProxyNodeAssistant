@@ -173,13 +173,79 @@
                     <ControlTemplate TargetType="{x:Type ComboBox}">
                         <Grid>
                             <ToggleButton x:Name="DropButton"
+                                          OverridesDefaultStyle="True"
+                                          FocusVisualStyle="{x:Null}"
                                           Focusable="False"
                                           ClickMode="Press"
+                                          HorizontalContentAlignment="Stretch"
+                                          VerticalContentAlignment="Stretch"
                                           IsEnabled="{TemplateBinding IsEnabled}"
                                           IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}}"
                                           Background="{TemplateBinding Background}"
                                           BorderBrush="{TemplateBinding BorderBrush}"
                                           BorderThickness="{TemplateBinding BorderThickness}">
+                                <ToggleButton.Template>
+                                    <!-- Do not let the host Windows theme supply its light
+                                         ToggleButton chrome.  That stock template can
+                                         override Background on hover/pressed and briefly
+                                         flash a pale-blue/white field. -->
+                                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                        <Border x:Name="DropChrome"
+                                                Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                CornerRadius="2"
+                                                SnapsToDevicePixels="True">
+                                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                                              Content="{TemplateBinding Content}"
+                                                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                              ContentStringFormat="{TemplateBinding ContentStringFormat}"
+                                                              TextElement.Foreground="{TemplateBinding Foreground}"
+                                                              RecognizesAccessKey="True" />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="DropChrome" Property="Background" Value="#0A1D24" />
+                                                <Setter TargetName="DropChrome" Property="BorderBrush" Value="#3A7F8C" />
+                                            </Trigger>
+                                            <Trigger Property="IsPressed" Value="True">
+                                                <Setter TargetName="DropChrome" Property="Background" Value="#0D2B34" />
+                                                <Setter TargetName="DropChrome" Property="BorderBrush" Value="#12CBE8" />
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="DropChrome" Property="Background" Value="#0A2028" />
+                                                <Setter TargetName="DropChrome" Property="BorderBrush" Value="#12CBE8" />
+                                            </Trigger>
+                                            <MultiTrigger>
+                                                <MultiTrigger.Conditions>
+                                                    <Condition Property="IsChecked" Value="True" />
+                                                    <Condition Property="IsMouseOver" Value="True" />
+                                                </MultiTrigger.Conditions>
+                                                <Setter TargetName="DropChrome" Property="Background" Value="#0D2932" />
+                                                <Setter TargetName="DropChrome" Property="BorderBrush" Value="#57E7FA" />
+                                            </MultiTrigger>
+                                            <MultiTrigger>
+                                                <MultiTrigger.Conditions>
+                                                    <Condition Property="IsChecked" Value="True" />
+                                                    <Condition Property="IsPressed" Value="True" />
+                                                </MultiTrigger.Conditions>
+                                                <Setter TargetName="DropChrome" Property="Background" Value="#103640" />
+                                                <Setter TargetName="DropChrome" Property="BorderBrush" Value="#71EDFC" />
+                                            </MultiTrigger>
+                                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                                <Setter TargetName="DropChrome" Property="BorderBrush" Value="#57E7FA" />
+                                            </Trigger>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter TargetName="DropChrome" Property="Background" Value="#080F14" />
+                                                <Setter TargetName="DropChrome" Property="BorderBrush" Value="#1B2B33" />
+                                                <Setter Property="Foreground" Value="#4A5C65" />
+                                                <Setter Property="Opacity" Value="0.62" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
                                 <Grid>
                                     <ContentPresenter x:Name="SelectionContent"
                                                       Content="{TemplateBinding SelectionBoxItem}"
