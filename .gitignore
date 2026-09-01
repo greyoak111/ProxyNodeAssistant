@@ -23,6 +23,11 @@ assets/*.tmp.tar.gz
 audit-*/
 privacy-scan-*/
 release-privacy-check-*/
+# Local release staging and unpacked audit workspaces.
+.audit-*/
+.tmp-*/
+release-staging-*/
+audit-runtime-*/
 ProxyNodeAssistant-Rescue/
 *.log
 *.tmp
