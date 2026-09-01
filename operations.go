@@ -170,6 +170,7 @@ func (a *App) deployOptimize() error {
 		return fmt.Errorf(a.msg("远端工具包版本无法安全识别：%w。没有上传任何东西。", "The remote toolkit version could not be safely classified: %w. Nothing was uploaded."), err)
 	}
 	updateSameVersionBuild := false
+	repairSameVersionToolkit := false
 	legacyV095Audit := probe.Present && probe.Version == toolkitVersion && probe.BuildRevision > 0 && probe.BuildRevision < toolkitBuildRevision
 	switch relation {
 	case ToolkitSameComplete:
@@ -183,15 +184,17 @@ func (a *App) deployOptimize() error {
 			return fmt.Errorf(a.msg("远端同版本构建比当前 EXE 新；禁止降级，请换用更新的 EXE", "The remote same-version build is newer than this EXE; downgrade is blocked. Use a newer EXE"))
 		}
 	case ToolkitSameIncomplete:
-		if legacyV095Audit {
-			updateSameVersionBuild = true
-			a.println(a.msg("检测到旧产品线 v1.0.0 的不完整构建；其内部修订低于重置线，将允许一次受控替换并退役设备门限/网盘。", "An incomplete build from the old v1.0.0 product line was detected; its internal revision predates the reset line, so one controlled replacement and feature retirement is allowed."))
-		} else {
+		if !sameVersionIncompleteRepairAllowed(probe) {
 			return fmt.Errorf(a.msg(
-				"远端已有重置线同版本 v%s，但文件不完整；为防止循环重装，本次拒绝覆盖。请先运行 [13]，确认卸载后再回 [1]",
-				"The reset-line toolkit v%s matches this EXE but is incomplete; overwrite is refused to prevent reinstall loops. Run [13], confirm uninstall, then return to [1]",
+				"远端同版本 v%s 工具包不完整，但其构建修订较新或构建 ID 不同；为防止降级，本次拒绝覆盖，请换用匹配的 EXE",
+				"The remote same-version v%s toolkit is incomplete, but its build revision is newer or its build ID differs; overwrite is refused to prevent downgrade. Use a matching EXE",
 			), toolkitVersion)
 		}
+		repairSameVersionToolkit = true
+		a.println(fmt.Sprintf(a.msg(
+			"检测到同版本 v%s 工具包不完整；菜单 [1] 在 APPLY 确认后将原位修复工具程序，不会重装节点或改动现有配置。",
+			"The v%s toolkit is incomplete; after APPLY confirmation, menu [1] will repair its program files in place without reinstalling the node or changing existing configuration.",
+		), toolkitVersion))
 	case ToolkitNewer:
 		return fmt.Errorf(a.msg(
 			"远端工具包 v%s 比当前 EXE v%s 新；本次禁止降级，也不会继续施工。请换用 v%s 或更新版本的 EXE",
@@ -239,7 +242,7 @@ func (a *App) deployOptimize() error {
 	a.installPrefs = plan.Preferences
 	a.saveLanguage()
 
-	if relation == ToolkitOlder || relation == ToolkitMissing || updateSameVersionBuild {
+	if relation == ToolkitOlder || relation == ToolkitMissing || updateSameVersionBuild || repairSameVersionToolkit {
 		if err := a.uploadToolkit(c); err != nil {
 			return fmt.Errorf(a.msg("工具包按需安装/升级失败：%w", "On-demand toolkit install/upgrade failed: %w"), err)
 		}

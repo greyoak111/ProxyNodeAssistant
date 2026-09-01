@@ -308,6 +308,27 @@ func compareToolkitBuild(probe ToolkitProbe, localBuildID string, localRevision 
 	return 1
 }
 
+// sameVersionIncompleteRepairAllowed is the narrow overwrite policy used by
+// menu [1].  A partial toolkit cannot be used by the other actions, but it is
+// safe for the explicit deploy flow to replace the managed program directory
+// after the user confirms APPLY.  Keep the monotonic build guard: a partial
+// probe carrying a newer revision (or the same revision with a different,
+// non-empty build ID) must not be downgraded by an older EXE.  Revision 0 and
+// an empty ID mean the metadata was not written before the interrupted upload;
+// those are precisely the cases this repair path is intended to recover.
+func sameVersionIncompleteRepairAllowed(probe ToolkitProbe) bool {
+	if !probe.Present || probe.Complete || probe.Version != toolkitVersion || probe.BuildRevision < 0 {
+		return false
+	}
+	if probe.BuildRevision > toolkitBuildRevision {
+		return false
+	}
+	if probe.BuildRevision == toolkitBuildRevision && probe.BuildID != "" && probe.BuildID != toolkitBuildID {
+		return false
+	}
+	return true
+}
+
 func compareToolkitVersions(left, right string) (int, error) {
 	parse := func(value string) ([]uint64, error) {
 		value = strings.TrimPrefix(strings.TrimSpace(value), "v")

@@ -94,6 +94,49 @@ class ProtocolParsersTest {
         assertEquals(0, ProtocolParsers.compareVersions("v0.9", "0.9.0"))
     }
 
+    @Test fun sameVersionIncompleteToolkitRepairAllowsInterruptedUploadOnly() {
+        fun probe(
+            complete: Boolean = false,
+            version: String = WorkflowRunner.VERSION,
+            buildId: String = "",
+            revision: Int = 0,
+        ) = com.proxynodeassistant.android.model.ToolkitProbe(
+            installed = true,
+            complete = complete,
+            version = version,
+            buildId = buildId,
+            buildRevision = revision,
+        )
+
+        assertTrue(WorkflowRunner.sameVersionIncompleteRepairAllowed(probe()))
+        assertTrue(
+            WorkflowRunner.sameVersionIncompleteRepairAllowed(
+                probe(buildId = "older-build", revision = WorkflowRunner.BUILD_REVISION - 1),
+            ),
+        )
+        assertTrue(
+            WorkflowRunner.sameVersionIncompleteRepairAllowed(
+                probe(buildId = WorkflowRunner.BUILD_ID, revision = WorkflowRunner.BUILD_REVISION),
+            ),
+        )
+        assertFalse(
+            WorkflowRunner.sameVersionIncompleteRepairAllowed(
+                probe(buildId = "future-build", revision = WorkflowRunner.BUILD_REVISION + 1),
+            ),
+        )
+        assertFalse(
+            WorkflowRunner.sameVersionIncompleteRepairAllowed(
+                probe(buildId = "different-build", revision = WorkflowRunner.BUILD_REVISION),
+            ),
+        )
+        assertFalse(
+            WorkflowRunner.sameVersionIncompleteRepairAllowed(
+                probe(complete = true, buildId = WorkflowRunner.BUILD_ID, revision = WorkflowRunner.BUILD_REVISION),
+            ),
+        )
+        assertFalse(WorkflowRunner.sameVersionIncompleteRepairAllowed(probe(version = "0.9.5")))
+    }
+
     @Test fun completeHandoffIncludesAllLoginFieldsButNotFormAliases() {
         val legacy = "${ProtocolParsers.HANDOFF_BEGIN}\nHANDOFF_RUN_STARTED=run-credentials\nVPS_LOGIN_USER=root\nVPS_LOGIN_PASSWORD=vps-secret\nPANEL_USERNAME=operator\nPANEL_PASSWORD=panel-secret\nPANEL_PORT=60039\n${ProtocolParsers.HANDOFF_END}"
         val base = ProtocolParsers.handoff(legacy)

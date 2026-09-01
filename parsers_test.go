@@ -1114,6 +1114,85 @@ func TestSameVersionBuildRevisionUpdatesOnlyWhenOlder(t *testing.T) {
 	}
 }
 
+func TestSameVersionIncompleteRepairAllowsOnlyInterruptedOrOlderBuilds(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe ToolkitProbe
+		want  bool
+	}{
+		{
+			name:  "missing revision from interrupted upload",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, Complete: false},
+			want:  true,
+		},
+		{
+			name:  "older revision",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: "old-build", BuildRevision: toolkitBuildRevision - 1, Complete: false},
+			want:  true,
+		},
+		{
+			name:  "current revision and id",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: toolkitBuildID, BuildRevision: toolkitBuildRevision, Complete: false},
+			want:  true,
+		},
+		{
+			name:  "current revision with missing id",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildRevision: toolkitBuildRevision, Complete: false},
+			want:  true,
+		},
+		{
+			name:  "newer revision",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: "future-build", BuildRevision: toolkitBuildRevision + 1, Complete: false},
+			want:  false,
+		},
+		{
+			name:  "different current build",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: "different-build", BuildRevision: toolkitBuildRevision, Complete: false},
+			want:  false,
+		},
+		{
+			name:  "complete toolkit",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: toolkitBuildID, BuildRevision: toolkitBuildRevision, Complete: true},
+			want:  false,
+		},
+		{
+			name:  "different version",
+			probe: ToolkitProbe{Present: true, Version: "0.9.5", Complete: false},
+			want:  false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sameVersionIncompleteRepairAllowed(test.probe); got != test.want {
+				t.Fatalf("repair policy for %#v = %v, want %v", test.probe, got, test.want)
+			}
+		})
+	}
+}
+
+func TestDeployActionRepairsSameVersionIncompleteAfterApply(t *testing.T) {
+	source, err := os.ReadFile("operations.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"repairSameVersionToolkit := false",
+		"repairSameVersionToolkit = true",
+		"|| repairSameVersionToolkit",
+		"菜单 [1] 在 APPLY 确认后将原位修复",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("menu [1] same-version repair guard is missing %q", required)
+		}
+	}
+	confirm := strings.Index(text, "if err := a.confirmInstallPlan(plan); err != nil")
+	upload := strings.Index(text, "if relation == ToolkitOlder || relation == ToolkitMissing || updateSameVersionBuild || repairSameVersionToolkit")
+	if confirm < 0 || upload < 0 || upload < confirm {
+		t.Fatal("same-version repair must upload only after the APPLY confirmation")
+	}
+}
+
 func TestRemoteGUIConfirmationUsesFramedLineAndStripsANSI(t *testing.T) {
 	runbook, err := os.ReadFile("runbook/proxy-node-assistant-v1.0.0/linux/00-auto-install-or-optimize.sh")
 	if err != nil {

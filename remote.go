@@ -2007,8 +2007,8 @@ func (a *App) ensureToolkit(c Connection) error {
 		}
 	case ToolkitSameIncomplete:
 		return fmt.Errorf(a.msg(
-			"远端已有同版本 v%s，但文件不完整；同版本保护禁止自动覆盖。请先用菜单 [13] 明确卸载，再运行 [1] 重装",
-			"Remote toolkit v%s matches this EXE but is incomplete; same-version protection forbids automatic overwrite. Use menu [13] to uninstall it explicitly, then run [1]",
+			"远端已有同版本 v%s，但文件不完整；请运行菜单 [1] 在 APPLY 确认后原位修复，其他菜单不会自动上传",
+			"Remote toolkit v%s matches this EXE but is incomplete; run menu [1] and confirm APPLY for an in-place repair. Other actions never upload it automatically",
 		), toolkitVersion)
 	case ToolkitNewer:
 		return fmt.Errorf(a.msg(
@@ -2040,11 +2040,13 @@ func (a *App) uploadToolkit(c Connection) error {
 			return fmt.Errorf("remote toolkit v%s build revision %d is newer than EXE build revision %d; downgrade refused", probe.Version, probe.BuildRevision, toolkitBuildRevision)
 		}
 	case ToolkitSameIncomplete:
-		// The retired, over-scoped v0.9.5 line used lower internal revisions.
-		// Allow that recognized line to be replaced once by this reset build;
-		// an incomplete reset-line build still requires explicit uninstall.
-		if probe.BuildRevision <= 0 || probe.BuildRevision >= toolkitBuildRevision {
-			return fmt.Errorf("same-version reset-line toolkit v%s is incomplete; explicit uninstall via menu [13] is required before reinstall", toolkitVersion)
+		// uploadToolkit is reachable only from menu [1], after the explicit
+		// APPLY confirmation.  Repairing the managed program directory is
+		// therefore allowed for an interrupted/partial same-version upload,
+		// while the monotonic build guard still rejects newer or divergent
+		// metadata.
+		if !sameVersionIncompleteRepairAllowed(probe) {
+			return fmt.Errorf("same-version toolkit v%s is incomplete but has a newer or different build; downgrade refused", toolkitVersion)
 		}
 	case ToolkitNewer:
 		return fmt.Errorf("remote toolkit v%s is newer than EXE v%s; downgrade refused", probe.Version, toolkitVersion)

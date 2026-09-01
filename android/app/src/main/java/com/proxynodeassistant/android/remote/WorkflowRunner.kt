@@ -428,8 +428,12 @@ class WorkflowRunner(
         val needsUpload = when {
             !probe.installed -> true
             comparison > 0 -> error(tr("远端工具包 v${probe.version} 更新，请改用同版或更新的 Android 客户端", "Remote toolkit v${probe.version} is newer; use a matching or newer Android client"))
-            comparison == 0 && !probe.complete -> error(tr("远端 v$VERSION 工具包不完整，请先执行 [13] 卸载，再重新安装", "Remote v$VERSION is incomplete. Explicitly uninstall with action 13 before reinstalling"))
-            comparison == 0 && (probe.buildRevision > BUILD_REVISION || (probe.buildRevision == BUILD_REVISION && probe.buildId != BUILD_ID)) -> error(tr("远端 v$VERSION 构建更新或不同，已拒绝降级", "Remote v$VERSION build is newer or different; downgrade refused"))
+            comparison == 0 && (probe.buildRevision > BUILD_REVISION || (probe.buildRevision == BUILD_REVISION && probe.buildId.isNotBlank() && probe.buildId != BUILD_ID)) -> error(tr("远端 v$VERSION 构建更新或不同，已拒绝降级", "Remote v$VERSION build is newer or different; downgrade refused"))
+            comparison == 0 && !probe.complete && sameVersionIncompleteRepairAllowed(probe) -> {
+                log("TOOLKIT_SAME_VERSION_INCOMPLETE; repairing in place")
+                true
+            }
+            comparison == 0 && !probe.complete -> error(tr("远端 v$VERSION 工具包不完整且构建信息不兼容；请换用匹配的 Android 客户端", "Remote v$VERSION is incomplete with incompatible build metadata; use a matching Android client"))
             comparison == 0 && probe.buildRevision == BUILD_REVISION && probe.buildId == BUILD_ID -> false
             else -> true
         }
@@ -1791,7 +1795,7 @@ class WorkflowRunner(
     private suspend fun ensureToolkit(handle: SshHandle) {
         val probe = probe(handle)
         check(probe.installed) { tr("远端工具包不存在，请先执行操作 [1]", "Remote toolkit is missing; run action 1 first") }
-        check(probe.complete) { tr("远端工具包不完整，请先执行 [13]，再执行 [1]", "Remote toolkit is incomplete; use action 13, then action 1") }
+        check(probe.complete) { tr("远端工具包不完整；请运行菜单 [1]，在 APPLY 确认后原位修复", "Remote toolkit is incomplete; run action 1 and confirm APPLY for an in-place repair") }
         check(probe.version == VERSION) { tr("远端工具包 v${probe.version} 与 Android 客户端 v$VERSION 不匹配；升级时执行 [1]，否则使用同版客户端", "Remote toolkit v${probe.version} does not match Android client v$VERSION; run action 1 when upgrading, or use a matching client") }
         check(probe.buildRevision == BUILD_REVISION && probe.buildId == BUILD_ID) { tr("远端 v$VERSION 构建不匹配；旧构建请执行 [1] 更新，更新构建请换新版客户端", "Remote v$VERSION build does not match; run action 1 to update an older build, or use a newer client") }
     }
@@ -2145,7 +2149,7 @@ class WorkflowRunner(
             safe.contains("authentication", true) -> "SSH 身份认证失败：$safe"
             safe.contains("Host key", true) -> "SSH 主机公钥校验失败：$safe"
             safe.contains("Remote toolkit is missing", true) -> "远端工具包不存在，请先执行操作 [1]"
-            safe.contains("Remote toolkit is incomplete", true) -> "远端工具包不完整，请先执行 [13] 卸载，再执行 [1] 安装"
+            safe.contains("Remote toolkit is incomplete", true) -> "远端工具包不完整，请运行菜单 [1] 并确认 APPLY 原位修复"
             safe.contains("remote command failed", true) -> safe.replace("remote command failed", "远端命令执行失败")
             safe.startsWith("操作") || safe.startsWith("SSH") || safe.startsWith("远端") -> safe
             else -> "操作失败：$safe"
@@ -2165,6 +2169,21 @@ class WorkflowRunner(
         const val TOOLKIT_ASSET = "proxy-node-assistant-toolkit-v1.0.0.tgz"
         const val TOOLKIT_ARCHIVE = "proxy-node-assistant-toolkit-v1.0.0.tar.gz"
         const val CLOUDFLARE_DNS_DASHBOARD = "https://dash.cloudflare.com/"
+
+        /**
+         * Only action [1] may replace a partial same-version toolkit, and it
+         * does so after the exact APPLY confirmation.  A newer revision (or a
+         * divergent ID at the same revision) must remain protected from an
+         * older Android client; missing metadata is treated as an interrupted
+         * upload and is therefore repairable.
+         */
+        fun sameVersionIncompleteRepairAllowed(probe: ToolkitProbe): Boolean {
+            if (!probe.installed || probe.complete || probe.version != VERSION || probe.buildRevision < 0) return false
+            if (probe.buildRevision > BUILD_REVISION) return false
+            if (probe.buildRevision == BUILD_REVISION && probe.buildId.isNotBlank() && probe.buildId != BUILD_ID) return false
+            return true
+        }
+
         val COVER_TEMPLATE_CATALOG = """
             1 atlas-journal   2 northstar-studio   3 cedar-stone
             4 field-lab       5 harbor-weather     6 local-library
