@@ -175,6 +175,7 @@
                             <ToggleButton x:Name="DropButton"
                                           Focusable="False"
                                           ClickMode="Press"
+                                          IsEnabled="{TemplateBinding IsEnabled}"
                                           IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}}"
                                           Background="{TemplateBinding Background}"
                                           BorderBrush="{TemplateBinding BorderBrush}"

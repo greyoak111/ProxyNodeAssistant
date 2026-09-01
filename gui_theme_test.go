@@ -19,6 +19,7 @@ func TestGUIInputThemeKeepsDropdownsDark(t *testing.T) {
 		`x:Key="DarkComboBoxStyle"`,
 		`<Popup x:Name="DropPopup"`,
 		`<Border Background="#071116"`,
+		`IsEnabled="{TemplateBinding IsEnabled}"`,
 		`TextElement.Foreground="{TemplateBinding Foreground}"`,
 	} {
 		if !strings.Contains(text, required) {
