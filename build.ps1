@@ -117,7 +117,8 @@ if (-not $SkipCommonValidation) {
         "scripts/test-xui-api-context.sh",
         "scripts/test-warp-route-idempotency.sh",
         "scripts/test-ss2022-trial-cleanup.sh",
-        "scripts/test-gui-remote-prompt.sh"
+        "scripts/test-gui-remote-prompt.sh",
+        "scripts/test-feature-retirement-global-clients.sh"
     )) {
         & $Bash $shellTest
         if ($LASTEXITCODE -ne 0) { throw "Shell validation failed: $shellTest" }

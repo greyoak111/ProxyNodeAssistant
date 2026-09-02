@@ -469,7 +469,7 @@
                     <Image x:Name="BrandIcon" Width="30" Height="30" Stretch="Uniform" SnapsToDevicePixels="True" ToolTip="ProxyNodeAssistant" />
                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="7,0,0,0">
                         <TextBlock Text="PNA // NODE OPS" FontFamily="Cascadia Mono, Consolas" FontSize="12" FontWeight="Bold" Foreground="#E3F6FA" />
-                        <TextBlock Text="BUILD 1.0.0-R107  /  LOCAL" Foreground="#536771" FontFamily="Cascadia Mono, Consolas" FontSize="8.5" Margin="0,3,0,0" />
+                        <TextBlock Text="BUILD 1.0.0-R108  /  LOCAL" Foreground="#536771" FontFamily="Cascadia Mono, Consolas" FontSize="8.5" Margin="0,3,0,0" />
                     </StackPanel>
                 </Grid>
 

@@ -15,10 +15,18 @@ esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR=/etc/text-node-assistant
+# v1.0.0 renamed the application state root.  A few v0.9.5 runs wrote their
+# device/drive receipts there before the reset boundary was applied.  Never
+# remove this directory wholesale: it also contains active public, DNS, and
+# deployment state.  Only the exact, ownership-validated paths below are
+# eligible for retirement.
+CURRENT_STATE_DIR=/etc/proxy-runbook
 ARCHIVE_ROOT=/root/.config/text-node-assistant/retired-v095-features
 RETIREMENT_STATE="$ARCHIVE_ROOT/state.env"
 LOCK_FILE=/run/lock/text-node-assistant-v095-feature-retirement.lock
 DEVICE_REGISTRY="$STATE_DIR/device-registry.json"
+CURRENT_DEVICE_REGISTRY="$CURRENT_STATE_DIR/device-registry.json"
+CURRENT_DEVICE_LOCK=/run/lock/proxy-runbook-device-admission.lock
 DRIVE_STATE="$STATE_DIR/private-drive.env"
 DRIVE_CONFIG="$STATE_DIR/copyparty.conf"
 DRIVE_ACCOUNTS="$STATE_DIR/drive-accounts.tsv"
@@ -33,6 +41,18 @@ NGINX_AVAILABLE=/etc/nginx/sites-available/tna-private-drive
 NGINX_ENABLED=/etc/nginx/sites-enabled/tna-private-drive
 DRIVE_CANDIDATE="$STATE_DIR/candidates/private-drive-production.conf"
 DRIVE_CANDIDATE_SUM="$DRIVE_CANDIDATE.sha256"
+# Companion names used by the short-lived v1 namespace migration.  These are
+# intentionally separate from the active files in /etc/proxy-runbook; the
+# retirement worker may touch them only after an old-drive marker is proven.
+CURRENT_DRIVE_STATE="$CURRENT_STATE_DIR/private-drive.env"
+CURRENT_DRIVE_CONFIG="$CURRENT_STATE_DIR/copyparty.conf"
+CURRENT_DRIVE_ACCOUNTS="$CURRENT_STATE_DIR/drive-accounts.tsv"
+CURRENT_DRIVE_ESCROW="$CURRENT_STATE_DIR/drive-credential-escrow"
+CURRENT_DRIVE_LOCK=/var/lib/proxy-runbook/drive-transaction.lock
+CURRENT_DRIVE_UNIT=/etc/systemd/system/proxy-runbook-copyparty.service
+CURRENT_DRIVE_SERVICE=proxy-runbook-copyparty.service
+CURRENT_DRIVE_CANDIDATE="$CURRENT_STATE_DIR/candidates/private-drive-production.conf"
+CURRENT_DRIVE_CANDIDATE_SUM="$CURRENT_DRIVE_CANDIDATE.sha256"
 NEW_DATA_ROOT=/srv/text-node-assistant/drive-data
 LEGACY_DATA_ROOT=/srv/proxy-node-assistant/drive-data
 
@@ -40,15 +60,27 @@ WORK=''
 ARCHIVE_PATH=''
 DRIVE_OWNED=0
 DEVICE_REGISTRY_OWNED=0
+CURRENT_DEVICE_REGISTRY_OWNED=0
+CURRENT_DRIVE_OWNED=0
 NGINX_OWNED=0
 CANDIDATE_OWNED=0
 XUI_PRESENT=0
 XUI_MANAGED_CLIENTS=0
+XUI_GLOBAL_MANAGED_CLIENTS=0
 AUTHORIZED_KEY_FILES=0
 NGINX_CHANGED=0
 CHANGE_COUNT=0
 UNMANAGED_PRESERVED=0
 declare -a XUI_UPDATED_IDS=()
+declare -a CURRENT_DRIVE_TEMP_FILES=()
+XUI_GLOBAL_CLIENTS_FILE=''
+XUI_GLOBAL_MANAGED_FILE=''
+XUI_GLOBAL_UNMANAGED_FILE=''
+XUI_GLOBAL_UNMANAGED_IDENTITY_FILE=''
+XUI_GLOBAL_EMAILS_FILE=''
+XUI_GLOBAL_CURRENT_EMAILS_FILE=''
+XUI_GLOBAL_DELETED_CLIENTS=0
+XUI_GLOBAL_ALREADY_REMOVED=0
 
 die() {
   printf 'TNA_V095_RETIREMENT_ERROR=%s\n' "$1" >&2
@@ -75,9 +107,17 @@ flock -x 9
 WORK="$(mktemp -d /tmp/tna-v095-retire.XXXXXX)"
 install -d -m 0700 "$WORK/archive/files" "$WORK/archive/evidence" \
   "$WORK/auth-original" "$WORK/auth-filtered" "$WORK/xui-original" "$WORK/xui-payload"
+XUI_GLOBAL_CLIENTS_FILE="$WORK/xui-original/global-clients.json"
+XUI_GLOBAL_MANAGED_FILE="$WORK/xui-original/global-managed-clients.json"
+XUI_GLOBAL_UNMANAGED_FILE="$WORK/xui-original/global-unmanaged-clients.json"
+XUI_GLOBAL_UNMANAGED_IDENTITY_FILE="$WORK/xui-original/global-unmanaged-identities.json"
+XUI_GLOBAL_EMAILS_FILE="$WORK/xui-original/global-managed-emails.txt"
+XUI_GLOBAL_CURRENT_EMAILS_FILE="$WORK/xui-original/current-global-managed-emails.txt"
 : > "$WORK/evidence-authorized.tsv"
 : > "$WORK/archive/evidence/removed-authorized-key-lines.txt"
 : > "$WORK/archive/evidence/removed-xui-clients.jsonl"
+: > "$WORK/archive/evidence/removed-xui-global-clients.jsonl"
+: > "$WORK/archive/evidence/already-removed-xui-global-clients.txt"
 : > "$WORK/archive/evidence/preserved-data-roots.txt"
 
 file_has_marker() {
@@ -88,6 +128,37 @@ file_has_marker() {
 file_has_exact_line() {
   local file="$1" line="$2"
   [ -f "$file" ] && [ ! -L "$file" ] && grep -qxF "$line" "$file"
+}
+
+is_owned_device_registry() {
+  local path="$1"
+  [ -f "$path" ] && [ ! -L "$path" ] &&
+    jq -e '(.version == 1 or .version == 2) and (.nodeId | type == "string") and (.devices | type == "array") and (.invites | type == "array")' \
+      "$path" >/dev/null 2>&1
+}
+
+is_owned_drive_state() {
+  local path="$1"
+  file_has_exact_line "$path" 'PRIVATE_DRIVE_MODE=copyparty' &&
+    grep -qxE 'PRIVATE_DRIVE_STATE_VERSION=[12]' "$path"
+}
+
+is_owned_drive_config() {
+  file_has_marker "$1" '# TNA_MANAGED_COPYPARTY_V095'
+}
+
+is_owned_drive_unit() {
+  file_has_marker "$1" '# TNA_MANAGED_COPYPARTY_SYSTEMD_V095'
+}
+
+is_owned_drive_temp() {
+  local path="$1"
+  # The glob is deliberately constrained to the current state directory and
+  # the file must carry the same mode/version marker as the normal state file.
+  case "$path" in
+    "$CURRENT_STATE_DIR"/.private-drive.*) is_owned_drive_state "$path" ;;
+    *) return 1 ;;
+  esac
 }
 
 is_managed_authorized_key_line() {
@@ -101,13 +172,21 @@ is_xui_installed() {
 
 validate_owned_state() {
   if [ -e "$DEVICE_REGISTRY" ] || [ -L "$DEVICE_REGISTRY" ]; then
-    if [ -f "$DEVICE_REGISTRY" ] && [ ! -L "$DEVICE_REGISTRY" ] &&
-       jq -e '(.version == 1 or .version == 2) and (.nodeId | type == "string") and (.devices | type == "array") and (.invites | type == "array")' \
-         "$DEVICE_REGISTRY" >/dev/null 2>&1; then
+    if is_owned_device_registry "$DEVICE_REGISTRY"; then
     DEVICE_REGISTRY_OWNED=1
     CHANGE_COUNT=$((CHANGE_COUNT + 1))
     else
       printf 'TNA_V095_RETIREMENT_UNMANAGED_PRESERVED=%s\n' "$DEVICE_REGISTRY" >&2
+      UNMANAGED_PRESERVED=$((UNMANAGED_PRESERVED + 1))
+    fi
+  fi
+
+  if [ -e "$CURRENT_DEVICE_REGISTRY" ] || [ -L "$CURRENT_DEVICE_REGISTRY" ]; then
+    if is_owned_device_registry "$CURRENT_DEVICE_REGISTRY"; then
+      CURRENT_DEVICE_REGISTRY_OWNED=1
+      CHANGE_COUNT=$((CHANGE_COUNT + 1))
+    else
+      printf 'TNA_V095_RETIREMENT_UNMANAGED_PRESERVED=%s\n' "$CURRENT_DEVICE_REGISTRY" >&2
       UNMANAGED_PRESERVED=$((UNMANAGED_PRESERVED + 1))
     fi
   fi
@@ -130,6 +209,36 @@ validate_owned_state() {
   if [ "$DRIVE_OWNED" -eq 1 ]; then
     CHANGE_COUNT=$((CHANGE_COUNT + 1))
   fi
+
+  # The renamed v1 namespace can contain a stale v0.9.5 receipt even when
+  # the active /etc/proxy-runbook/public.env and deployment files are valid.
+  # Prove ownership independently for each marker; an unmarked companion is
+  # reported and preserved rather than guessed at.
+  local current_drive_found=0 current_path
+  is_owned_drive_state "$CURRENT_DRIVE_STATE" && current_drive_found=1
+  is_owned_drive_config "$CURRENT_DRIVE_CONFIG" && current_drive_found=1
+  is_owned_drive_unit "$CURRENT_DRIVE_UNIT" && current_drive_found=1
+  while IFS= read -r -d '' current_path; do
+    if is_owned_drive_temp "$current_path"; then
+      CURRENT_DRIVE_TEMP_FILES+=("$current_path")
+      current_drive_found=1
+    else
+      printf 'TNA_V095_RETIREMENT_UNMANAGED_PRESERVED=%s\n' "$current_path" >&2
+      UNMANAGED_PRESERVED=$((UNMANAGED_PRESERVED + 1))
+    fi
+  done < <(find "$CURRENT_STATE_DIR" -maxdepth 1 -type f -name '.private-drive.*' -print0 2>/dev/null || true)
+  CURRENT_DRIVE_OWNED="$current_drive_found"
+  if [ "$CURRENT_DRIVE_OWNED" -eq 1 ]; then
+    CHANGE_COUNT=$((CHANGE_COUNT + 1))
+  fi
+  for current_path in "$CURRENT_DRIVE_STATE" "$CURRENT_DRIVE_CONFIG" "$CURRENT_DRIVE_ACCOUNTS" \
+    "$CURRENT_DRIVE_ESCROW" "$CURRENT_DRIVE_LOCK" "$CURRENT_DRIVE_UNIT" \
+    "$CURRENT_DRIVE_CANDIDATE" "$CURRENT_DRIVE_CANDIDATE_SUM"; do
+    if { [ -e "$current_path" ] || [ -L "$current_path" ]; } && [ "$CURRENT_DRIVE_OWNED" -eq 0 ]; then
+      printf 'TNA_V095_RETIREMENT_UNMANAGED_PRESERVED=%s\n' "$current_path" >&2
+      UNMANAGED_PRESERVED=$((UNMANAGED_PRESERVED + 1))
+    fi
+  done
 
   if file_has_marker "$NGINX_AVAILABLE" '# TNA_MANAGED_COPYPARTY_NGINX_V095' ||
      file_has_marker "$NGINX_ENABLED" '# TNA_MANAGED_COPYPARTY_NGINX_V095'; then
@@ -215,6 +324,62 @@ xui_original_payload() {
           tag,allocate,subSortIndex,trafficReset,trafficResetDay,shareAddrStrategy,shareAddr}' "$1"
 }
 
+collect_xui_global_clients() {
+  local list invalid_count duplicate_count managed_count
+  list="$(xui_api_get '/panel/api/clients/list')" || die XUI_GLOBAL_CLIENT_LIST_FAILED
+  jq -e '.success == true and (.obj | type == "array") and all(.obj[]; type == "object")' <<<"$list" >/dev/null || die XUI_GLOBAL_CLIENT_LIST_INVALID
+  printf '%s\n' "$list" > "$XUI_GLOBAL_CLIENTS_FILE"
+
+  # The delete endpoint addresses a client by email. Refuse malformed or
+  # duplicate managed rows rather than guessing which database row to remove.
+  invalid_count="$(jq '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed) |
+      select((.email | type) != "string" or (.email | length) == 0 or (.email | test("[\\r\\n\\t]")))] | length
+  ' <<<"$list")"
+  [ "$invalid_count" -eq 0 ] || die XUI_GLOBAL_CLIENT_EMAIL_MISSING
+
+  duplicate_count="$(jq '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed) | .email] |
+      group_by(.) | map(select(length > 1)) | length
+  ' <<<"$list")"
+  [ "$duplicate_count" -eq 0 ] || die XUI_GLOBAL_CLIENT_EMAIL_DUPLICATE
+
+  jq -c '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed)]
+  ' <<<"$list" > "$XUI_GLOBAL_MANAGED_FILE"
+  jq -S -c '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed | not)] | sort_by((.email // ""), (.id // 0))
+  ' <<<"$list" > "$XUI_GLOBAL_UNMANAGED_FILE"
+  jq -S -c '
+    map({
+      email:(if (.email | type) == "string" then .email else "" end),
+      id:(.id // 0),
+      inboundIds:(if (.inboundIds | type) == "array" then .inboundIds else [] end)
+    }) | sort_by(.email, .id)
+  ' "$XUI_GLOBAL_UNMANAGED_FILE" > "$XUI_GLOBAL_UNMANAGED_IDENTITY_FILE"
+  jq -r '.[].email' "$XUI_GLOBAL_MANAGED_FILE" | sort -u > "$XUI_GLOBAL_EMAILS_FILE"
+  managed_count="$(wc -l < "$XUI_GLOBAL_EMAILS_FILE")"
+  XUI_GLOBAL_MANAGED_CLIENTS=$((managed_count + 0))
+  if [ "$XUI_GLOBAL_MANAGED_CLIENTS" -gt 0 ]; then
+    jq -c '.[]' "$XUI_GLOBAL_MANAGED_FILE" >> "$WORK/archive/evidence/removed-xui-global-clients.jsonl"
+    CHANGE_COUNT=$((CHANGE_COUNT + 1))
+  fi
+  printf '%s\n' "$list" > "$WORK/archive/evidence/global-clients-original.json"
+  cp -a -- "$XUI_GLOBAL_UNMANAGED_FILE" "$WORK/archive/evidence/global-clients-unmanaged-original.json"
+  cp -a -- "$XUI_GLOBAL_UNMANAGED_IDENTITY_FILE" "$WORK/archive/evidence/global-clients-unmanaged-identities-original.json"
+}
 collect_xui_changes() {
   local list id object managed_count existing_token=''
   is_xui_installed || return 0
@@ -235,6 +400,7 @@ collect_xui_changes() {
   export PNA_XUI_TOKEN_CACHE_FILE="$WORK/xui-helper/XUI_API_TOKEN"
   install -d -m 0700 "$WORK/xui-helper"
   xui_api_context >/dev/null 2>&1 || die XUI_API_UNAVAILABLE
+  collect_xui_global_clients
   list="$(xui_api_get '/panel/api/inbounds/list')" || die XUI_INBOUND_LIST_FAILED
   jq -e '.success == true and (.obj | type == "array")' <<<"$list" >/dev/null || die XUI_INBOUND_LIST_INVALID
   while IFS= read -r id; do
@@ -267,9 +433,10 @@ copy_for_archive() {
 }
 
 create_archive() {
-  local stamp
+  local stamp path
   install -d -o root -g root -m 0700 "$ARCHIVE_ROOT"
   if [ "$DEVICE_REGISTRY_OWNED" -eq 1 ]; then copy_for_archive "$DEVICE_REGISTRY"; fi
+  if [ "$CURRENT_DEVICE_REGISTRY_OWNED" -eq 1 ]; then copy_for_archive "$CURRENT_DEVICE_REGISTRY"; fi
   if [ "$DRIVE_OWNED" -eq 1 ]; then
     copy_for_archive "$DRIVE_STATE"
     copy_for_archive "$DRIVE_CONFIG"
@@ -281,6 +448,20 @@ create_archive() {
     copy_for_archive "$DRIVE_UNIT"
     copy_for_archive "$DRIVE_CANDIDATE"
     copy_for_archive "$DRIVE_CANDIDATE_SUM"
+  fi
+  if [ "$CURRENT_DRIVE_OWNED" -eq 1 ]; then
+    # Archive only the exact current-namespace companions.  The parent
+    # /etc/proxy-runbook directory also holds active deployment state and is
+    # intentionally never copied or removed wholesale.
+    copy_for_archive "$CURRENT_DRIVE_STATE"
+    copy_for_archive "$CURRENT_DRIVE_CONFIG"
+    copy_for_archive "$CURRENT_DRIVE_ACCOUNTS"
+    copy_for_archive "$CURRENT_DRIVE_ESCROW"
+    copy_for_archive "$CURRENT_DRIVE_LOCK"
+    copy_for_archive "$CURRENT_DRIVE_UNIT"
+    copy_for_archive "$CURRENT_DRIVE_CANDIDATE"
+    copy_for_archive "$CURRENT_DRIVE_CANDIDATE_SUM"
+    for path in "${CURRENT_DRIVE_TEMP_FILES[@]}"; do copy_for_archive "$path"; done
   fi
   if [ "$NGINX_OWNED" -eq 1 ]; then
     copy_for_archive "$NGINX_AVAILABLE"
@@ -299,10 +480,15 @@ create_archive() {
     echo 'RETIREMENT_SCHEMA_VERSION=1'
     echo 'SOURCE_FEATURE_LINE=complex-v0.9.5'
     printf 'DEVICE_REGISTRY_OWNED=%s\n' "$DEVICE_REGISTRY_OWNED"
+    printf 'CURRENT_DEVICE_REGISTRY_OWNED=%s\n' "$CURRENT_DEVICE_REGISTRY_OWNED"
     printf 'DRIVE_OWNED=%s\n' "$DRIVE_OWNED"
+    printf 'CURRENT_DRIVE_OWNED=%s\n' "$CURRENT_DRIVE_OWNED"
     printf 'NGINX_OWNED=%s\n' "$NGINX_OWNED"
     printf 'CANDIDATE_OWNED=%s\n' "$CANDIDATE_OWNED"
     printf 'XUI_MANAGED_CLIENTS=%s\n' "$XUI_MANAGED_CLIENTS"
+    printf 'XUI_GLOBAL_MANAGED_CLIENTS=%s\n' "$XUI_GLOBAL_MANAGED_CLIENTS"
+    printf 'XUI_GLOBAL_DELETED_CLIENTS=%s\n' "$XUI_GLOBAL_DELETED_CLIENTS"
+    printf 'XUI_GLOBAL_ALREADY_ABSENT=%s\n' "$XUI_GLOBAL_ALREADY_REMOVED"
     printf 'AUTHORIZED_KEY_FILES=%s\n' "$AUTHORIZED_KEY_FILES"
     printf 'CREATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$WORK/archive/evidence/manifest.env"
@@ -319,6 +505,119 @@ xui_update() {
   local id="$1" payload="$2" response
   response="$(xui_api_post_json "/panel/api/inbounds/update/${id}" "$payload")" || return 1
   jq -e '.success == true' <<<"$response" >/dev/null
+}
+
+xui_delete_global_client() {
+  local email="$1" encoded response
+  [ -n "$email" ] || return 1
+  case "$email" in
+    *$'\r'*|*$'\n'*|*$'\t'*) return 1 ;;
+  esac
+  encoded="$(jq -nr --arg email "$email" '$email | @uri')" || return 1
+  [ -n "$encoded" ] || return 1
+  response="$(xui_auth_curl -X POST "${XUI_BASE}/panel/api/clients/del/${encoded}")" || return 1
+  jq -e '(.success == true) or (.success == "true")' <<<"$response" >/dev/null
+}
+
+verify_global_snapshot_before_delete() {
+  local current current_emails current_identity unknown duplicate invalid
+  current="$(xui_api_get '/panel/api/clients/list')" || return 1
+  jq -e '.success == true and (.obj | type == "array") and all(.obj[]; type == "object")' <<<"$current" >/dev/null || return 1
+  current_emails="$XUI_GLOBAL_CURRENT_EMAILS_FILE"
+  current_identity="$WORK/xui-original/current-global-unmanaged-identities.json"
+  invalid="$(jq '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed) |
+      select((.email | type) != "string" or (.email | length) == 0 or (.email | test("[\\r\\n\\t]")))] | length
+  ' <<<"$current")"
+  [ "$invalid" -eq 0 ] || return 1
+  duplicate="$(jq '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed) | .email] |
+      group_by(.) | map(select(length > 1)) | length
+  ' <<<"$current")"
+  [ "$duplicate" -eq 0 ] || return 1
+  jq -r '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed) | .email] | sort | .[]
+  ' <<<"$current" > "$current_emails" || return 1
+  # An inbound update may remove a client from the global table as a side
+  # effect.  That is safe; reject only a newly-created/foreign managed row.
+  unknown="$(comm -23 "$current_emails" "$XUI_GLOBAL_EMAILS_FILE" || true)"
+  [ -z "$unknown" ] || return 1
+  jq -S -c '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed | not) |
+      {email:(if (.email | type) == "string" then .email else "" end),
+       id:(.id // 0),
+       inboundIds:(if (.inboundIds | type) == "array" then .inboundIds else [] end)}] |
+      sort_by(.email, .id)
+  ' <<<"$current" > "$current_identity" || return 1
+  cmp -s -- "$current_identity" "$XUI_GLOBAL_UNMANAGED_IDENTITY_FILE"
+}
+
+apply_xui_global_deletions() {
+  local email response latest current_present
+  [ "$XUI_GLOBAL_MANAGED_CLIENTS" -gt 0 ] || return 0
+  verify_global_snapshot_before_delete || die XUI_GLOBAL_CLIENTS_CHANGED_DURING_RETIREMENT
+  while IFS= read -r email; do
+    [ -n "$email" ] || continue
+    if xui_delete_global_client "$email"; then
+      XUI_GLOBAL_DELETED_CLIENTS=$((XUI_GLOBAL_DELETED_CLIENTS + 1))
+      continue
+    fi
+    # The preceding inbound update can race with the global delete.  Re-read
+    # once and treat an already absent row as a successful no-op; any other
+    # API failure remains fail-closed.
+    latest="$(xui_api_get '/panel/api/clients/list')" || die XUI_GLOBAL_CLIENT_DELETE_FAILED
+    jq -e '.success == true and (.obj | type == "array") and all(.obj[]; type == "object")' <<<"$latest" >/dev/null || die XUI_GLOBAL_CLIENT_DELETE_FAILED
+    current_present="$(jq -r --arg email "$email" '
+      def is_managed:
+        (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+         ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+      [.obj[] | select(is_managed) | select(.email == $email)] | length
+    ' <<<"$latest")"
+    if [ "$current_present" -eq 0 ]; then
+      printf '%s\n' "$email" >> "$WORK/archive/evidence/already-removed-xui-global-clients.txt"
+      XUI_GLOBAL_ALREADY_REMOVED=$((XUI_GLOBAL_ALREADY_REMOVED + 1))
+    else
+      die XUI_GLOBAL_CLIENT_DELETE_FAILED
+    fi
+  done < "$XUI_GLOBAL_CURRENT_EMAILS_FILE"
+}
+
+verify_global_clients_retired() {
+  local current managed current_identity
+  current="$(xui_api_get '/panel/api/clients/list')" || die XUI_GLOBAL_FINAL_READBACK_FAILED
+  jq -e '.success == true and (.obj | type == "array") and all(.obj[]; type == "object")' <<<"$current" >/dev/null || die XUI_GLOBAL_FINAL_READBACK_INVALID
+  managed="$(jq '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed)] | length
+  ' <<<"$current")"
+  [ "$managed" -eq 0 ] || die XUI_GLOBAL_CLIENT_STILL_PRESENT
+  current_identity="$WORK/xui-original/final-global-unmanaged-identities.json"
+  jq -S -c '
+    def is_managed:
+      (((.comment // "") | if type == "string" then test("^(tna|pna)-device:") else false end) or
+       ((.email // "") | if type == "string" then test("^(tna|pna)-device:") else false end));
+    [.obj[] | select(is_managed | not) |
+      {email:(if (.email | type) == "string" then .email else "" end),
+       id:(.id // 0),
+       inboundIds:(if (.inboundIds | type) == "array" then .inboundIds else [] end)}] |
+      sort_by(.email, .id)
+  ' <<<"$current" > "$current_identity" || die XUI_GLOBAL_UNMANAGED_READBACK_MISMATCH
+  cmp -s -- "$current_identity" "$XUI_GLOBAL_UNMANAGED_IDENTITY_FILE" || die XUI_GLOBAL_UNMANAGED_READBACK_MISMATCH
+  printf 'XUI_GLOBAL_MANAGED_READBACK=%s\n' "$managed"
 }
 
 rollback_xui() {
@@ -427,15 +726,50 @@ remove_managed_drive() {
   systemctl daemon-reload
 }
 
+remove_current_managed_drive() {
+  local unit_owned=0 config_owned=0 path current_temp
+  [ "$CURRENT_DRIVE_OWNED" -eq 1 ] || return 0
+  is_owned_drive_unit "$CURRENT_DRIVE_UNIT" && unit_owned=1
+  is_owned_drive_config "$CURRENT_DRIVE_CONFIG" && config_owned=1
+  if [ "$unit_owned" -eq 1 ]; then
+    systemctl disable --now "$CURRENT_DRIVE_SERVICE" >/dev/null 2>&1 || true
+    systemctl is-active --quiet "$CURRENT_DRIVE_SERVICE" 2>/dev/null && die CURRENT_COPYPARTY_SERVICE_DID_NOT_STOP
+    rm -f -- "$CURRENT_DRIVE_UNIT"
+  elif systemctl is-active --quiet "$CURRENT_DRIVE_SERVICE" 2>/dev/null; then
+    # A live service without the v0.9.5 ownership marker is never guessed at.
+    die UNMANAGED_CURRENT_COPYPARTY_SERVICE_ACTIVE
+  fi
+  [ "$config_owned" -eq 0 ] || rm -f -- "$CURRENT_DRIVE_CONFIG"
+  # These are exact v0.9.5 companion names in the renamed state root.  Do not
+  # recurse through /etc/proxy-runbook or remove its active deployment files.
+  rm -f -- "$CURRENT_DRIVE_STATE" "$CURRENT_DRIVE_ACCOUNTS" "$CURRENT_DRIVE_LOCK"
+  if [ -d "$CURRENT_DRIVE_ESCROW" ] && [ ! -L "$CURRENT_DRIVE_ESCROW" ]; then
+    rm -rf -- "$CURRENT_DRIVE_ESCROW"
+  elif [ -L "$CURRENT_DRIVE_ESCROW" ]; then
+    rm -f -- "$CURRENT_DRIVE_ESCROW"
+  fi
+  for current_temp in "${CURRENT_DRIVE_TEMP_FILES[@]}"; do
+    is_owned_drive_temp "$current_temp" || die CURRENT_COPYPARTY_TEMP_OWNERSHIP_CHANGED
+    rm -f -- "$current_temp"
+  done
+  rm -f -- "$CURRENT_DRIVE_CANDIDATE" "$CURRENT_DRIVE_CANDIDATE_SUM"
+  systemctl daemon-reload
+}
+
 remove_device_registry() {
   [ "$DEVICE_REGISTRY_OWNED" -eq 0 ] || rm -f -- "$DEVICE_REGISTRY"
+  [ "$CURRENT_DEVICE_REGISTRY_OWNED" -eq 0 ] || rm -f -- "$CURRENT_DEVICE_REGISTRY"
   rm -f -- /run/lock/text-node-assistant-device-admission.lock
+  [ "$CURRENT_DEVICE_REGISTRY_OWNED" -eq 0 ] || rm -f -- "$CURRENT_DEVICE_LOCK"
 }
 
 verify_retirement() {
   local path list managed remaining=0
   if [ "$DEVICE_REGISTRY_OWNED" -eq 1 ]; then
     [ ! -e "$DEVICE_REGISTRY" ] && [ ! -L "$DEVICE_REGISTRY" ] || die DEVICE_REGISTRY_STILL_PRESENT
+  fi
+  if [ "$CURRENT_DEVICE_REGISTRY_OWNED" -eq 1 ]; then
+    [ ! -e "$CURRENT_DEVICE_REGISTRY" ] && [ ! -L "$CURRENT_DEVICE_REGISTRY" ] || die CURRENT_DEVICE_REGISTRY_STILL_PRESENT
   fi
   while IFS=: read -r _ _ _ _ _ path _; do
     [ -n "$path" ] && [ "${path#/}" != "$path" ] && [ "$path" != / ] || continue
@@ -454,11 +788,21 @@ verify_retirement() {
       [.obj[]?.settings.clients[]? | select(tna_managed_client)] | length
     ' <<<"$list")"
     [ "$managed" -eq 0 ] || die XUI_MANAGED_CLIENT_STILL_PRESENT
+    verify_global_clients_retired
   fi
   if [ "$DRIVE_OWNED" -eq 1 ]; then
     systemctl is-active --quiet "$DRIVE_SERVICE" 2>/dev/null && die COPYPARTY_SERVICE_STILL_ACTIVE
     file_has_marker "$DRIVE_CONFIG" '# TNA_MANAGED_COPYPARTY_V095' && die COPYPARTY_CONFIG_STILL_PRESENT
     file_has_marker "$DRIVE_UNIT" '# TNA_MANAGED_COPYPARTY_SYSTEMD_V095' && die COPYPARTY_UNIT_STILL_PRESENT
+  fi
+  if [ "$CURRENT_DRIVE_OWNED" -eq 1 ]; then
+    systemctl is-active --quiet "$CURRENT_DRIVE_SERVICE" 2>/dev/null && die CURRENT_COPYPARTY_SERVICE_STILL_ACTIVE
+    is_owned_drive_state "$CURRENT_DRIVE_STATE" && die CURRENT_COPYPARTY_STATE_STILL_PRESENT
+    is_owned_drive_config "$CURRENT_DRIVE_CONFIG" && die CURRENT_COPYPARTY_CONFIG_STILL_PRESENT
+    is_owned_drive_unit "$CURRENT_DRIVE_UNIT" && die CURRENT_COPYPARTY_UNIT_STILL_PRESENT
+    for path in "${CURRENT_DRIVE_TEMP_FILES[@]}"; do
+      is_owned_drive_temp "$path" && die CURRENT_COPYPARTY_TEMP_STILL_PRESENT
+    done
   fi
   if [ "$NGINX_OWNED" -eq 1 ]; then
     file_has_marker "$NGINX_AVAILABLE" '# TNA_MANAGED_COPYPARTY_NGINX_V095' && die COPYPARTY_NGINX_STILL_PRESENT
@@ -495,9 +839,9 @@ fi
 
 if [ "$MODE" = --status ]; then
   printf 'TNA_V095_FEATURE_RETIREMENT_STATUS=INSPECTED\n'
-  printf 'DEVICE_REGISTRY_OWNED=%s\nDRIVE_OWNED=%s\nNGINX_OWNED=%s\nCANDIDATE_OWNED=%s\nAUTHORIZED_KEY_FILES=%s\n' \
-    "$DEVICE_REGISTRY_OWNED" "$DRIVE_OWNED" "$NGINX_OWNED" "$CANDIDATE_OWNED" "$AUTHORIZED_KEY_FILES"
-  printf 'XUI_CLIENT_SCAN=NOT_PERFORMED_READ_ONLY_MODE\nUNMANAGED_PRESERVED=%s\n' "$UNMANAGED_PRESERVED"
+  printf 'DEVICE_REGISTRY_OWNED=%s\nCURRENT_DEVICE_REGISTRY_OWNED=%s\nDRIVE_OWNED=%s\nCURRENT_DRIVE_OWNED=%s\nNGINX_OWNED=%s\nCANDIDATE_OWNED=%s\nAUTHORIZED_KEY_FILES=%s\n' \
+    "$DEVICE_REGISTRY_OWNED" "$CURRENT_DEVICE_REGISTRY_OWNED" "$DRIVE_OWNED" "$CURRENT_DRIVE_OWNED" "$NGINX_OWNED" "$CANDIDATE_OWNED" "$AUTHORIZED_KEY_FILES"
+  printf 'XUI_CLIENT_SCAN=NOT_PERFORMED_READ_ONLY_MODE\nXUI_GLOBAL_CLIENT_SCAN=NOT_PERFORMED_READ_ONLY_MODE\nUNMANAGED_PRESERVED=%s\n' "$UNMANAGED_PRESERVED"
   exit 0
 fi
 
@@ -509,9 +853,11 @@ fi
 
 create_archive
 apply_xui_changes
+apply_xui_global_deletions
 apply_authorized_key_changes
 remove_managed_nginx
 remove_managed_drive
+remove_current_managed_drive
 remove_device_registry
 if [ "$NGINX_CHANGED" -eq 1 ] && command -v nginx >/dev/null 2>&1; then
   nginx -t || die NGINX_CONFIG_TEST_FAILED_AFTER_MANAGED_SITE_REMOVAL
@@ -522,6 +868,7 @@ write_retirement_state
 
 echo 'TNA_V095_FEATURE_RETIREMENT=COMPLETE'
 printf 'RETIREMENT_ARCHIVE=%s\n' "$ARCHIVE_PATH"
-printf 'DEVICE_REGISTRY_REMOVED=%s\nDRIVE_RUNTIME_REMOVED=%s\n' "$DEVICE_REGISTRY_OWNED" "$DRIVE_OWNED"
-printf 'XUI_DEVICE_CLIENTS_REMOVED=%s\nAUTHORIZED_KEY_FILES_UPDATED=%s\n' "$XUI_MANAGED_CLIENTS" "$AUTHORIZED_KEY_FILES"
+printf 'DEVICE_REGISTRY_REMOVED=%s\nCURRENT_DEVICE_REGISTRY_REMOVED=%s\nDRIVE_RUNTIME_REMOVED=%s\nCURRENT_DRIVE_RUNTIME_REMOVED=%s\n' \
+  "$DEVICE_REGISTRY_OWNED" "$CURRENT_DEVICE_REGISTRY_OWNED" "$DRIVE_OWNED" "$CURRENT_DRIVE_OWNED"
+printf 'XUI_DEVICE_CLIENTS_REMOVED=%s\nXUI_GLOBAL_DEVICE_CLIENTS_REMOVED=%s\nXUI_GLOBAL_DEVICE_CLIENTS_ALREADY_ABSENT=%s\nAUTHORIZED_KEY_FILES_UPDATED=%s\n' "$XUI_MANAGED_CLIENTS" "$XUI_GLOBAL_DELETED_CLIENTS" "$XUI_GLOBAL_ALREADY_REMOVED" "$AUTHORIZED_KEY_FILES"
 echo 'DRIVE_DATA_PRESERVED=1'
