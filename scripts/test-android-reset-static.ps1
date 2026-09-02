@@ -60,7 +60,11 @@ Assert-Match $workflow 'writeOneRunInput\(handle, installAutoInput\(plan\), "aut
 Assert-Match $workflow 'withContext\(NonCancellable\) \{ removeOneRunInput\(handle, path\) \}' "Android one-run input failures can leave a credential file behind"
 Assert-Match $workflow 'writeOneRunInput\([\s\S]*"credential-input"\)' "Android menu [5]/[6] no longer uses a dedicated credential-input file"
 Assert-Match $workflow 'PNA_CREDENTIAL_INPUT' "Android menu [5]/[6] no longer passes custom credentials through the one-run file"
-Assert-Match $workflow 'inputPath\?\.let \{ removeOneRunInput\(handle, it\) \}' "Android menu [5]/[6] lost its normal one-run cleanup"
+# Credential rotation cleanup is deliberately cancellation-safe.  Keep the
+# assertion tied to the inputPath finally block, but accept the hardened
+# NonCancellable wrapper used by the Android workflow (and avoid regressing to
+# a bare cleanup that cancellation could skip).
+Assert-Match $workflow 'inputPath\?\.let \{ path -> withContext\(NonCancellable\) \{ removeOneRunInput\(handle, path\) \} \}' "Android menu [5]/[6] lost its cancellation-safe one-run cleanup"
 
 # Action [19] is an allowlist mutation, so it must fail closed before showing
 # the confirmation prompt. Keep status and list as separate calls: a successful
