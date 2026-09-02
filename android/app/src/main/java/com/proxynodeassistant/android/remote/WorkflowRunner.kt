@@ -650,7 +650,9 @@ class WorkflowRunner(
                 val command = installEnvironment(handle, plan, oneRunPath) + " bash $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh"
                 checked(handle, command, interactive = true)
             } finally {
-                removeOneRunInput(handle, oneRunPath)
+                // Cancellation must not skip deletion of the root-only input;
+                // the file can contain custom passwords for both rotations.
+                withContext(NonCancellable) { removeOneRunInput(handle, oneRunPath) }
             }
             reconcileRoute(handle, plan, publicIp)
             showHandoff(handle)
@@ -2313,7 +2315,7 @@ class WorkflowRunner(
             }
             checked(handle, "source $REMOTE_ROOT/linux/lib-handoff.sh; handoff_begin_run; $env bash $REMOTE_ROOT/linux/01a-rotate-vps-password.sh ${SshHandle.shellQuote(user)}")
         } finally {
-            inputPath?.let { removeOneRunInput(handle, it) }
+            inputPath?.let { path -> withContext(NonCancellable) { removeOneRunInput(handle, path) } }
         }
         showHandoff(handle)
     }
@@ -2361,7 +2363,7 @@ class WorkflowRunner(
             }
             checked(handle, "source $REMOTE_ROOT/linux/lib-handoff.sh; handoff_begin_run; $env bash $REMOTE_ROOT/linux/03c-rotate-panel-credentials.sh")
         } finally {
-            inputPath?.let { removeOneRunInput(handle, it) }
+            inputPath?.let { path -> withContext(NonCancellable) { removeOneRunInput(handle, path) } }
         }
         showHandoff(handle)
     }
