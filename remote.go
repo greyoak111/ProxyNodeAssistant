@@ -2342,6 +2342,8 @@ func remoteHandoffCommand() string {
 		"emit_archive /root/.config/proxy-runbook/handoff-archive; " +
 		"[ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true; " +
 		"[ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env || true; " +
+		"emit_archive /root/.config/proxy-node-assistant/handoff-archive; " +
+		"[ -r /root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt || true; " +
 		"[ -r /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true; " +
 		"printf '%s\\n' " + shQuote(handoffEnd)
 	return command

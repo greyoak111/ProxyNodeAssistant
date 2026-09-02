@@ -83,6 +83,8 @@ func TestCredentialReadinessAndHandoffCommandsKeepProtectedStoresInScope(t *test
 		"HANDOFF_RUN_STARTED=read-only-export",
 		"/root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env",
 		"/root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env",
+		"/root/.config/proxy-node-assistant/handoff-archive",
+		"/root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt",
 		"/root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env",
 	} {
 		if !strings.Contains(handoff, required) {
