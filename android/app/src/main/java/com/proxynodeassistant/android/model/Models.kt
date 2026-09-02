@@ -152,7 +152,8 @@ object ActionCatalog {
         ActionSpec("16", "自适应性能档", "Adaptive performance profile", "检测资源并应用可回滚档位。", "Detect capacity and apply a reversible profile.", ActionGroup.MAINTENANCE),
         ActionSpec("17", "SSH / vnStat 流量估算", "SSH / vnStat traffic estimate", "查看系统网卡累计流量，不等同厂商计费。", "View interface counters; not provider billing.", ActionGroup.MAINTENANCE),
         ActionSpec("18", "拆除所有施工并恢复基线", "Dismantle all managed changes", "先生成救援包，再拆除已知施工。", "Create a rescue archive before removing managed changes.", ActionGroup.MAINTENANCE, destructive = true),
-        ActionSpec("19", "识别本机 IP 并管理 SS2022 白名单", "Detect local IP and manage SS2022 allowlist", "先在本机直连识别公网 IPv4，再与 VPS 看到的 SSH 来源核对；明确确认后才加入 SS2022 精确白名单。", "Detect the public IPv4 locally, compare it with the source seen by the VPS, and add it to the exact SS2022 allowlist only after explicit confirmation.", ActionGroup.SECURITY),
+        ActionSpec("19", "识别本机 IP 并添加 SS2022 白名单", "Detect local IP and add to SS2022 allowlist", "先在本机直连识别公网 IPv4，再与 VPS 看到的 SSH 来源核对；明确确认后才加入 SS2022 精确白名单。", "Detect the public IPv4 locally, compare it with the source seen by the VPS, and add the exact source to the SS2022 allowlist only after explicit confirmation.", ActionGroup.SECURITY),
+        ActionSpec("24", "管理 SS2022 白名单", "Manage SS2022 allowlist", "查看当前精确 IPv4 白名单，或自由添加、删除一个公网 IPv4；不接受 CIDR 或网段。", "View the exact-IPv4 allowlist, or freely add/remove one public IPv4; CIDR ranges are never accepted.", ActionGroup.SECURITY),
         // v0.9.5 maintenance actions retained under their original codes;
         // retired experimental enrollment/storage entries are intentionally absent.
         ActionSpec("20", "访问与封禁日志", "Access and ban events", "按需读取 SSH、Fail2ban、防火墙和入口的聚合元数据；可明确确认后应用受管安全基线。", "Read bounded SSH, Fail2ban, firewall, and ingress metadata; apply the managed security baseline only after explicit confirmation.", ActionGroup.SECURITY),

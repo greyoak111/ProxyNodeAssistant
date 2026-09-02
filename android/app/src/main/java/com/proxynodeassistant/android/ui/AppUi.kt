@@ -432,7 +432,22 @@ private fun PromptPanel(prompt: WorkflowPrompt, language: Language, submit: (Str
     Column(Modifier.fillMaxWidth().imePadding().background(Panel).border(1.dp, if (prompt.danger) Critical else GridLine).padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Text(prompt.title.uppercase(), color = if (prompt.danger) Critical else Cyan, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
         Text(prompt.message, color = TextPrimary, fontSize = 12.sp)
-        if (prompt.kind == PromptKind.YES_NO) {
+        if (prompt.kind == PromptKind.CHOICE && prompt.options.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                prompt.options.forEach { option ->
+                    OutlinedButton(
+                        onClick = { submit(option) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(2.dp),
+                    ) {
+                        Text(option, modifier = Modifier.fillMaxWidth(), fontFamily = FontFamily.Monospace)
+                    }
+                }
+                OutlinedButton(onClick = cancel, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(2.dp)) {
+                    Text(uiText(language, "安全停止", "SAFE STOP"))
+                }
+            }
+        } else if (prompt.kind == PromptKind.YES_NO) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { submit("y") }, shape = RoundedCornerShape(2.dp), modifier = Modifier.weight(1f)) { Text(uiText(language, "是 / Y", "YES / Y")) }
                 OutlinedButton(onClick = { submit("n") }, shape = RoundedCornerShape(2.dp), modifier = Modifier.weight(1f)) { Text(uiText(language, "否 / N", "NO / N")) }

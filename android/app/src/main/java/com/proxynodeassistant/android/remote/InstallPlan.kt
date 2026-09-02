@@ -85,7 +85,7 @@ internal data class AndroidInstallPlan(
         add("PORT_PRESET=reality:443 shadow:24443 cdn:8443 warp:40000 ss2022:$ss2022Port/tcp")
         add("SS2022_PORT_POLICY=formal:${Ss2022PortPolicy.FORMAL_PORT}; existing-trial:${Ss2022PortPolicy.TRIAL_PORT}")
         add("SS2022_NETWORK=tcp-only")
-        add("SS2022_ALLOWLIST=exact-public-ip; use action 19 to add the current source")
+        add("SS2022_ALLOWLIST=exact-public-ip; use action 19 for local-IP add or action 24 for manual management")
         if (routeMode == InstallRouteMode.GRAY || routeMode == InstallRouteMode.DUAL) {
             add("GRAY_DOMAIN=${gray.domain}")
             add("GRAY_EMAIL=${maskEmail(gray.email)}")

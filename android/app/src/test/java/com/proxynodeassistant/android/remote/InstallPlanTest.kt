@@ -77,7 +77,7 @@ class InstallPlanTest {
         assertFalse("private.owner@example.com" in review)
         assertTrue("PORT_PRESET=reality:443 shadow:24443 cdn:8443 warp:40000 ss2022:32443/tcp" in review)
         assertTrue("SS2022_PORT_POLICY=formal:32443; existing-trial:30443" in review)
-        assertTrue("SS2022_ALLOWLIST=exact-public-ip; use action 19 to add the current source" in review)
+        assertTrue("SS2022_ALLOWLIST=exact-public-ip; use action 19 for local-IP add or action 24 for manual management" in review)
     }
 
     @Test

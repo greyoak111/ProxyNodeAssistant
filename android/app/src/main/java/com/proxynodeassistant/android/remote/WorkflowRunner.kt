@@ -195,6 +195,7 @@ class WorkflowRunner(
         "17" -> { ensureToolkit(handle); trafficEstimate(handle); false }
         "18" -> { ensureToolkit(handle); dismantle(handle); false }
         "19" -> { ensureToolkit(handle); manageSS2022Allowlist(handle, localObservation); false }
+        "24" -> { ensureToolkit(handle); manageSS2022AllowlistMenu(handle); false }
         "20" -> { ensureToolkit(handle); securityEvents(handle); false }
         "22" -> { ensureToolkit(handle); cdnXhttpControl(handle); false }
         "23" -> error("IP rebind must run before opening the old endpoint session")
@@ -343,6 +344,160 @@ class WorkflowRunner(
     private suspend fun logRouteProbe(probe: AndroidRouteProbe) {
         val state = if (probe.ok) "GOOD" else "FAIL"
         log("[$state] ${probe.name} layer=${probe.layer} target=${probe.target} time=${probe.elapsedMs}ms detail=${probe.detail}")
+    }
+
+    private data class Ss2022AllowlistSnapshot(
+        val entries: List<String>,
+        val status: Map<String, String>,
+    )
+
+    /**
+     * Read the managed SS2022 allowlist without treating the remote output as
+     * shell text.  The script's list protocol emits one SOURCE= line per
+     * exact address; normalize every value again before displaying or using it
+     * in a follow-up command.
+     */
+    private suspend fun readSS2022Allowlist(handle: SshHandle): Ss2022AllowlistSnapshot {
+        // v1's snapshot mode combines a healthy service check with a strict
+        // allowlist read.  It refuses an inactive listener, missing firewall,
+        // malformed source, or duplicate entry instead of presenting a
+        // misleading empty list to the operator.
+        val snapshot = handle.exec(
+            "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh snapshot",
+            root = true,
+            log = { },
+        )
+        check(snapshot.ok) {
+            val detail = (snapshot.stderr.ifBlank { snapshot.stdout }).trim().takeLast(800)
+            "SS2022 allowlist snapshot failed (exit ${snapshot.exitCode}): $detail"
+        }
+        val statusValues = runCatching { ProtocolParsers.kv(snapshot.stdout) }.getOrDefault(emptyMap())
+        val summary = listOf("PRESENT", "ACTIVE", "LISTENER", "FIREWALL", "PORT", "ALLOWLIST_COUNT")
+            .mapNotNull { key -> statusValues[key]?.let { "$key=$it" } }
+            .joinToString(" ")
+        if (summary.isNotBlank()) log("SS2022_STATUS $summary")
+        val rawSources = snapshot.stdout.lineSequence()
+            .map(String::trim)
+            .filter { it.startsWith("SOURCE=") }
+            .map { it.removePrefix("SOURCE=").trim() }
+            .filter { it.isNotBlank() }
+            .toList()
+        val normalized = rawSources.mapNotNull { AndroidNetworkProbes.normalizePublicIpv4(it) }
+        val invalidCount = rawSources.count { AndroidNetworkProbes.normalizePublicIpv4(it) == null }
+        if (invalidCount > 0) log("SS2022_ALLOWLIST_INVALID_LINES=$invalidCount (ignored)")
+        val entries = normalized.distinct().sorted()
+        log("SS2022_ALLOWLIST_BEGIN")
+        if (entries.isEmpty()) {
+            log("SS2022_ALLOWLIST_EMPTY=1")
+        } else {
+            entries.forEach { log("SS2022_ALLOWLIST_SOURCE=$it") }
+        }
+        log("SS2022_ALLOWLIST_COUNT=${entries.size}")
+        log("SS2022_ALLOWLIST_END")
+        return Ss2022AllowlistSnapshot(entries, statusValues)
+    }
+
+    /**
+     * Action [24] is an explicit management console.  It starts by showing
+     * the current list, then allows repeated read/add/remove operations over
+     * the same authenticated SSH session.  Every mutation is separately
+     * confirmed and only exact global IPv4 addresses are accepted.
+     */
+    private suspend fun manageSS2022AllowlistMenu(handle: SshHandle) {
+        var snapshot = readSS2022Allowlist(handle)
+        val options = listOf(
+            tr("VIEW｜查看当前列表", "VIEW CURRENT LIST"),
+            tr("ADD｜添加精确 IPv4", "ADD EXACT IPv4"),
+            tr("REMOVE｜删除精确 IPv4", "REMOVE EXACT IPv4"),
+            tr("CANCEL｜退出管理", "CANCEL MANAGEMENT"),
+        )
+        while (true) {
+            val choice = prompts.ask(
+                tr("SS2022 白名单管理", "SS2022 allowlist management"),
+                tr(
+                    "当前列表已显示。请选择只读查看、添加或删除；仅接受公网 IPv4，不接受 CIDR/网段。",
+                    "The current list is shown above. Choose read, add, or remove; only public IPv4 addresses are accepted, never CIDR ranges.",
+                ),
+                PromptKind.CHOICE,
+                options = options,
+            )
+            when {
+                choice.startsWith("VIEW", true) || choice.contains("查看") -> {
+                    snapshot = readSS2022Allowlist(handle)
+                }
+                choice.startsWith("ADD", true) || choice.contains("添加") -> {
+                    val source = promptSS2022Source(
+                        tr("添加 SS2022 白名单地址", "Add SS2022 allowlist address"),
+                        tr("输入一个精确公网 IPv4；不会接受网段或 CIDR。", "Enter one exact public IPv4; ranges and CIDR are rejected."),
+                    )
+                    if (source == null) {
+                        log("SS2022_ALLOWLIST=ADD_CANCELLED")
+                        continue
+                    }
+                    if (source in snapshot.entries) {
+                        log("SS2022_ALLOWLIST=ALREADY_PRESENT source=$source")
+                        continue
+                    }
+                    if (!confirmYes(
+                            tr("确认添加白名单地址 $source？", "Confirm adding allowlist address $source?"),
+                            defaultYes = false,
+                            allowNo = true,
+                        )) {
+                        log("SS2022_ALLOWLIST=UNCHANGED")
+                        continue
+                    }
+                    val result = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh allow ${SshHandle.shellQuote(source)}")
+                    check("PNA_SS2022_ALLOW_ADDED=$source" in result.stdout) { "SS2022 allowlist add marker missing" }
+                    log("SS2022_ALLOWLIST=ADDED source=$source")
+                    snapshot = readSS2022Allowlist(handle)
+                }
+                choice.startsWith("REMOVE", true) || choice.contains("删除") -> {
+                    val source = promptSS2022Source(
+                        tr("删除 SS2022 白名单地址", "Remove SS2022 allowlist address"),
+                        tr("输入当前列表中的精确公网 IPv4；删除后该地址将立即失去 SS2022 访问。", "Enter an exact public IPv4 from the current list; removal immediately blocks SS2022 access from that address."),
+                    )
+                    if (source == null) {
+                        log("SS2022_ALLOWLIST=REMOVE_CANCELLED")
+                        continue
+                    }
+                    if (source !in snapshot.entries) {
+                        log("SS2022_ALLOWLIST=NOT_PRESENT source=$source")
+                        continue
+                    }
+                    if (!confirmYes(
+                            tr("确认删除 $source？这可能使该来源无法再连接 SS2022。", "Confirm removing $source? This may prevent that source from connecting to SS2022."),
+                            defaultYes = false,
+                            allowNo = true,
+                        )) {
+                        log("SS2022_ALLOWLIST=UNCHANGED")
+                        continue
+                    }
+                    val result = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh remove ${SshHandle.shellQuote(source)}")
+                    check("PNA_SS2022_ALLOW_REMOVED=$source" in result.stdout) { "SS2022 allowlist remove marker missing" }
+                    log("SS2022_ALLOWLIST=REMOVED source=$source")
+                    snapshot = readSS2022Allowlist(handle)
+                }
+                else -> {
+                    log("SS2022_ALLOWLIST=UNCHANGED")
+                    return
+                }
+            }
+        }
+    }
+
+    private suspend fun promptSS2022Source(title: String, message: String): String? {
+        while (true) {
+            val promptMessage = "$message\n${tr("留空、输入 q 或 0 可取消。", "Leave blank, type q, or type 0 to cancel.")}"
+            val raw = prompts.ask(
+                title,
+                promptMessage,
+                PromptKind.TEXT,
+                placeholder = "1.2.3.4",
+            ).trim()
+            if (raw.isBlank() || raw.equals("q", true) || raw == "0" || raw.equals("cancel", true) || raw == "取消") return null
+            AndroidNetworkProbes.normalizePublicIpv4(raw)?.let { return it }
+            log("INPUT_REJECTED: $title (exact global IPv4 required)")
+        }
     }
 
     /** Add exactly the source observed by sshd, never a CIDR or a guessed subnet. */
