@@ -31,10 +31,23 @@ var coverTemplateCatalog = []string{
 
 var errInstallCancelled = errors.New("install plan cancelled")
 
-func (a *App) existingNodeInstalled(c Connection) (bool, error) {
-	command := "existing=0; " +
-		"if systemctl is-active --quiet x-ui 2>/dev/null || [ -x /usr/local/x-ui/x-ui ] || [ -s /etc/x-ui/x-ui.db ]; then existing=1; fi; " +
+// existingNodeProbeCommand is kept separate so the read-only detection
+// contract can be unit-tested without opening an SSH session.  SS2022-only
+// nodes are valid existing installations even when x-ui is absent; detecting
+// their state is required before the credential-readiness probe can enable
+// the preserve shortcut.
+func existingNodeProbeCommand() string {
+	return "existing=0; " +
+		"if systemctl is-active --quiet x-ui 2>/dev/null || [ -x /usr/local/x-ui/x-ui ] || [ -s /etc/x-ui/x-ui.db ] || " +
+		"systemctl is-active --quiet proxy-node-assistant-ss2022.service 2>/dev/null || " +
+		"systemctl is-active --quiet tna-ss2022-112-trial.service 2>/dev/null || " +
+		"[ -s /etc/proxy-runbook/ss2022/service.env ] || [ -s /etc/text-node-assistant/ss2022/service.env ] || " +
+		"[ -s /etc/proxy-runbook/ss2022/server.json ] || [ -s /etc/text-node-assistant/ss2022/server.json ]; then existing=1; fi; " +
 		"printf 'TNA_EXISTING_NODE=%s\\n' \"$existing\""
+}
+
+func (a *App) existingNodeInstalled(c Connection) (bool, error) {
+	command := existingNodeProbeCommand()
 	result := a.rootCapture(c, command)
 	if !result.OK() {
 		return false, fmt.Errorf("existing-node inspection failed (exit %d): %s", result.ExitCode, processFailureDetail(result))

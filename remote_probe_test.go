@@ -92,3 +92,57 @@ func TestCredentialReadinessAndHandoffCommandsKeepProtectedStoresInScope(t *test
 		}
 	}
 }
+
+func TestRemoteHandoffCanonicalRootHasCredentialPrecedence(t *testing.T) {
+	command := remoteHandoffCommand()
+	// remoteHandoffCommand concatenates files and the form merger keeps the
+	// last usable occurrence.  Keep both compatibility roots ahead of the
+	// canonical proxy-runbook root so an active v1 store wins stale migration
+	// values deterministically.
+	archiveTokens := []string{
+		"emit_archive /root/.config/text-node-assistant/handoff-archive",
+		"emit_archive /root/.config/proxy-node-assistant/handoff-archive",
+		"emit_archive /root/.config/proxy-runbook/handoff-archive",
+	}
+	previous := -1
+	for _, token := range archiveTokens {
+		at := strings.Index(command, token)
+		if at < 0 {
+			t.Fatalf("handoff exporter lost root token %q", token)
+		}
+		if at <= previous {
+			t.Fatalf("handoff root order is not compatibility-first/canonical-last: %q at %d after %d", token, at, previous)
+		}
+		previous = at
+	}
+	canonicalStore := strings.Index(command, "[ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ]")
+	if canonicalStore <= previous {
+		t.Fatalf("canonical protected store is not emitted after compatibility archives: %d <= %d", canonicalStore, previous)
+	}
+
+	payload := strings.Join([]string{
+		"HANDOFF_RUN_STARTED=precedence-fixture",
+		"VPS_LOGIN_USER=legacy-user",
+		"VPS_LOGIN_PASSWORD=legacy-password",
+		"PANEL_USERNAME=legacy-panel",
+		"PANEL_PASSWORD=legacy-panel-password",
+		"VPS_LOGIN_USER=current-user",
+		"VPS_LOGIN_PASSWORD=current-password",
+		"PANEL_USERNAME=current-panel",
+		"PANEL_PASSWORD=current-panel-password",
+	}, "\n")
+	fields, err := loginCredentialFormFields(payload)
+	if err != nil {
+		t.Fatalf("precedence fixture was rejected: %v", err)
+	}
+	for key, want := range map[string]string{
+		"FORM_VPS_ACCOUNT":    "current-user",
+		"FORM_VPS_PASSWORD":   "current-password",
+		"FORM_PANEL_ACCOUNT":  "current-panel",
+		"FORM_PANEL_PASSWORD": "current-panel-password",
+	} {
+		if got := fields[key]; got != want {
+			t.Errorf("%s = %q, want canonical current value %q", key, got, want)
+		}
+	}
+}

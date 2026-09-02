@@ -876,6 +876,10 @@ class WorkflowRunner(
                 value = substr(${'$'}0, separator + 1)
                 gsub(/^[[:space:]]+|[[:space:]]+${'$'}/, "", name)
                 gsub(/^[[:space:]]+|[[:space:]]+${'$'}/, "", value)
+                # Keep the shell-side readiness matcher aligned with the
+                # Android KV parser: trim and normalize keys before alias
+                # matching, while never emitting the value itself.
+                name = toupper(name)
                 upper = toupper(value)
                 if (matches(name) && value != "" && upper !~ /^(UNKNOWN|NOT_RETAINED|SSH_KEY_ONLY)/) found = 1
               }
@@ -932,7 +936,7 @@ class WorkflowRunner(
     private suspend fun detectExistingNode(handle: SshHandle): Boolean {
         val result = checked(
             handle,
-	            "existing=0; if systemctl is-active --quiet x-ui 2>/dev/null || [ -x /usr/local/x-ui/x-ui ] || [ -s /etc/x-ui/x-ui.db ] || [ -s /etc/proxy-runbook/ss2022/service.env ] || [ -s /etc/text-node-assistant/ss2022/service.env ] || [ -s /etc/proxy-runbook/ss2022/server.json ] || [ -s /etc/text-node-assistant/ss2022/server.json ] || systemctl is-active --quiet tna-ss2022-112-trial.service 2>/dev/null; then existing=1; fi; printf 'TNA_EXISTING_NODE=%s\\n' \"\$existing\"",
+	            "existing=0; if systemctl is-active --quiet x-ui 2>/dev/null || [ -x /usr/local/x-ui/x-ui ] || [ -s /etc/x-ui/x-ui.db ] || systemctl is-active --quiet proxy-node-assistant-ss2022.service 2>/dev/null || [ -s /etc/proxy-runbook/ss2022/service.env ] || [ -s /etc/text-node-assistant/ss2022/service.env ] || [ -s /etc/proxy-runbook/ss2022/server.json ] || [ -s /etc/text-node-assistant/ss2022/server.json ] || systemctl is-active --quiet tna-ss2022-112-trial.service 2>/dev/null; then existing=1; fi; printf 'TNA_EXISTING_NODE=%s\\n' \"\$existing\"",
             emit = false,
         )
         return result.stdout.lineSequence().any { it.trim() == "TNA_EXISTING_NODE=1" }
@@ -2300,6 +2304,10 @@ class WorkflowRunner(
         // neutral so either generation can be parsed without printing shell
         // diagnostics into the handoff payload.
         // Read all compatibility roots and their archives in chronological order.
+        // Compatibility roots are emitted first and the canonical
+        // proxy-runbook root last.  loginCredentialForm() is last-usable-value
+        // wins, so the active v1 store cannot be shadowed by stale migration
+        // values from a v0.9.x or early product-named root.
         // A v0.9.x upgrade can leave the current proxy-runbook file present
         // but incomplete while the usable credentials still live in the
         // legacy root/archive; an if/else here would strand that handoff.
@@ -2332,12 +2340,12 @@ class WorkflowRunner(
             emit_archive /root/.config/text-node-assistant/handoff-archive
             [ -r /root/.config/text-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/text-node-assistant/HANDOFF-SECRETS.txt || true
             [ -r /root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true
-            emit_archive /root/.config/proxy-runbook/handoff-archive
-            [ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true
-            [ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env || true
             emit_archive /root/.config/proxy-node-assistant/handoff-archive
             [ -r /root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt || true
             [ -r /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true
+            emit_archive /root/.config/proxy-runbook/handoff-archive
+            [ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true
+            [ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env || true
             printf '%s\n' '${ProtocolParsers.HANDOFF_END}'
         """.trimIndent()
         val result = checked(handle, command, emit = false)

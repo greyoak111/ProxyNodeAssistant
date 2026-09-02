@@ -87,6 +87,23 @@ class ProtocolParsersTest {
         assertEquals("VPS user=present, VPS password=present, panel user=present, panel password=present", readiness.summary())
     }
 
+    @Test fun credentialReadinessNormalizesTrimmedAndCaseVariantKeys() {
+        val value = """
+            noise
+            ${ProtocolParsers.CREDENTIAL_READINESS_BEGIN}
+              vps_login_user_present = 1
+              VPS_LOGIN_PASSWORD_PRESENT = 1
+              panel_username_present = 1
+              panel_password_present = 1
+              complete = 1
+              source = android-readiness
+            ${ProtocolParsers.CREDENTIAL_READINESS_END}
+        """.trimIndent()
+        val readiness = ProtocolParsers.credentialReadiness(value)
+        assertTrue(readiness.isComplete)
+        assertEquals("android-readiness", readiness.source)
+    }
+
     @Test fun credentialReadinessRejectsSecretBearingOrInconsistentPayloads() {
         val secret = "password-must-never-cross-preflight"
         val withSecret = """
@@ -336,6 +353,23 @@ class ProtocolParsersTest {
         assertEquals("legacy-root", form.getValue("FORM_VPS_ACCOUNT"))
         assertEquals("legacy-panel", form.getValue("FORM_PANEL_ACCOUNT"))
         assertEquals("legacy-panel-password", form.getValue("FORM_PANEL_PASSWORD"))
+    }
+
+    @Test fun loginCredentialFormAcceptsPresentationFormAliases() {
+        val payload = """
+            ${ProtocolParsers.HANDOFF_BEGIN}
+            HANDOFF_RUN_STARTED=presentation-aliases
+            FORM_VPS_ACCOUNT=form-root
+            FORM_VPS_PASSWORD=form-vps-password
+            FORM_PANEL_ACCOUNT=form-panel
+            FORM_PANEL_PASSWORD=form-panel-password
+            ${ProtocolParsers.HANDOFF_END}
+        """.trimIndent()
+        val form = ProtocolParsers.loginCredentialForm(ProtocolParsers.handoff(payload))
+        assertEquals("form-root", form.getValue("FORM_VPS_ACCOUNT"))
+        assertEquals("form-vps-password", form.getValue("FORM_VPS_PASSWORD"))
+        assertEquals("form-panel", form.getValue("FORM_PANEL_ACCOUNT"))
+        assertEquals("form-panel-password", form.getValue("FORM_PANEL_PASSWORD"))
     }
 
     @Test fun loginCredentialFormAcceptsProtectedStoreOnlyExport() {

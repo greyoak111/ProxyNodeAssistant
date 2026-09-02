@@ -90,7 +90,9 @@ object ProtocolParsers {
             val line = raw.trim()
             val separator = line.indexOf('=')
             if (separator <= 0) return@forEach
-            val key = line.substring(0, separator).trim()
+            // Normalize padded/case-variant marker keys before validating the
+            // closed vocabulary. Values remain trimmed but are never logged.
+            val key = line.substring(0, separator).trim().uppercase(Locale.ROOT)
             if (key.matches(Regex("^[A-Z][A-Z0-9_]*$"))) put(key, line.substring(separator + 1).trim())
         }
     }
@@ -103,6 +105,11 @@ object ProtocolParsers {
             "PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_ACCOUNT", "PANEL_API_TOKEN",
             "XUI_USERNAME", "XUI_PASSWORD",
             "VPS_LOGIN_USER", "VPS_LOGIN_PASSWORD", "VPS_ACCOUNT", "VPS_PASSWORD",
+            // A v0.9.x GUI/exporter could leave only the presentation-layer
+            // FORM_* names in a copied handoff.  Treat those aliases as
+            // useful input too; loginCredentialForm() canonicalizes them
+            // before the protected handoff is rendered.
+            "FORM_VPS_ACCOUNT", "FORM_VPS_PASSWORD", "FORM_PANEL_ACCOUNT", "FORM_PANEL_PASSWORD",
             "UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY",
             "VLESS_LINK", "DIRECT_REALITY_LINK", "REALITY_LINK",
             "CDN_XHTTP_LINK", "CDN_XHTTP_STAGE_LINK", "CDN_XHTTP_SUBSCRIPTION_URL",
@@ -527,10 +534,10 @@ object ProtocolParsers {
             // UNKNOWN/NOT_RETAINED placeholder after a valid archived secret;
             // plain kv() last-value-wins semantics would incorrectly reject
             // that otherwise recoverable handoff.
-            "FORM_VPS_ACCOUNT" to credentialValue(legacy, false, "VPS_LOGIN_USER", "VPS_ACCOUNT"),
-            "FORM_VPS_PASSWORD" to credentialValue(legacy, true, "VPS_LOGIN_PASSWORD", "VPS_PASSWORD"),
-            "FORM_PANEL_ACCOUNT" to credentialValue(legacy, false, "PANEL_USERNAME", "PANEL_ACCOUNT", "XUI_USERNAME"),
-            "FORM_PANEL_PASSWORD" to credentialValue(legacy, true, "PANEL_PASSWORD", "XUI_PASSWORD"),
+            "FORM_VPS_ACCOUNT" to credentialValue(legacy, false, "VPS_LOGIN_USER", "VPS_ACCOUNT", "FORM_VPS_ACCOUNT"),
+            "FORM_VPS_PASSWORD" to credentialValue(legacy, true, "VPS_LOGIN_PASSWORD", "VPS_PASSWORD", "FORM_VPS_PASSWORD"),
+            "FORM_PANEL_ACCOUNT" to credentialValue(legacy, false, "PANEL_USERNAME", "PANEL_ACCOUNT", "XUI_USERNAME", "FORM_PANEL_ACCOUNT"),
+            "FORM_PANEL_PASSWORD" to credentialValue(legacy, true, "PANEL_PASSWORD", "XUI_PASSWORD", "FORM_PANEL_PASSWORD"),
         )
         form.forEach { (key, raw) ->
             val value = raw.trim()

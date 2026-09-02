@@ -2011,8 +2011,14 @@ credential_value_present() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
       if (!matches(name)) next
       value=substr($0, separator+1)
-      upper=toupper(value)
-      if (value != "" && upper !~ /^(UNKNOWN|NOT_RETAINED|SSH_KEY_ONLY)/) found=1
+      # Check a trimmed probe so an all-whitespace field cannot make the
+      # read-only readiness result look complete.  The probe emits only a
+      # presence bit, so preserving edge spaces in the eventual handoff is
+      # left to the full credential parser.
+      probe=value
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", probe)
+      upper=toupper(probe)
+      if (probe != "" && upper !~ /^(UNKNOWN|NOT_RETAINED|SSH_KEY_ONLY)/) found=1
     }
     END { exit(found ? 0 : 1) }
   ' "$file" >/dev/null 2>&1
@@ -2336,15 +2342,21 @@ func remoteHandoffCommand() string {
 		// filtering in the remote command so raw files remain untouched.
 		"emit_file() { [ -r \"$1\" ] || return 0; awk '!/^[[:space:]]*__(PNA|TNA)_HANDOFF_(BEGIN|END)__[[:space:]]*$/' \"$1\"; }; " +
 		"emit_archive() { find \"$1\" -maxdepth 1 -type f -name 'HANDOFF-*.txt' -printf '%T@ %p\\n' 2>/dev/null | sort -n | while IFS= read -r entry; do f=\"${entry#* }\"; [ -f \"$f\" ] && emit_file \"$f\"; done; }; " +
+		// Compatibility roots are emitted before the canonical proxy-runbook
+		// root.  The credential/form merger is intentionally last-usable-value
+		// wins, so a current proxy-runbook store must override stale values left
+		// by either v0.9.x root (including the early product-named v1 root).
 		"emit_archive /root/.config/text-node-assistant/handoff-archive; " +
 		"[ -r /root/.config/text-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/text-node-assistant/HANDOFF-SECRETS.txt || true; " +
 		"[ -r /root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true; " +
-		"emit_archive /root/.config/proxy-runbook/handoff-archive; " +
-		"[ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true; " +
-		"[ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env || true; " +
 		"emit_archive /root/.config/proxy-node-assistant/handoff-archive; " +
 		"[ -r /root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt || true; " +
 		"[ -r /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true; " +
+		// Keep the canonical root last so duplicate credentials and protocol
+		// fields from compatibility roots cannot shadow the active run.
+		"emit_archive /root/.config/proxy-runbook/handoff-archive; " +
+		"[ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true; " +
+		"[ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env || true; " +
 		"printf '%s\\n' " + shQuote(handoffEnd)
 	return command
 }

@@ -13,14 +13,14 @@ func TestCredentialPolicyBlankPreservesOnlyAfterReadOnlyCompleteDetection(t *tes
 	complete := CredentialReadiness{
 		VPSUserPresent:       true,
 		VPSPasswordPresent:   true,
-		PanelUserPresent:      true,
-		PanelPasswordPresent:  true,
-		Complete:              true,
-		Source:                "handoff",
+		PanelUserPresent:     true,
+		PanelPasswordPresent: true,
+		Complete:             true,
+		Source:               "handoff",
 	}
 	app := &App{
-		reader:             bufio.NewReader(strings.NewReader("\n")),
-		lang:               LangEN,
+		reader:              bufio.NewReader(strings.NewReader("\n")),
+		lang:                LangEN,
 		credentialReadiness: complete,
 	}
 	mode, err := app.chooseCredentialMode("VPS login", "VPS login", true)
@@ -40,6 +40,23 @@ func TestCredentialPolicyBlankPreservesOnlyAfterReadOnlyCompleteDetection(t *tes
 	}
 	if !unknown.inputClosed {
 		t.Fatal("EOF after the rejected blank input should stop the prompt loop")
+	}
+}
+
+func TestExistingNodeProbeRecognizesSs2022OnlyNodes(t *testing.T) {
+	command := existingNodeProbeCommand()
+	for _, marker := range []string{
+		"proxy-node-assistant-ss2022.service",
+		"tna-ss2022-112-trial.service",
+		"/etc/proxy-runbook/ss2022/service.env",
+		"/etc/text-node-assistant/ss2022/service.env",
+		"/etc/proxy-runbook/ss2022/server.json",
+		"/etc/text-node-assistant/ss2022/server.json",
+		"TNA_EXISTING_NODE=%s",
+	} {
+		if !strings.Contains(command, marker) {
+			t.Fatalf("existing-node probe lost SS2022-only detection marker %q: %s", marker, command)
+		}
 	}
 }
 
