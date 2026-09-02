@@ -335,12 +335,19 @@ namespace ProxyNodeAssistant.Gui
             string overridePath = Environment.GetEnvironmentVariable("PNA_HISTORY_PATH");
             if (!String.IsNullOrWhiteSpace(overridePath)) return IOPath.GetFullPath(overridePath.Trim());
             string root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string current = IOPath.Combine(root, "ProxyNodeAssistant", "recent-targets.tsv");
-            // v0.9.x stored the list under the old product name.  Keep it as a
-            // read/write migration fallback, but never confuse it with the
-            // canonical v1 directory.
-            string legacy = IOPath.Combine(root, "TextNodeAssistant", "recent-targets.tsv");
-            return File.Exists(current) || !File.Exists(legacy) ? current : legacy;
+            return IOPath.Combine(root, "ProxyNodeAssistant", "recent-targets.tsv");
+        }
+
+        private static List<string> RecentTargetsReadPaths()
+        {
+            string overridePath = Environment.GetEnvironmentVariable("PNA_HISTORY_PATH");
+            if (!String.IsNullOrWhiteSpace(overridePath)) return new List<string> { RecentTargetsPath() };
+            string root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            return new List<string>
+            {
+                IOPath.Combine(root, "ProxyNodeAssistant", "recent-targets.tsv"),
+                IOPath.Combine(root, "TextNodeAssistant", "recent-targets.tsv")
+            };
         }
 
         private static bool ValidRecentTarget(RecentTarget target)
@@ -387,17 +394,19 @@ namespace ProxyNodeAssistant.Gui
         private static List<RecentTarget> LoadRecentTargets()
         {
             List<RecentTarget> values = new List<RecentTarget>();
-            string path = RecentTargetsPath();
-            if (!File.Exists(path)) return values;
-            foreach (string line in File.ReadAllLines(path, Encoding.UTF8))
+            foreach (string path in RecentTargetsReadPaths())
             {
-                string[] fields = line.Split('\t');
-                int port;
-                DateTime used;
-                if (fields.Length != 4 || !Int32.TryParse(fields[2], out port) ||
-                    !DateTime.TryParse(fields[3], null, System.Globalization.DateTimeStyles.RoundtripKind, out used)) continue;
-                RecentTarget target = new RecentTarget { Host = fields[0].Trim(), User = fields[1].Trim(), Port = port, LastUsedUtc = used.ToUniversalTime() };
-                if (ValidRecentTarget(target)) values.Add(target);
+                if (!File.Exists(path)) continue;
+                foreach (string line in File.ReadAllLines(path, Encoding.UTF8))
+                {
+                    string[] fields = line.Split('\t');
+                    int port;
+                    DateTime used;
+                    if (fields.Length != 4 || !Int32.TryParse(fields[2], out port) ||
+                        !DateTime.TryParse(fields[3], null, System.Globalization.DateTimeStyles.RoundtripKind, out used)) continue;
+                    RecentTarget target = new RecentTarget { Host = fields[0].Trim(), User = fields[1].Trim(), Port = port, LastUsedUtc = used.ToUniversalTime() };
+                    if (ValidRecentTarget(target)) values.Add(target);
+                }
             }
             values.Sort(delegate(RecentTarget left, RecentTarget right) { return right.LastUsedUtc.CompareTo(left.LastUsedUtc); });
             List<RecentTarget> normalized = new List<RecentTarget>();
@@ -433,6 +442,16 @@ namespace ProxyNodeAssistant.Gui
             finally
             {
                 if (File.Exists(temporary)) File.Delete(temporary);
+            }
+            // Once the canonical file is written, remove only the old
+            // non-secret history file so deleted legacy entries cannot return
+            // on the next merged read.
+            foreach (string legacy in RecentTargetsReadPaths())
+            {
+                if (!String.Equals(legacy, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    try { if (File.Exists(legacy)) File.Delete(legacy); } catch { }
+                }
             }
         }
 
@@ -531,8 +550,10 @@ namespace ProxyNodeAssistant.Gui
                         : "确定清空全部 VPS 登录历史？已绑定 key 不会改变。",
                 "ProxyNodeAssistant", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (answer != MessageBoxResult.Yes) return;
-            string path = RecentTargetsPath();
-            if (File.Exists(path)) File.Delete(path);
+            foreach (string path in RecentTargetsReadPaths())
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
             RefreshRecentTargets(false);
             connectionHostInput.Text = "";
             connectionUserInput.Text = "root";
