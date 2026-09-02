@@ -209,8 +209,8 @@ if ($unexpectedRetiredEntries.Count -gt 0) {
 $archiveVersion = (& tar -xOf $toolkitSource "proxy-node-assistant-v1.0.0/TOOLKIT_VERSION" | Out-String).Trim()
 $archiveBuildId = (& tar -xOf $toolkitSource "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID" | Out-String).Trim()
 $archiveBuildRevision = (& tar -xOf $toolkitSource "proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION" | Out-String).Trim()
-    if ($archiveVersion -ne "1.0.0" -or $archiveBuildId -ne "20260901-v100-ss2022-r109" -or $archiveBuildRevision -ne "109") {
-        throw "Current toolkit archive metadata is not the exact ProxyNodeAssistant v1.0.0 revision-109 build"
+    if ($archiveVersion -ne "1.0.0" -or $archiveBuildId -ne "20260901-v100-ss2022-r111" -or $archiveBuildRevision -ne "111") {
+        throw "Current toolkit archive metadata is not the exact ProxyNodeAssistant v1.0.0 revision-111 build"
 }
 New-Item -ItemType Directory -Force -Path $toolkitAssetDirectory | Out-Null
 Copy-Item -LiteralPath $toolkitSource -Destination $toolkitAsset -Force

@@ -48,6 +48,15 @@ function Assert-DocumentContains {
     'is_owned_drive_temp()',
     'remove_current_managed_drive()',
     'CURRENT_COPYPARTY_STATE_STILL_PRESENT',
+    'XUI_CONFIG_PATH=/usr/local/x-ui/bin/config.json',
+    'xui_runtime_marker_count()',
+    'verify_xui_runtime_config()',
+    'restart_xui_after_changes()',
+    'XUI_RUNTIME_STALE_MARKERS=',
+    'XUI_RESTART_REQUIRED_BUT_XUI_MISSING',
+    'XUI_RUNTIME_MANAGED_CLIENT_STILL_PRESENT',
+    'systemctl restart x-ui',
+    'XUI_RESTARTED=',
     'NGINX_OWNED=',
     'CANDIDATE_OWNED=',
     'DRIVE_DATA_PRESERVED=1',
@@ -78,6 +87,11 @@ $applyChangesCall = [regex]::Match($source, '(?m)^\s*apply_xui_changes\s*$')
 $applyGlobalCall = [regex]::Match($source, '(?m)^\s*apply_xui_global_deletions\s*$')
 if (-not $applyChangesCall.Success -or -not $applyGlobalCall.Success -or $applyChangesCall.Index -ge $applyGlobalCall.Index) {
     throw 'global client retirement must run after inbound client updates'
+}
+$restartCall = [regex]::Match($source, '(?m)^\s*restart_xui_after_changes\s*$')
+$authorizedCall = [regex]::Match($source, '(?m)^\s*apply_authorized_key_changes\s*$')
+if (-not $restartCall.Success -or -not $authorizedCall.Success -or $restartCall.Index -ge $authorizedCall.Index) {
+    throw 'x-ui runtime reload must run before authorized-key/drive retirement'
 }
 
 # jq programs in the retirement path must be literal single-quoted filters.

@@ -25,8 +25,8 @@ const (
 	legacyTextRemoteRoot    = "/opt/text-node-assistant-current"
 	legacyRunbookRemoteRoot = "/opt/proxy-runbook-current"
 	toolkitVersion          = "1.0.0"
-	toolkitBuildID          = "20260901-v100-ss2022-r109"
-	toolkitBuildRevision    = 109
+	toolkitBuildID          = "20260901-v100-ss2022-r111"
+	toolkitBuildRevision    = 111
 	toolkitInstallDir       = "/opt/proxy-node-assistant-v1.0.0"
 	toolkitArchive          = "proxy-node-assistant-toolkit-v1.0.0.tar.gz"
 	sessionTempPrefix       = "ProxyNodeAssistant-v1.0.0-session-"

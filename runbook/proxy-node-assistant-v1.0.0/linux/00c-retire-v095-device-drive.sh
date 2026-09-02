@@ -81,6 +81,9 @@ XUI_GLOBAL_EMAILS_FILE=''
 XUI_GLOBAL_CURRENT_EMAILS_FILE=''
 XUI_GLOBAL_DELETED_CLIENTS=0
 XUI_GLOBAL_ALREADY_REMOVED=0
+XUI_RESTARTED=0
+XUI_CONFIG_PATH=/usr/local/x-ui/bin/config.json
+XUI_RUNTIME_STALE=0
 
 die() {
   printf 'TNA_V095_RETIREMENT_ERROR=%s\n' "$1" >&2
@@ -489,6 +492,8 @@ create_archive() {
     printf 'XUI_GLOBAL_MANAGED_CLIENTS=%s\n' "$XUI_GLOBAL_MANAGED_CLIENTS"
     printf 'XUI_GLOBAL_DELETED_CLIENTS=%s\n' "$XUI_GLOBAL_DELETED_CLIENTS"
     printf 'XUI_GLOBAL_ALREADY_ABSENT=%s\n' "$XUI_GLOBAL_ALREADY_REMOVED"
+    printf 'XUI_RUNTIME_STALE=%s\n' "$XUI_RUNTIME_STALE"
+    printf 'XUI_RESTARTED=%s\n' "$XUI_RESTARTED"
     printf 'AUTHORIZED_KEY_FILES=%s\n' "$AUTHORIZED_KEY_FILES"
     printf 'CREATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$WORK/archive/evidence/manifest.env"
@@ -592,6 +597,70 @@ apply_xui_global_deletions() {
       die XUI_GLOBAL_CLIENT_DELETE_FAILED
     fi
   done < "$XUI_GLOBAL_CURRENT_EMAILS_FILE"
+}
+
+# 3x-ui stores its generated Xray child configuration separately from the
+# panel database.  API edits can therefore leave a deleted device client live
+# until x-ui is restarted.  Count only the explicit managed-client markers in
+# that generated file; ordinary client rows and all other runtime state are
+# left untouched.
+xui_runtime_marker_count() {
+  local count='0'
+  [ -f "$XUI_CONFIG_PATH" ] || { printf '0\n'; return 0; }
+  count="$(grep -Eoc '(tna|pna)-device:' "$XUI_CONFIG_PATH" 2>/dev/null || true)"
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  printf '%s\n' "$count"
+}
+
+verify_xui_runtime_config() {
+  local strict="${1:-0}" count='0'
+  if [ ! -f "$XUI_CONFIG_PATH" ]; then
+    if [ "$strict" -eq 1 ]; then
+      die XUI_RUNTIME_CONFIG_MISSING
+    fi
+    printf 'XUI_RUNTIME_CONFIG=NOT_PRESENT\n'
+    return 0
+  fi
+  count="$(xui_runtime_marker_count)"
+  if [ "$count" -gt 0 ]; then
+    die XUI_RUNTIME_MANAGED_CLIENT_STILL_PRESENT
+  fi
+  printf 'XUI_RUNTIME_MANAGED_CLIENTS=0\n'
+}
+
+# An x-ui API update changes the database first; depending on the 3x-ui build,
+# the running Xray child may keep the old generated config until the panel is
+# restarted.  Treat a restart as part of the retirement transaction, but only
+# when an inbound or global client was actually changed.  If the restart or
+# the post-restart readback fails, die before touching the SSH keys/drive so
+# the outer install transaction can restore its captured baseline.
+restart_xui_after_changes() {
+  local changed=0
+  if [ "$XUI_MANAGED_CLIENTS" -gt 0 ] || [ "$XUI_GLOBAL_DELETED_CLIENTS" -gt 0 ] || [ "$XUI_RUNTIME_STALE" -eq 1 ]; then
+    changed=1
+  fi
+  if [ "$changed" -eq 0 ]; then
+    printf 'XUI_RESTART_SKIPPED=NO_XUI_CHANGES\n'
+    return 0
+  fi
+  [ "$XUI_PRESENT" -eq 1 ] || die XUI_RESTART_REQUIRED_BUT_XUI_MISSING
+  command -v systemctl >/dev/null 2>&1 || die XUI_RESTART_SYSTEMCTL_MISSING
+  systemctl restart x-ui >/dev/null 2>&1 || die XUI_RESTART_FAILED
+  for _ in $(seq 1 30); do
+    systemctl is-active --quiet x-ui 2>/dev/null && break
+    sleep 1
+  done
+  systemctl is-active --quiet x-ui 2>/dev/null || die XUI_RESTART_NOT_ACTIVE
+  XUI_RESTARTED=1
+  printf 'XUI_RESTARTED=1\n'
+  for _ in $(seq 1 30); do
+    if [ -f "$XUI_CONFIG_PATH" ] && [ "$(xui_runtime_marker_count)" -eq 0 ]; then
+      verify_xui_runtime_config 1
+      return 0
+    fi
+    sleep 1
+  done
+  verify_xui_runtime_config 1
 }
 
 verify_global_clients_retired() {
@@ -835,6 +904,15 @@ validate_owned_state
 collect_authorized_key_changes
 if [ "$MODE" = --apply ]; then
   collect_xui_changes
+  # A previous run may already have removed the managed rows from the panel
+  # database while leaving the generated Xray child config untouched.  Treat
+  # that drift as a repairable change so the early ALREADY_CLEAN path cannot
+  # silently preserve a live device gate.
+  if [ "$XUI_PRESENT" -eq 1 ] && [ "$(xui_runtime_marker_count)" -gt 0 ]; then
+    XUI_RUNTIME_STALE=1
+    CHANGE_COUNT=$((CHANGE_COUNT + 1))
+    printf 'XUI_RUNTIME_STALE_MARKERS=%s\n' "$(xui_runtime_marker_count)"
+  fi
 fi
 
 if [ "$MODE" = --status ]; then
@@ -854,6 +932,7 @@ fi
 create_archive
 apply_xui_changes
 apply_xui_global_deletions
+restart_xui_after_changes
 apply_authorized_key_changes
 remove_managed_nginx
 remove_managed_drive
