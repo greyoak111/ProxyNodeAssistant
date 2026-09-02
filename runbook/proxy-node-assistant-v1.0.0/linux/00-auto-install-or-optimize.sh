@@ -25,7 +25,10 @@ RUN_COMPLETE=0
 AUTO_INPUT="${TNA_AUTO_INPUT:-${PROXY_RUNBOOK_AUTO_INPUT:-}}"
 
 cleanup_auto_input() {
-  if [ -n "$AUTO_INPUT" ]; then
+  # AUTO_INPUT can be supplied by a direct operator invocation.  Never let a
+  # malformed/untrusted value turn the EXIT cleanup into an arbitrary
+  # `rm -f`; only the randomized one-run namespace is owned by this flow.
+  if [ -n "$AUTO_INPUT" ] && [[ "$AUTO_INPUT" =~ ^/tmp/proxy-node-assistant-(auto-input|credential-input)-[0-9a-f]{6,64}$ ]]; then
     rm -f -- "$AUTO_INPUT" 2>/dev/null || true
   fi
 }

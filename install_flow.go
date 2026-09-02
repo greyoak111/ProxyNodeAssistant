@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -527,7 +528,7 @@ func (a *App) writeInstallAutoInput(c Connection, plan InstallPlan) (string, err
 }
 
 func (a *App) removeInstallAutoInput(c Connection, path string) {
-	if !strings.HasPrefix(path, "/tmp/proxy-node-assistant-auto-input-") || strings.ContainsAny(path, "\r\n") {
+	if !regexp.MustCompile(`^/tmp/proxy-node-assistant-(auto-input|credential-input)-[0-9a-f]{6,64}$`).MatchString(path) {
 		return
 	}
 	_ = a.rootCapture(c, "rm -f -- "+shQuote(path))
