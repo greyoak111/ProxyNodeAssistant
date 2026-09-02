@@ -481,10 +481,10 @@ object ProtocolParsers {
             // UNKNOWN/NOT_RETAINED placeholder after a valid archived secret;
             // plain kv() last-value-wins semantics would incorrectly reject
             // that otherwise recoverable handoff.
-            "FORM_VPS_ACCOUNT" to credentialValue(legacy, "VPS_LOGIN_USER", "VPS_ACCOUNT"),
-            "FORM_VPS_PASSWORD" to credentialValue(legacy, "VPS_LOGIN_PASSWORD", "VPS_PASSWORD"),
-            "FORM_PANEL_ACCOUNT" to credentialValue(legacy, "PANEL_USERNAME", "PANEL_ACCOUNT"),
-            "FORM_PANEL_PASSWORD" to credentialValue(legacy, "PANEL_PASSWORD"),
+            "FORM_VPS_ACCOUNT" to credentialValue(legacy, false, "VPS_LOGIN_USER", "VPS_ACCOUNT"),
+            "FORM_VPS_PASSWORD" to credentialValue(legacy, true, "VPS_LOGIN_PASSWORD", "VPS_PASSWORD"),
+            "FORM_PANEL_ACCOUNT" to credentialValue(legacy, false, "PANEL_USERNAME", "PANEL_ACCOUNT"),
+            "FORM_PANEL_PASSWORD" to credentialValue(legacy, true, "PANEL_PASSWORD"),
         )
         form.forEach { (key, raw) ->
             val value = raw.trim()
@@ -496,20 +496,22 @@ object ProtocolParsers {
         return form
     }
 
-    private fun credentialValue(legacy: String, vararg keys: String): String {
+    private fun credentialValue(legacy: String, preserveWhitespace: Boolean, vararg keys: String): String {
         val wanted = keys.toSet()
         var found = ""
         // Keep the value bytes exactly as emitted after the first `=`.  In
         // particular, a user-selected password may intentionally start or
         // end with spaces.  Only the key/validation view is trimmed; the raw
-        // candidate is returned to the protected handoff form unchanged.
+        // candidate is returned to the protected handoff form unchanged for
+        // password keys; account keys are normalized to remove copy/paste
+        // padding before they are used as login identities.
         legacy.replace("\r\n", "\n").split('\n').forEach { line ->
             val separator = line.indexOf('=')
             if (separator <= 0) return@forEach
             val key = line.substring(0, separator).trim()
             if (key !in wanted) return@forEach
             val candidate = line.substring(separator + 1)
-            if (usableCredential(candidate)) found = candidate
+            if (usableCredential(candidate)) found = if (preserveWhitespace) candidate else candidate.trim()
         }
         // The concatenated stream is ordered archive -> current, so the last
         // usable occurrence (regardless of legacy/canonical alias spelling)

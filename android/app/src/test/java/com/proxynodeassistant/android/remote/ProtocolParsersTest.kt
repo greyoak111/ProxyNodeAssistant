@@ -226,12 +226,13 @@ class ProtocolParsersTest {
     @Test fun loginCredentialFormPreservesIntentionalSecretSpaces() {
         val payload = """
             HANDOFF_RUN_STARTED=spaces
-            VPS_LOGIN_USER=root
+            VPS_LOGIN_USER=  root  
             VPS_LOGIN_PASSWORD=  vps-secret-with-spaces  
             PANEL_USERNAME=operator
             PANEL_PASSWORD=  panel-secret-with-spaces  
         """.trimIndent()
         val form = ProtocolParsers.loginCredentialForm(payload)
+        assertEquals("root", form.getValue("FORM_VPS_ACCOUNT"))
         assertEquals("  vps-secret-with-spaces  ", form.getValue("FORM_VPS_PASSWORD"))
         assertEquals("  panel-secret-with-spaces  ", form.getValue("FORM_PANEL_PASSWORD"))
     }
