@@ -25,6 +25,7 @@ Assert-Match $gradle 'versionCode\s*=\s*1000000' "Android versionCode is not the
 Assert-Match $gradle 'versionName\s*=\s*"1\.0\.0"' "Android visible version is not v1.0.0"
 
 $workflow = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/WorkflowRunner.kt"
+$protocolParsers = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/ProtocolParsers.kt"
 Assert-Match $workflow 'const val VERSION = "1\.0\.0"' "Android workflow visible version is not v1.0.0"
 Assert-Match $workflow 'const val BUILD_REVISION = 104' "Android workflow revision is not 104"
 Assert-Match $workflow 'const val BUILD_ID = "20260901-v100-ss2022-r104"' "Android workflow build id is not revision 104"
@@ -41,6 +42,15 @@ Assert-Match $workflow 'private suspend fun updateToolkitOnly\(' "Android menu [
 Assert-Match $workflow 'TOOLKIT_ONLY_UPDATE_COMPLETE' "Android toolkit-only refresh no longer emits a completion marker"
 Assert-Match $workflow 'probe\.buildRevision == BUILD_REVISION && probe\.buildId != BUILD_ID' "Android same-revision divergent/blank build IDs are not fail-closed"
 Assert-Match $workflow 'sameVersionIncompleteRepairAllowed\(probe\)' "Android same-version repair lost its monotonic build guard"
+Assert-Match $workflow 'credentialReadinessCommand\(\)' "Android install form lost the secret-free credential readiness probe"
+Assert-Match $workflow 'ProtocolParsers\.credentialReadiness\(result\.stdout\)' "Android install form no longer parses the credential readiness marker"
+Assert-Match $workflow 'credentialReadiness = detectCredentialReadiness\(handle\)' "Android install form does not run credential readiness before planning"
+Assert-Match $workflow 'readiness = credentialReadiness' "Android credential policy prompts do not consume the readiness result"
+Assert-Match $workflow 'complete handoff detected; preserve and verify remotely' "Android preserve option no longer identifies a complete handoff"
+Assert-Match $workflow '/root/\.config/proxy-node-assistant' "Android readiness probe lost the current ProxyNodeAssistant credential-store path"
+Assert-NoMatch $workflow 'printf[^\r\n]*(VPS_LOGIN_PASSWORD|PANEL_PASSWORD)=' "Android readiness probe may stream a secret-bearing credential value"
+Assert-Match $protocolParsers 'CREDENTIAL_READINESS_BEGIN' "Android protocol parser lost the credential readiness markers"
+Assert-Match $protocolParsers 'credential readiness unexpectedly contains credential data' "Android readiness parser no longer rejects secret-bearing output"
 Assert-Match $workflow 'run action 1 and confirm APPLY for an in-place repair' "Android read-only actions do not explain the menu [1] repair path"
 Assert-NoMatch $workflow '远端 v\$VERSION 工具包不完整，请先执行 \[13\]' "Android menu [1] still requires an unnecessary uninstall before repairing a partial toolkit"
 Assert-Match $workflow 'context\.assets\.open\(TOOLKIT_ASSET\)' "Android no longer reads the toolkit from its APK assets"
@@ -144,6 +154,13 @@ $handoffPanelIndex = $workflow.IndexOf('ProtocolParsers.panel(checked(handle, pa
 $openPanelIndex = $workflow.IndexOf('val meta = ProtocolParsers.panel(checked(handle, panelMetadataCommand(), emit = false)')
 if ($panelHelperIndex -lt 0 -or $handoffPanelIndex -lt 0 -or $openPanelIndex -lt 0) {
     throw "Android handoff/open-panel paths do not use the legacy-aware panel metadata helper"
+}
+# The protected handoff exporter must include every compatibility root and the
+# split current-login store; a failed rotation can leave only that store.
+foreach ($handoffRoot in @('text-node-assistant', 'proxy-runbook', 'proxy-node-assistant')) {
+    Assert-Match $workflow ("emit_archive /root/\.config/$handoffRoot/handoff-archive") "Android handoff exporter lost the $handoffRoot archive"
+    Assert-Match $workflow ("/root/\.config/$handoffRoot/HANDOFF-SECRETS\.txt") "Android handoff exporter lost the $handoffRoot handoff file"
+    Assert-Match $workflow ("/root/\.config/$handoffRoot/CURRENT-LOGIN-CREDENTIALS\.env") "Android handoff exporter lost the $handoffRoot protected login store"
 }
 
 $androidBuilder = Read-RepoFile "android/build-android.ps1"

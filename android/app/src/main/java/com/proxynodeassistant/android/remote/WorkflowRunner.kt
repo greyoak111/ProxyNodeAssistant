@@ -60,6 +60,8 @@ class WorkflowRunner(
     private var job: Job? = null
     @Volatile private var activeHandle: SshHandle? = null
     @Volatile private var language: Language = Language.ZH
+    /** Presence bits from the current install run; never contains secrets. */
+    @Volatile private var credentialReadiness: CredentialReadiness = CredentialReadiness.UNKNOWN
 
     fun run(action: ActionSpec, target: NodeTarget, authMode: AuthMode, suppliedPassword: String? = null, language: Language = Language.ZH) {
         check(job?.isActive != true) { "A workflow is already running" }
@@ -575,6 +577,10 @@ class WorkflowRunner(
     }
 
     private suspend fun deploy(handle: SshHandle): Boolean {
+        // Never carry a previous target's readiness result into a new run.
+        // This state contains presence bits only, but a stale complete bit could
+        // otherwise make an empty policy answer preserve the wrong node.
+        credentialReadiness = CredentialReadiness.UNKNOWN
         val probe = probe(handle)
         val comparison = if (probe.installed) ProtocolParsers.compareVersions(probe.version, VERSION) else -1
         var toolkitOnlyUpdate = false
@@ -617,6 +623,20 @@ class WorkflowRunner(
         val existingNode = detectExistingNode(handle)
         val existingSs2022Port = if (existingNode) detectExistingSs2022Port(handle) else null
         existingSs2022Port?.let { log("SS2022_EXISTING_PORT=$it (upgrade default preserves the existing listener)") }
+        if (existingNode) {
+            credentialReadiness = detectCredentialReadiness(handle)
+            if (credentialReadiness.isComplete) {
+                log(tr(
+                    "CREDENTIAL_HANDOFF_READY=1（仅存在性；凭据策略选保留即可，远端会再次验证）",
+                    "CREDENTIAL_HANDOFF_READY=1 (presence only; choose preserve and the remote installer will verify again)",
+                ))
+            } else {
+                log(tr(
+                    "CREDENTIAL_HANDOFF_READY=0（${credentialReadiness.summary()}；未读取密码）",
+                    "CREDENTIAL_HANDOFF_READY=0 (${credentialReadiness.summary()}; passwords were not read)",
+                ))
+            }
+        }
         val plan = collectInstallPlan(existingNode, existingSs2022Port)
         plan.validate(existingNode)
         val review = plan.reviewLines().joinToString("\n")
@@ -811,6 +831,103 @@ class WorkflowRunner(
         [ -x \"${'$'}root/linux/28a-install-transaction.sh\" ] || { echo TNA_INSTALL_TRANSACTION_ERROR=SCRIPT_MISSING >&2; exit 64; }
         bash \"${'$'}root/linux/28a-install-transaction.sh\" $arguments
     """.trimIndent()
+
+    /**
+     * Build a read-only, secret-free scan for the install form.  v0.9.0 did
+     * not have the protected credential-store helpers, so this intentionally
+     * scans both generations of handoff files with a small awk predicate
+     * instead of requiring a particular toolkit version.  The predicate only
+     * returns an exit status; no account or password value is written to
+     * stdout, stderr, or the Android log.
+     */
+    private fun credentialReadinessCommand(): String = """
+        set -u
+        printf '%s\n' '${ProtocolParsers.CREDENTIAL_READINESS_BEGIN}'
+        candidate_files() {
+          for dir in /root/.config/proxy-runbook /root/.config/text-node-assistant /root/.config/proxy-node-assistant; do
+            for file in "${'$'}dir/CURRENT-LOGIN-CREDENTIALS.env" "${'$'}dir/HANDOFF-SECRETS.txt"; do
+              [ -r "${'$'}file" ] && printf '%s\n' "${'$'}file"
+            done
+            if [ -d "${'$'}dir/handoff-archive" ] && command -v find >/dev/null 2>&1; then
+              find "${'$'}dir/handoff-archive" -maxdepth 1 -type f -name 'HANDOFF-*.txt' -print 2>/dev/null || true
+            fi
+          done
+        }
+        value_present() {
+          local wanted="${'$'}1" file
+          while IFS= read -r file; do
+            [ -n "${'$'}file" ] || continue
+            if awk -v wanted="${'$'}wanted" '
+              function matches(name) {
+                if (wanted == "VPS_LOGIN_USER")
+                  return name == "VPS_LOGIN_USER" || name == "VPS_ACCOUNT" || name == "FORM_VPS_ACCOUNT"
+                if (wanted == "VPS_LOGIN_PASSWORD")
+                  return name == "VPS_LOGIN_PASSWORD" || name == "VPS_PASSWORD" || name == "FORM_VPS_PASSWORD"
+                if (wanted == "PANEL_USERNAME")
+                  return name == "PANEL_USERNAME" || name == "PANEL_ACCOUNT" || name == "XUI_USERNAME" || name == "FORM_PANEL_ACCOUNT"
+                if (wanted == "PANEL_PASSWORD")
+                  return name == "PANEL_PASSWORD" || name == "XUI_PASSWORD" || name == "FORM_PANEL_PASSWORD"
+                return name == wanted
+              }
+              {
+                separator = index(${'$'}0, "=")
+                if (separator <= 0) next
+                name = substr(${'$'}0, 1, separator - 1)
+                value = substr(${'$'}0, separator + 1)
+                gsub(/^[[:space:]]+|[[:space:]]+${'$'}/, "", name)
+                gsub(/^[[:space:]]+|[[:space:]]+${'$'}/, "", value)
+                upper = toupper(value)
+                if (matches(name) && value != "" && upper !~ /^(UNKNOWN|NOT_RETAINED|SSH_KEY_ONLY)/) found = 1
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${'$'}file" >/dev/null 2>&1; then
+              return 0
+            fi
+          done < <(candidate_files)
+          return 1
+        }
+        source_name=unavailable
+        for dir in /root/.config/proxy-runbook /root/.config/text-node-assistant /root/.config/proxy-node-assistant; do
+          if [ -r "${'$'}dir/CURRENT-LOGIN-CREDENTIALS.env" ] || [ -r "${'$'}dir/HANDOFF-SECRETS.txt" ]; then
+            source_name=handoff
+            break
+          fi
+          if [ -d "${'$'}dir/handoff-archive" ] && command -v find >/dev/null 2>&1 &&
+             [ -n "${'$'}(find "${'$'}dir/handoff-archive" -maxdepth 1 -type f -name 'HANDOFF-*.txt' -print -quit 2>/dev/null)" ]; then
+            source_name=handoff-archive
+            break
+          fi
+        done
+        vps_user=0; vps_password=0; panel_user=0; panel_password=0
+        value_present VPS_LOGIN_USER && vps_user=1 || true
+        value_present VPS_LOGIN_PASSWORD && vps_password=1 || true
+        value_present PANEL_USERNAME && panel_user=1 || true
+        value_present PANEL_PASSWORD && panel_password=1 || true
+        complete=0
+        if [ "${'$'}vps_user" = 1 ] && [ "${'$'}vps_password" = 1 ] && [ "${'$'}panel_user" = 1 ] && [ "${'$'}panel_password" = 1 ]; then complete=1; fi
+        printf 'VPS_LOGIN_USER_PRESENT=%s\nVPS_LOGIN_PASSWORD_PRESENT=%s\nPANEL_USERNAME_PRESENT=%s\nPANEL_PASSWORD_PRESENT=%s\nCOMPLETE=%s\nSOURCE=%s\n' "${'$'}vps_user" "${'$'}vps_password" "${'$'}panel_user" "${'$'}panel_password" "${'$'}complete" "${'$'}source_name"
+        printf '%s\n' '${ProtocolParsers.CREDENTIAL_READINESS_END}'
+    """.trimIndent()
+
+    /**
+     * Best-effort readiness probe.  An unavailable/legacy handoff leaves the
+     * form usable with an explicit policy choice; only a validated complete
+     * block changes the explanatory text next to PRESERVE.
+     */
+    private suspend fun detectCredentialReadiness(handle: SshHandle): CredentialReadiness {
+        val result = runCatching { handle.exec(credentialReadinessCommand(), root = true, log = { }) }.getOrElse { error ->
+            log("CREDENTIAL_HANDOFF_READY=UNKNOWN detail=${safeError(error)}")
+            return CredentialReadiness.UNKNOWN
+        }
+        if (!result.ok) {
+            log("CREDENTIAL_HANDOFF_READY=UNKNOWN detail=remote_exit_${result.exitCode}")
+            return CredentialReadiness.UNKNOWN
+        }
+        return runCatching { ProtocolParsers.credentialReadiness(result.stdout) }.getOrElse { error ->
+            log("CREDENTIAL_HANDOFF_READY=UNKNOWN detail=${safeError(error)}")
+            CredentialReadiness.UNKNOWN
+        }
+    }
 
     private suspend fun detectExistingNode(handle: SshHandle): Boolean {
         val result = checked(
@@ -1028,6 +1145,7 @@ class WorkflowRunner(
             label = tr("VPS 登录密码策略", "VPS login password policy"),
             existingNode = existingNode,
             subject = tr("VPS 登录密码", "VPS login password"),
+            readiness = credentialReadiness,
         )
         val vpsPassword = if (vpsMode == InstallCredentialMode.CUSTOM) {
             matchingSecret(
@@ -1040,6 +1158,7 @@ class WorkflowRunner(
             label = tr("3x-ui 面板凭据策略", "3x-ui panel credential policy"),
             existingNode = existingNode,
             subject = tr("3x-ui 面板账号和密码", "3x-ui panel username and password"),
+            readiness = credentialReadiness,
         )
         val panelAccount: String
         val panelPassword: String
@@ -1063,18 +1182,41 @@ class WorkflowRunner(
         label: String,
         existingNode: Boolean,
         subject: String,
+        readiness: CredentialReadiness = CredentialReadiness.UNKNOWN,
     ): InstallCredentialMode {
+        val preserveReady = existingNode && readiness.isComplete
         val options = buildList {
-            if (existingNode) add("PRESERVE | ${tr("保留当前已验证凭据", "keep the currently verified credentials")}")
+            if (existingNode) add(
+                "PRESERVE | ${if (preserveReady) {
+                    tr("已检测到完整交接，保留并让远端复核", "complete handoff detected; preserve and verify remotely")
+                } else {
+                    tr("保留当前已验证凭据", "keep the currently verified credentials")
+                }}",
+            )
             add("RANDOM | ${tr("生成并应用新的高强度随机值", "generate and apply a new high-entropy value")}")
             add("CUSTOM | ${tr("手动输入并二次确认", "enter and confirm manually")}")
         }
+        val readinessMessage = if (existingNode) {
+            if (preserveReady) {
+                tr(
+                    "已完成远端只读识别：四个登录字段均存在。选择 PRESERVE 即可继续，不需要刷新或重填密码；施工前仍会由远端再次验证。",
+                    "The read-only remote check found all four login fields. Choose PRESERVE to continue without refreshing or re-entering a password; the remote installer still verifies it before changes.",
+                )
+            } else {
+                tr(
+                    "远端交接字段未完整识别（仅显示存在性：${readiness.summary()}）。请明确选择保留、随机或自定义；不会猜测或显示密码。",
+                    "The remote handoff is not complete (presence only: ${readiness.summary()}). Choose preserve, random, or custom explicitly; no password is guessed or shown.",
+                )
+            }
+        } else {
+            tr(
+                "新节点必须明确选择策略。自定义秘密只通过一次性 root-only 文件交给远端，绝不进入日志、命令行或本地设置。",
+                "A fresh node requires an explicit policy. Custom secrets travel only in a one-run root-only file and never enter logs, command lines, or local settings.",
+            )
+        }
         val answer = prompts.ask(
             label,
-            tr(
-                "为 $subject 选择本次策略。自定义秘密只通过一次性 root-only 文件交给远端，绝不进入日志、命令行或本地设置。",
-                "Choose the policy for $subject. Custom secrets travel only in a one-run root-only file and never enter logs, command lines, or local settings.",
-            ),
+            tr("为 $subject 选择本次策略。", "Choose the policy for $subject.") + "\n" + readinessMessage,
             PromptKind.CHOICE,
             options = options,
         )
@@ -2153,16 +2295,21 @@ class WorkflowRunner(
     }
 
     private suspend fun showHandoff(handle: SshHandle) {
-        // Prefer the renamed product directory but retain the v0.9.x path as
-        // a read-only migration source.  The wrapper markers are product
+        // Prefer the renamed product directory but retain the v0.9.x paths as
+        // read-only migration sources.  The wrapper markers are product
         // neutral so either generation can be parsed without printing shell
         // diagnostics into the handoff payload.
-        // Read both product roots and their archives in chronological order.
+        // Read all compatibility roots and their archives in chronological order.
         // A v0.9.x upgrade can leave the current proxy-runbook file present
         // but incomplete while the usable credentials still live in the
         // legacy root/archive; an if/else here would strand that handoff.
         val command = """
             printf '%s\n' '${ProtocolParsers.HANDOFF_BEGIN}'
+            # CURRENT-LOGIN-CREDENTIALS.env is a protected key/value store,
+            # not a complete handoff document and therefore has no run marker.
+            # Add a transport-local marker so a store-only recovery can still
+            # be rendered; this marker carries no credential material.
+            printf 'HANDOFF_RUN_STARTED=android-read-only-export\n'
             emit_file() {
                 file="${'$'}1"
                 [ -r "${'$'}file" ] || return 0
@@ -2184,8 +2331,13 @@ class WorkflowRunner(
             }
             emit_archive /root/.config/text-node-assistant/handoff-archive
             [ -r /root/.config/text-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/text-node-assistant/HANDOFF-SECRETS.txt || true
+            [ -r /root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true
             emit_archive /root/.config/proxy-runbook/handoff-archive
             [ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true
+            [ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env || true
+            emit_archive /root/.config/proxy-node-assistant/handoff-archive
+            [ -r /root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt || true
+            [ -r /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true
             printf '%s\n' '${ProtocolParsers.HANDOFF_END}'
         """.trimIndent()
         val result = checked(handle, command, emit = false)

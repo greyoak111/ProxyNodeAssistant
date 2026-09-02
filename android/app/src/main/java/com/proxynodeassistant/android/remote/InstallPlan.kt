@@ -97,6 +97,39 @@ internal data class InstallRouteIdentity(
     val email: String = "",
 )
 
+/**
+ * Secret-free result of the preflight used by the install/upgrade form.
+ *
+ * The remote probe returns only presence bits for the four retained login
+ * fields.  It never returns an account name or password, and a complete bit
+ * is accepted only when all four individual bits are present.  The actual
+ * preserve path remains authoritative: the runbook verifies the protected
+ * values again before committing an upgrade.
+ */
+internal data class CredentialReadiness(
+    val vpsUserPresent: Boolean = false,
+    val vpsPasswordPresent: Boolean = false,
+    val panelUserPresent: Boolean = false,
+    val panelPasswordPresent: Boolean = false,
+    val complete: Boolean = false,
+    val source: String = "unknown",
+) {
+    val isComplete: Boolean
+        get() = complete && vpsUserPresent && vpsPasswordPresent && panelUserPresent && panelPasswordPresent
+
+    /** A compact operator-facing summary; it contains no secret material. */
+    fun summary(): String = listOf(
+        "VPS user" to vpsUserPresent,
+        "VPS password" to vpsPasswordPresent,
+        "panel user" to panelUserPresent,
+        "panel password" to panelPasswordPresent,
+    ).joinToString(", ") { (label, present) -> "$label=${if (present) "present" else "missing"}" }
+
+    companion object {
+        val UNKNOWN = CredentialReadiness()
+    }
+}
+
 internal data class AndroidInstallPlan(
     val routeMode: InstallRouteMode,
     val coverChoice: String,

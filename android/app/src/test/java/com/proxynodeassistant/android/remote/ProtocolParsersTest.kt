@@ -69,6 +69,52 @@ class ProtocolParsersTest {
         assertTrue(ProtocolParsers.handoff(value).contains("XUI_USERNAME=legacy-panel"))
     }
 
+    @Test fun credentialReadinessAcceptsOnlyCompletePresenceBits() {
+        val value = """
+            noise
+            ${ProtocolParsers.CREDENTIAL_READINESS_BEGIN}
+            VPS_LOGIN_USER_PRESENT=1
+            VPS_LOGIN_PASSWORD_PRESENT=1
+            PANEL_USERNAME_PRESENT=1
+            PANEL_PASSWORD_PRESENT=1
+            COMPLETE=1
+            SOURCE=handoff
+            ${ProtocolParsers.CREDENTIAL_READINESS_END}
+        """.trimIndent()
+        val readiness = ProtocolParsers.credentialReadiness(value)
+        assertTrue(readiness.isComplete)
+        assertEquals("handoff", readiness.source)
+        assertEquals("VPS user=present, VPS password=present, panel user=present, panel password=present", readiness.summary())
+    }
+
+    @Test fun credentialReadinessRejectsSecretBearingOrInconsistentPayloads() {
+        val secret = "password-must-never-cross-preflight"
+        val withSecret = """
+            ${ProtocolParsers.CREDENTIAL_READINESS_BEGIN}
+            VPS_LOGIN_USER_PRESENT=1
+            VPS_LOGIN_PASSWORD_PRESENT=1
+            PANEL_USERNAME_PRESENT=1
+            PANEL_PASSWORD_PRESENT=1
+            COMPLETE=1
+            PANEL_PASSWORD=$secret
+            SOURCE=handoff
+            ${ProtocolParsers.CREDENTIAL_READINESS_END}
+        """.trimIndent()
+        assertThrows(IllegalArgumentException::class.java) { ProtocolParsers.credentialReadiness(withSecret) }
+
+        val inconsistent = """
+            ${ProtocolParsers.CREDENTIAL_READINESS_BEGIN}
+            VPS_LOGIN_USER_PRESENT=1
+            VPS_LOGIN_PASSWORD_PRESENT=0
+            PANEL_USERNAME_PRESENT=1
+            PANEL_PASSWORD_PRESENT=1
+            COMPLETE=1
+            SOURCE=handoff
+            ${ProtocolParsers.CREDENTIAL_READINESS_END}
+        """.trimIndent()
+        assertThrows(IllegalArgumentException::class.java) { ProtocolParsers.credentialReadiness(inconsistent) }
+    }
+
     @Test fun ss2022OnlyHandoffIsAcceptedAsUsefulRuntimeData() {
         val value = "${ProtocolParsers.HANDOFF_BEGIN}\nHANDOFF_RUN_STARTED=run-ss\nSS2022_LINK=ss://redacted@203.0.113.10:30443#ProxyNodeAssistant-SS2022-TCP\nSS2022_PORT=30443\n${ProtocolParsers.HANDOFF_END}"
         assertTrue(ProtocolParsers.handoff(value).contains("SS2022_PORT=30443"))
@@ -290,6 +336,27 @@ class ProtocolParsersTest {
         assertEquals("legacy-root", form.getValue("FORM_VPS_ACCOUNT"))
         assertEquals("legacy-panel", form.getValue("FORM_PANEL_ACCOUNT"))
         assertEquals("legacy-panel-password", form.getValue("FORM_PANEL_PASSWORD"))
+    }
+
+    @Test fun loginCredentialFormAcceptsProtectedStoreOnlyExport() {
+        // CURRENT-LOGIN-CREDENTIALS.env intentionally has no run marker. The
+        // Android read-only exporter adds a transport-local marker before
+        // concatenating the store, so a failed rotation cannot strand a
+        // complete credential set behind an empty HANDOFF-SECRETS file.
+        val payload = """
+            ${ProtocolParsers.HANDOFF_BEGIN}
+            HANDOFF_RUN_STARTED=android-read-only-export
+            VPS_LOGIN_USER=root
+            VPS_LOGIN_PASSWORD=store-vps
+            PANEL_USERNAME=operator
+            PANEL_PASSWORD=store-panel
+            ${ProtocolParsers.HANDOFF_END}
+        """.trimIndent()
+        val form = ProtocolParsers.loginCredentialForm(ProtocolParsers.handoff(payload))
+        assertEquals("root", form.getValue("FORM_VPS_ACCOUNT"))
+        assertEquals("store-vps", form.getValue("FORM_VPS_PASSWORD"))
+        assertEquals("operator", form.getValue("FORM_PANEL_ACCOUNT"))
+        assertEquals("store-panel", form.getValue("FORM_PANEL_PASSWORD"))
     }
 
     @Test fun loginCredentialFormPreservesIntentionalSecretSpaces() {

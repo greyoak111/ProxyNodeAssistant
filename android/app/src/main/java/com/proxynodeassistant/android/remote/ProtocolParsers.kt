@@ -42,6 +42,9 @@ object ProtocolParsers {
     const val TOOLKIT_END = "__PNA_TOOLKIT_PROBE_END__"
     const val NODE_IDENTITY_BEGIN = "__PNA_NODE_IDENTITY_V1_BEGIN__"
     const val NODE_IDENTITY_END = "__PNA_NODE_IDENTITY_V1_END__"
+    /** Secret-free install-form preflight markers. */
+    const val CREDENTIAL_READINESS_BEGIN = "__PNA_CREDENTIAL_READINESS_BEGIN__"
+    const val CREDENTIAL_READINESS_END = "__PNA_CREDENTIAL_READINESS_END__"
 
     private const val LEGACY_HANDOFF_BEGIN = "__TNA_HANDOFF_BEGIN__"
     private const val LEGACY_HANDOFF_END = "__TNA_HANDOFF_END__"
@@ -120,6 +123,48 @@ object ProtocolParsers {
             "handoff contains no verified credential or runtime field"
         }
         return payload
+    }
+
+    /**
+     * Parse the read-only credential readiness block emitted by the client
+     * preflight.  Only 0/1 presence bits are accepted; account/password values
+     * are intentionally not part of this protocol and therefore can never be
+     * returned to the Android form.
+     */
+    internal fun credentialReadiness(value: String): CredentialReadiness {
+        val payload = markedBlock(value, CREDENTIAL_READINESS_BEGIN, CREDENTIAL_READINESS_END)
+        val values = kv(payload)
+        val required = setOf(
+            "VPS_LOGIN_USER_PRESENT",
+            "VPS_LOGIN_PASSWORD_PRESENT",
+            "PANEL_USERNAME_PRESENT",
+            "PANEL_PASSWORD_PRESENT",
+            "COMPLETE",
+        )
+        require(required.all { values.containsKey(it) }) { "credential readiness marker is incomplete" }
+        // A readiness response must not carry a secret-bearing field.  This
+        // guard protects the parser if a legacy wrapper accidentally streams a
+        // full handoff inside the marked block.
+        require(values.keys.none { key ->
+            (key.contains("PASSWORD") || key.contains("USERNAME") || key.contains("ACCOUNT")) &&
+                !key.endsWith("_PRESENT")
+        }) { "credential readiness unexpectedly contains credential data" }
+        fun bit(key: String): Boolean = when (values.getValue(key)) {
+            "0" -> false
+            "1" -> true
+            else -> throw IllegalArgumentException("credential readiness marker $key is invalid")
+        }
+        val vpsUser = bit("VPS_LOGIN_USER_PRESENT")
+        val vpsPassword = bit("VPS_LOGIN_PASSWORD_PRESENT")
+        val panelUser = bit("PANEL_USERNAME_PRESENT")
+        val panelPassword = bit("PANEL_PASSWORD_PRESENT")
+        val complete = bit("COMPLETE")
+        require(complete == (vpsUser && vpsPassword && panelUser && panelPassword)) {
+            "credential readiness complete bit disagrees with field presence"
+        }
+        val source = values["SOURCE"].orEmpty().ifBlank { "unknown" }
+        require(source.matches(Regex("^[A-Za-z0-9_.:-]{1,32}$"))) { "credential readiness source is invalid" }
+        return CredentialReadiness(vpsUser, vpsPassword, panelUser, panelPassword, complete, source)
     }
 
     /**
