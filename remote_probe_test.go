@@ -80,6 +80,7 @@ func TestCredentialReadinessAndHandoffCommandsKeepProtectedStoresInScope(t *test
 
 	handoff := remoteHandoffCommand()
 	for _, required := range []string{
+		"HANDOFF_RUN_STARTED=read-only-export",
 		"/root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env",
 		"/root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env",
 		"/root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env",

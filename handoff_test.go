@@ -282,6 +282,25 @@ func TestCredentialReadinessParserIsPresenceOnly(t *testing.T) {
 	}
 }
 
+func TestValidateHandoffAcceptsProtectedStoreTransportMarker(t *testing.T) {
+	// A failed run may leave only CURRENT-LOGIN-CREDENTIALS.env.  The
+	// exporter adds a non-secret transport marker so this store-only payload
+	// still passes the structural handoff gate and can be rendered by the
+	// complete formatter.
+	input := strings.Join([]string{
+		handoffBegin,
+		"HANDOFF_RUN_STARTED=read-only-export",
+		"VPS_LOGIN_USER=root",
+		"VPS_LOGIN_PASSWORD=retained-vps",
+		"PANEL_USERNAME=operator",
+		"PANEL_PASSWORD=retained-panel",
+		handoffEnd,
+	}, "\n")
+	if _, err := validateHandoff(input); err != nil {
+		t.Fatalf("store-only transport handoff was rejected: %v", err)
+	}
+}
+
 func TestExtractMarkedBlockDoesNotStopAtNestedSameMarkers(t *testing.T) {
 	input := strings.Join([]string{
 		"noise",

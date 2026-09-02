@@ -2323,6 +2323,13 @@ func remoteHandoffCommand() string {
 	// expressions are intentionally read-only and only target root-owned
 	// handoff directories; no arbitrary paths or secret values enter argv.
 	command := "printf '%s\\n' " + shQuote(handoffBegin) + "; " +
+		// CURRENT-LOGIN-CREDENTIALS.env is a protected key/value store and does
+		// not carry the run marker that validateHandoff requires.  Add a
+		// transport-local marker so a store-only recovery remains renderable
+		// after an interrupted run.  It contains no account or password value;
+		// a real HANDOFF_RUN_STARTED value from an archive/live file still wins
+		// under parseKV's last-value-wins semantics.
+		"printf 'HANDOFF_RUN_STARTED=read-only-export\\n'; " +
 		// Stored handoffs can contain a complete marker block copied from an
 		// older run.  Do not let those nested markers terminate the outer
 		// transport block before newer archive/live files are emitted.  Keep the
