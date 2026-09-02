@@ -223,6 +223,19 @@ class ProtocolParsersTest {
         assertEquals("archived-panel-password", form.getValue("FORM_PANEL_PASSWORD"))
     }
 
+    @Test fun loginCredentialFormPreservesIntentionalSecretSpaces() {
+        val payload = """
+            HANDOFF_RUN_STARTED=spaces
+            VPS_LOGIN_USER=root
+            VPS_LOGIN_PASSWORD=  vps-secret-with-spaces  
+            PANEL_USERNAME=operator
+            PANEL_PASSWORD=  panel-secret-with-spaces  
+        """.trimIndent()
+        val form = ProtocolParsers.loginCredentialForm(payload)
+        assertEquals("  vps-secret-with-spaces  ", form.getValue("FORM_VPS_PASSWORD"))
+        assertEquals("  panel-secret-with-spaces  ", form.getValue("FORM_PANEL_PASSWORD"))
+    }
+
     @Test fun cdnXhttpLinkRequiresTheExactTlsProfile() {
         val link = "vless://8f6290c1-91f0-4509-a181-7cfe275ab7dc@www.example.com:8443?type=xhttp&encryption=none&path=%2F614d2bd1cf22d6072ec3b0f93c8d6c81%2F&host=www.example.com&mode=packet-up&security=tls&sni=www.example.com&fp=chrome#PNA-CDN-XHTTP-STAGE"
         val parsed = ProtocolParsers.cdnXHttpLink(link)

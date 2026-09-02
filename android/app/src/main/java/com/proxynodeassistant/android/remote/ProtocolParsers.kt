@@ -499,13 +499,16 @@ object ProtocolParsers {
     private fun credentialValue(legacy: String, vararg keys: String): String {
         val wanted = keys.toSet()
         var found = ""
-        legacy.replace("\r\n", "\n").lines().forEach { raw ->
-            val line = raw.trim()
+        // Keep the value bytes exactly as emitted after the first `=`.  In
+        // particular, a user-selected password may intentionally start or
+        // end with spaces.  Only the key/validation view is trimmed; the raw
+        // candidate is returned to the protected handoff form unchanged.
+        legacy.replace("\r\n", "\n").split('\n').forEach { line ->
             val separator = line.indexOf('=')
             if (separator <= 0) return@forEach
             val key = line.substring(0, separator).trim()
             if (key !in wanted) return@forEach
-            val candidate = line.substring(separator + 1).trim()
+            val candidate = line.substring(separator + 1)
             if (usableCredential(candidate)) found = candidate
         }
         // The concatenated stream is ordered archive -> current, so the last
@@ -516,8 +519,13 @@ object ProtocolParsers {
     }
 
     private fun usableCredential(value: String): Boolean {
-        if (value.isBlank()) return false
-        val upper = value.uppercase(Locale.ROOT)
+        // Validate a normalized view, but never return that normalized view:
+        // leading/trailing spaces are valid custom-secret characters.  Reject
+        // controls that cannot safely survive the handoff line protocol.
+        if (value.any { it == '\u0000' || it == '\r' || it == '\n' }) return false
+        val normalized = value.trim()
+        if (normalized.isBlank()) return false
+        val upper = normalized.uppercase(Locale.ROOT)
         return !upper.startsWith("UNKNOWN") &&
             !upper.startsWith("NOT_RETAINED") && upper != "SSH_KEY_ONLY"
     }
