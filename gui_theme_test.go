@@ -81,3 +81,22 @@ func TestGUITextInputsDeclareReadableDarkColors(t *testing.T) {
 		}
 	}
 }
+
+func TestGUISS2022AllowlistHasSeparateLocalAndCRUDActions(t *testing.T) {
+	source, err := os.ReadFile("gui/ProxyNodeAssistant.Gui.cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		`Op("19", "security", "识别本机 IP 并添加 SS2022 白名单"`,
+		`Op("24", "security", "管理 SS2022 白名单"`,
+		`Detect local IP and add to SS2022 allowlist`,
+		`Manage SS2022 allowlist`,
+		`freely add/remove`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("GUI SS2022 allowlist action is missing %q", required)
+		}
+	}
+}

@@ -252,7 +252,8 @@ func (a *App) printMenu() {
 		a.println("[16] 自适应性能档位：检测 / 低配 / 标准 / 高配 / 回滚")
 		a.println("[17] SSH/vnStat 流量估算与 70/85/95% 预警")
 		a.println("[18] 全量拆除本工具施工并恢复原始基线（高风险，先下载救援包）")
-		a.println("[19] SS2022 来源白名单：识别当前本地公网 IP / 对照 VPS / 明确添加")
+		a.println("[19] SS2022 来源白名单：识别本机 IP / 对照 VPS / 添加当前来源")
+		a.println("[24] SS2022 白名单管理：查看 / 添加指定 IPv4 / 删除")
 		a.println("[20] 安全事件与基线：聚合 SSH / 防火墙 / Nginx / Fail2ban 记录")
 		a.println("[22] 线路拓扑：灰云 / 橙云 / 双路的状态、施工、切换与回滚")
 		a.println("[23] 更换 VPS 公网 IP 后安全重绑定（复用原 key；身份不符即停止）")
@@ -282,7 +283,8 @@ func (a *App) printMenu() {
 		a.println("[16] Adaptive performance: detect / low / standard / high / rollback")
 		a.println("[17] SSH/vnStat traffic estimate with 70/85/95% warnings")
 		a.println("[18] Fully dismantle managed construction and restore the original baseline (high risk; rescue first)")
-		a.println("[19] SS2022 source allowlist: detect local public IP / compare VPS view / explicitly add")
+		a.println("[19] SS2022 source allowlist: detect local IP / compare VPS view / add current source")
+		a.println("[24] SS2022 allowlist manager: view / add exact IPv4 / remove")
 		a.println("[20] Security events and baseline: aggregate SSH / firewall / Nginx / Fail2ban evidence")
 		a.println("[22] Link topology: gray / orange / dual status, construction, switching, and rollback")
 		a.println("[23] Safely rebind a changed VPS public IP (reuse the original key; stop on identity mismatch)")
@@ -379,6 +381,8 @@ func (a *App) executeActionChoice(choice string) (bool, error) {
 		return true, a.runRemoteAction(a.dismantleManagedNode)
 	case "19":
 		return true, a.runRemoteAction(a.manageSS2022Allowlist)
+	case "24":
+		return true, a.runRemoteAction(a.manageSS2022AllowlistEntries)
 	case "20":
 		return true, a.runRemoteAction(a.manageSecurityEvents)
 	case "22":

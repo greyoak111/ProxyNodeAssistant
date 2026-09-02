@@ -328,6 +328,250 @@ func (a *App) runThreeRouteReachability(c Connection) {
 	a.printRouteProbe(tcpRouteProbe("SS2022", c.Host, ssPort))
 }
 
+const (
+	ss2022AllowlistBegin = "PNA_SS2022_ALLOWLIST_BEGIN"
+	ss2022AllowlistEnd   = "PNA_SS2022_ALLOWLIST_END"
+)
+
+// ss2022ScriptCommand keeps the remote helper selection in one place.  A
+// freshly upgraded node uses the PNA path, while an in-place upgrade may
+// still have the legacy symlink.  Every argument is shell-quoted because the
+// command is sent through a remote bash -lc wrapper.
+func ss2022ScriptCommand(args ...string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shQuote(arg))
+	}
+	command := "root=" + shQuote(remoteRoot) + "; " +
+		"[ -x \"$root/linux/23-ss2022-tcp.sh\" ] || root=" + shQuote(legacyTextRemoteRoot) + "; " +
+		"[ -x \"$root/linux/23-ss2022-tcp.sh\" ] || root=" + shQuote(legacyRunbookRemoteRoot) + "; " +
+		"[ -x \"$root/linux/23-ss2022-tcp.sh\" ] || { printf 'PNA_SS2022_ERROR=SCRIPT_MISSING\\n' >&2; exit 62; }; " +
+		"bash \"$root/linux/23-ss2022-tcp.sh\""
+	if len(quoted) > 0 {
+		command += " " + strings.Join(quoted, " ")
+	}
+	return command
+}
+
+// parseSS2022Allowlist accepts the marker block emitted by the remote helper
+// and deliberately permits an empty block: an empty list is a valid, but
+// locked-down, state because the firewall drops every source in that case.
+func parseSS2022Allowlist(output string) ([]string, error) {
+	lines := strings.Split(strings.ReplaceAll(stripANSI(output), "\r\n", "\n"), "\n")
+	inBlock := false
+	foundBegin := false
+	foundEnd := false
+	entries := []string{}
+	seen := map[string]bool{}
+	for _, raw := range lines {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		switch line {
+		case ss2022AllowlistBegin:
+			if inBlock || foundBegin {
+				return nil, errors.New("SS2022 allowlist output contained duplicate begin markers")
+			}
+			inBlock = true
+			foundBegin = true
+			continue
+		case ss2022AllowlistEnd:
+			if !inBlock {
+				return nil, errors.New("SS2022 allowlist output contained an unexpected end marker")
+			}
+			inBlock = false
+			foundEnd = true
+			continue
+		}
+		if !inBlock || line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "SOURCE=") {
+			return nil, fmt.Errorf("SS2022 allowlist output contained an unexpected line %q", line)
+		}
+		source := strings.TrimSpace(strings.TrimPrefix(line, "SOURCE="))
+		normalized, ok := normalizePublicIPv4(source)
+		if !ok {
+			return nil, fmt.Errorf("SS2022 allowlist output contained an invalid IPv4 %q", source)
+		}
+		if seen[normalized] {
+			return nil, fmt.Errorf("SS2022 allowlist output contained duplicate IPv4 %q", normalized)
+		}
+		seen[normalized] = true
+		entries = append(entries, normalized)
+	}
+	if !foundBegin || !foundEnd || inBlock {
+		return nil, errors.New("SS2022 allowlist output markers were incomplete")
+	}
+	return entries, nil
+}
+
+func (a *App) prepareSS2022AllowlistConnection() (Connection, error) {
+	c, err := a.readyConn()
+	if err != nil {
+		return Connection{}, err
+	}
+	if err := a.ensureToolkit(c); err != nil {
+		return Connection{}, err
+	}
+	return c, nil
+}
+
+// showSS2022Allowlist prints both the service state and the exact source list
+// and returns the parsed addresses so the delete flow can offer list-number
+// selection as well as free-form IPv4 input.
+func (a *App) showSS2022Allowlist(c Connection) ([]string, error) {
+	status := a.rootCapture(c, ss2022ScriptCommand("status"))
+	if strings.TrimSpace(status.Stdout) != "" {
+		a.println(strings.TrimSpace(status.Stdout))
+	}
+	if !status.OK() {
+		a.println(a.msg("[WARN] SS2022 服务状态检查未通过，但仍继续读取白名单：", "[WARN] SS2022 service status is not healthy; continuing to read the allowlist: ") + processFailureDetail(status))
+	}
+	list := a.rootCapture(c, ss2022ScriptCommand("list"))
+	if !list.OK() {
+		return nil, fmt.Errorf("SS2022 allowlist list failed (exit %d): %s", list.ExitCode, processFailureDetail(list))
+	}
+	entries, err := parseSS2022Allowlist(list.Stdout)
+	if err != nil {
+		return nil, err
+	}
+	a.println()
+	a.println(a.msg(fmt.Sprintf("当前 SS2022 精确 IPv4 白名单（%d 条）：", len(entries)), fmt.Sprintf("Current exact SS2022 IPv4 allowlist (%d entries):", len(entries))))
+	if len(entries) == 0 {
+		a.println(a.msg("  （空：防火墙会拒绝所有 SS2022 来源）", "  (empty: the firewall rejects every SS2022 source)"))
+	} else {
+		for index, source := range entries {
+			a.println(fmt.Sprintf("  [%d] %s", index+1, source))
+		}
+	}
+	return entries, nil
+}
+
+func promptSS2022Source(a *App, label string, entries []string, allowIndex bool) (string, error) {
+	for {
+		value := strings.TrimSpace(a.prompt(label))
+		if a.inputClosed {
+			return "", errInputClosed
+		}
+		if value == "" || strings.EqualFold(value, "q") || value == "0" {
+			return "", nil
+		}
+		if allowIndex {
+			if index, err := strconv.Atoi(value); err == nil && index >= 1 && index <= len(entries) {
+				return entries[index-1], nil
+			}
+		}
+		if normalized, ok := normalizePublicIPv4(value); ok {
+			return normalized, nil
+		}
+		a.println(a.msg("请输入精确公网 IPv4（不能是网段）；输入 0 取消。", "Enter one exact public IPv4 (CIDR ranges are not accepted), or 0 to cancel."))
+	}
+}
+
+func (a *App) mutateSS2022Allowlist(c Connection, mode, source string) error {
+	result := a.rootCapture(c, ss2022ScriptCommand(mode, source))
+	if !result.OK() {
+		return fmt.Errorf("SS2022 allowlist %s failed (exit %d): %s", mode, result.ExitCode, processFailureDetail(result))
+	}
+	if strings.TrimSpace(result.Stdout) != "" {
+		a.println(strings.TrimSpace(result.Stdout))
+	}
+	return nil
+}
+
+// manageSS2022AllowlistEntries is the explicit CRUD entry point.  It is kept
+// separate from menu [19], whose job is to discover the current local source
+// and offer a one-shot add.  This makes the two workflows visible side by
+// side in both the console menu and the graphical action cards.
+func (a *App) manageSS2022AllowlistEntries() error {
+	a.println(a.msg("SS2022 白名单管理：先显示当前状态，然后可自由查看、添加或删除精确 IPv4。", "SS2022 allowlist manager: show the current state first, then freely view, add, or remove exact IPv4 sources."))
+	c, err := a.prepareSS2022AllowlistConnection()
+	if err != nil {
+		return err
+	}
+	if _, err := a.showSS2022Allowlist(c); err != nil {
+		return err
+	}
+	for {
+		a.println()
+		a.println(a.msg("[1] 查看当前白名单", "[1] View current allowlist"))
+		a.println(a.msg("[2] 添加指定 IPv4", "[2] Add an exact IPv4"))
+		a.println(a.msg("[3] 删除指定 IPv4（可输入地址或列表序号）", "[3] Remove an IPv4 (enter its address or list number)"))
+		a.println(a.msg("[0] 返回", "[0] Return"))
+		choice := strings.ToLower(strings.TrimSpace(a.prompt(a.msg("选择白名单操作", "Choose an allowlist action"))))
+		if a.inputClosed {
+			return errInputClosed
+		}
+		switch choice {
+		case "1", "l", "list":
+			if _, err := a.showSS2022Allowlist(c); err != nil {
+				return err
+			}
+		case "2", "a", "add":
+			source, err := promptSS2022Source(a, a.msg("要添加的精确公网 IPv4（0 取消）", "Exact public IPv4 to add (0 cancels)"), nil, false)
+			if err != nil {
+				return err
+			}
+			if source == "" {
+				continue
+			}
+			if !a.yes(fmt.Sprintf(a.msg("确认把 %s 加入 SS2022 白名单？", "Add %s to the SS2022 allowlist?"), source), false) {
+				a.println(a.msg("已取消添加。", "Add cancelled."))
+				continue
+			}
+			if err := a.mutateSS2022Allowlist(c, "allow", source); err != nil {
+				return err
+			}
+			if _, err := a.showSS2022Allowlist(c); err != nil {
+				return err
+			}
+		case "3", "r", "remove", "delete":
+			entries, err := a.showSS2022Allowlist(c)
+			if err != nil {
+				return err
+			}
+			if len(entries) == 0 {
+				a.println(a.msg("当前没有可删除的白名单项。", "There are no allowlist entries to remove."))
+				continue
+			}
+			source, err := promptSS2022Source(a, a.msg("要删除的 IPv4 或列表序号（0 取消）", "IPv4 or list number to remove (0 cancels)"), entries, true)
+			if err != nil {
+				return err
+			}
+			if source == "" {
+				continue
+			}
+			present := false
+			for _, candidate := range entries {
+				if candidate == source {
+					present = true
+					break
+				}
+			}
+			if !present {
+				a.println(a.msg("该 IPv4 不在当前白名单中，没有修改。", "That IPv4 is not in the current allowlist; nothing was changed."))
+				continue
+			}
+			if len(entries) == 1 {
+				a.println(a.msg("警告：删除最后一项后，SS2022 将拒绝所有来源。", "Warning: removing the last entry will make SS2022 reject every source."))
+			}
+			if !a.yes(fmt.Sprintf(a.msg("确认删除白名单中的 %s？", "Remove %s from the allowlist?"), source), false) {
+				a.println(a.msg("已取消删除。", "Remove cancelled."))
+				continue
+			}
+			if err := a.mutateSS2022Allowlist(c, "remove", source); err != nil {
+				return err
+			}
+			if _, err := a.showSS2022Allowlist(c); err != nil {
+				return err
+			}
+		case "0", "q", "quit", "exit", "":
+			return nil
+		default:
+			a.println(a.msg("无效选择，请输入 1、2、3 或 0。", "Invalid choice; enter 1, 2, 3, or 0."))
+		}
+	}
+}
+
 func (a *App) manageSS2022Allowlist() error {
 	a.println(a.msg("先在本机绕过 HTTP 代理环境变量，多源识别当前公网 IPv4；随后才登录 VPS 对照 SSH 实际来源。", "First, detect the current public IPv4 locally through multiple direct lookups that bypass HTTP proxy environment variables; then log in to the VPS and compare the SSH-observed source."))
 	local, localErr := localPublicIPv4()
