@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -60,6 +61,38 @@ namespace ProxyNodeAssistant.Gui
         private const string TunnelSessionMarker = "PANEL_TUNNEL_SESSION_ACTIVE";
         private const string GuiPromptPrefix = "PNA_GUI_PROMPT_B64=";
         private const string GuiSecretPromptPrefix = "PNA_GUI_SECRET_B64=";
+
+        // The ARM64 GUI is compiled as AnyCPU by the legacy .NET Framework
+        // compiler.  That means it can start on an x64 machine even though
+        // its embedded Go workflow engine is ARM64-only.  Windows otherwise
+        // reports this late as a generic "invalid image" dialog.  Inspect the
+        // embedded PE machine before extracting/starting it so the user gets
+        // an actionable architecture message instead.
+        private const ushort ImageFileMachineI386 = 0x014c;
+        private const ushort ImageFileMachineAmd64 = 0x8664;
+        private const ushort ImageFileMachineArm64 = 0xAA64;
+        private const ushort ProcessorArchitectureIntel = 0;
+        private const ushort ProcessorArchitectureAmd64 = 9;
+        private const ushort ProcessorArchitectureArm64 = 12;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeSystemInfo
+        {
+            public ushort ProcessorArchitecture;
+            public ushort Reserved;
+            public uint PageSize;
+            public IntPtr MinimumApplicationAddress;
+            public IntPtr MaximumApplicationAddress;
+            public IntPtr ActiveProcessorMask;
+            public uint NumberOfProcessors;
+            public uint ProcessorType;
+            public uint AllocationGranularity;
+            public ushort ProcessorLevel;
+            public ushort ProcessorRevision;
+        }
+
+        [DllImport("kernel32.dll")]
+        private static extern void GetNativeSystemInfo(out NativeSystemInfo systemInfo);
 
         private sealed class RuntimeFiles
         {
@@ -1405,6 +1438,131 @@ namespace ProxyNodeAssistant.Gui
             }));
         }
 
+        private static byte[] ReadEmbeddedExecutable(Assembly assembly, string resourceName, int minimumBytes)
+        {
+            using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+            {
+                if (stream == null) throw new InvalidOperationException("Embedded runtime resource is missing: " + resourceName);
+                using (MemoryStream memory = new MemoryStream())
+                {
+                    stream.CopyTo(memory);
+                    byte[] payload = memory.ToArray();
+                    if (payload.Length < minimumBytes)
+                    {
+                        throw new InvalidOperationException("Embedded runtime payload is unexpectedly small: " + resourceName);
+                    }
+                    return payload;
+                }
+            }
+        }
+
+        private static string NativeWindowsArchitecture()
+        {
+            try
+            {
+                NativeSystemInfo systemInfo;
+                GetNativeSystemInfo(out systemInfo);
+                switch (systemInfo.ProcessorArchitecture)
+                {
+                    case ProcessorArchitectureAmd64: return "x64";
+                    case ProcessorArchitectureArm64: return "ARM64";
+                    case ProcessorArchitectureIntel: return "x86";
+                }
+            }
+            catch
+            {
+                // Fall through to the documented environment fallback.  The
+                // API is present on supported Windows versions, but this keeps
+                // the diagnostic usable under compatibility layers as well.
+            }
+            string native = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITEW6432");
+            if (String.IsNullOrWhiteSpace(native)) native = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE");
+            if (!String.IsNullOrWhiteSpace(native))
+            {
+                native = native.Trim().ToUpperInvariant();
+                if (native == "AMD64" || native == "IA64") return "x64";
+                if (native == "ARM64") return "ARM64";
+                if (native == "X86" || native == "I386") return "x86";
+            }
+            return Environment.Is64BitOperatingSystem ? "x64" : "x86";
+        }
+
+        private static ushort ReadUInt16(byte[] payload, int offset)
+        {
+            if (payload == null || offset < 0 || offset > payload.Length - 2) return 0;
+            return (ushort)(payload[offset] | (payload[offset + 1] << 8));
+        }
+
+        private static int ReadInt32(byte[] payload, int offset)
+        {
+            if (payload == null || offset < 0 || offset > payload.Length - 4) return -1;
+            return payload[offset] |
+                   (payload[offset + 1] << 8) |
+                   (payload[offset + 2] << 16) |
+                   (payload[offset + 3] << 24);
+        }
+
+        private static string EmbeddedPeArchitecture(byte[] payload)
+        {
+            if (payload == null || payload.Length < 64 || payload[0] != (byte)'M' || payload[1] != (byte)'Z') return "invalid";
+            int peOffset = ReadInt32(payload, 0x3c);
+            if (peOffset < 0 || peOffset > payload.Length - 6 ||
+                payload[peOffset] != (byte)'P' || payload[peOffset + 1] != (byte)'E' ||
+                payload[peOffset + 2] != 0 || payload[peOffset + 3] != 0) return "invalid";
+            ushort machine = ReadUInt16(payload, peOffset + 4);
+            switch (machine)
+            {
+                case ImageFileMachineI386: return "x86";
+                case ImageFileMachineAmd64: return "x64";
+                case ImageFileMachineArm64: return "ARM64";
+                default: return "unknown (0x" + machine.ToString("X4") + ")";
+            }
+        }
+
+        private static bool IsPayloadArchitectureSupported(string payloadArchitecture, string hostArchitecture)
+        {
+            // x86 Windows binaries are supported by x64 and ARM64 Windows via
+            // their compatibility layers.  x64 is likewise supported on
+            // current ARM64 Windows, while ARM64 cannot run on x86/x64.
+            if (payloadArchitecture == "x86") return true;
+            if (hostArchitecture == "ARM64") return payloadArchitecture == "ARM64" || payloadArchitecture == "x64";
+            if (hostArchitecture == "x64") return payloadArchitecture == "x64";
+            return false;
+        }
+
+        private static void ValidateEmbeddedPayloadArchitecture(byte[] payload)
+        {
+            string payloadArchitecture = EmbeddedPeArchitecture(payload);
+            string hostArchitecture = NativeWindowsArchitecture();
+            if (payloadArchitecture == "invalid")
+            {
+                throw new InvalidOperationException(
+                    "内嵌工作流引擎不是有效的 Windows 可执行文件，请重新下载完整的 ProxyNodeAssistant v1.0.0 包。\n" +
+                    "The embedded workflow engine is not a valid Windows executable. Re-download the complete ProxyNodeAssistant v1.0.0 package.");
+            }
+            if (payloadArchitecture.StartsWith("unknown", StringComparison.Ordinal) ||
+                !IsPayloadArchitectureSupported(payloadArchitecture, hostArchitecture))
+            {
+                string recommended = hostArchitecture == "x86"
+                    ? "ProxyNodeAssistant-v1.0.0-win32.exe"
+                    : hostArchitecture == "ARM64"
+                        ? "ProxyNodeAssistant-v1.0.0-win-arm64.exe"
+                        : "ProxyNodeAssistant-v1.0.0-win64.exe";
+                throw new InvalidOperationException(
+                    "当前 Windows 是 " + hostArchitecture + "，但此文件内嵌的工作流引擎是 " + payloadArchitecture + "。请启动同目录的 " + recommended + "。\n" +
+                    "This GUI embeds a " + payloadArchitecture + " workflow engine, but the current Windows installation is " + hostArchitecture + ". Launch " + recommended + " from the same directory.");
+            }
+        }
+
+        // Called before WPF startup so an accidentally selected ARM64 GUI on
+        // an Intel/AMD PC cannot reach Process.Start and trigger Windows'
+        // opaque SystemResourceNotifyWindow dialog.
+        internal static void ValidateEmbeddedRuntimeArchitecture(Assembly assembly)
+        {
+            byte[] payload = ReadEmbeddedExecutable(assembly, CliResourceName, 1024 * 1024);
+            ValidateEmbeddedPayloadArchitecture(payload);
+        }
+
         private RuntimeFiles EnsureRuntimeExtracted()
         {
             RuntimeFiles runtime = new RuntimeFiles();
@@ -1416,17 +1574,11 @@ namespace ProxyNodeAssistant.Gui
         private string ExtractEmbeddedExecutable(string resourceName, string fileStem, int minimumBytes)
         {
             Assembly assembly = Assembly.GetExecutingAssembly();
-            byte[] payload;
-            using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+            byte[] payload = ReadEmbeddedExecutable(assembly, resourceName, minimumBytes);
+            if (String.Equals(resourceName, CliResourceName, StringComparison.Ordinal))
             {
-                if (stream == null) throw new InvalidOperationException("Embedded runtime resource is missing: " + resourceName);
-                using (MemoryStream memory = new MemoryStream())
-                {
-                    stream.CopyTo(memory);
-                    payload = memory.ToArray();
-                }
+                ValidateEmbeddedPayloadArchitecture(payload);
             }
-            if (payload.Length < minimumBytes) throw new InvalidOperationException("Embedded runtime payload is unexpectedly small: " + resourceName);
             string hash = Sha256(payload);
             string directory = IOPath.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ProxyNodeAssistant", "v" + Version);
             Directory.CreateDirectory(directory);
@@ -2015,6 +2167,7 @@ namespace ProxyNodeAssistant.Gui
             try
             {
                 Assembly assembly = Assembly.GetExecutingAssembly();
+                MainController.ValidateEmbeddedRuntimeArchitecture(assembly);
                 Window window;
                 using (Stream stream = assembly.GetManifestResourceStream("ProxyNodeAssistant.MainWindow.xaml"))
                 {

@@ -207,6 +207,10 @@ try {
         throw "GUI EXE is too small to contain the embedded CLI"
     }
 
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\test-gui-architecture-static.ps1") `
+        -GuiPath $GuiExe -CliPath $CliExe -Architecture $Architecture
+    if ($LASTEXITCODE -ne 0) { throw "GUI architecture guard/static validation failed" }
+
     if (-not $SkipRuntimeSmoke) {
         $previewProcess = Start-Process -FilePath $GuiExe -ArgumentList @("--render-preview", ('"' + $GuiPreview + '"')) -PassThru -Wait
         if ($previewProcess.ExitCode -ne 0) {
