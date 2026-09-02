@@ -4,7 +4,7 @@
 
 Android 版是原生 Kotlin + Jetpack Compose 应用，不是网页壳、Termux 脚本或远程桌面。它在手机内完成 SSH 认证、Host Key 校验、SCP 传输、交互提示、日志、凭据交接和 127.0.0.1 面板隧道，远端施工继续复用与 Windows 正式版完全相同的 `ProxyNodeAssistant v1.0.0` 工具包。
 
-最低 Android 7.0（API 24），面向 Android 16（target API 36）。APK 是 universal 包，可安装在常见 ARM64、ARMv7 和 x86_64 Android 设备上；SSH 部分为纯 Java/Kotlin，不要求 root。本次重置版显示版本 `1.0.0`、内部构建修订 `106`、`versionCode=1000000`，并保持原 applicationId 与原发布签名，可直接覆盖安装先前 Android 正式构建。
+最低 Android 7.0（API 24），面向 Android 16（target API 36）。APK 是 universal 包，可安装在常见 ARM64、ARMv7 和 x86_64 Android 设备上；SSH 部分为纯 Java/Kotlin，不要求 root。本次重置版显示版本 `1.0.0`、内部构建修订 `112`、`versionCode=1000000`，并保持原 applicationId 与原发布签名，可直接覆盖安装先前 Android 正式构建。
 
 本分支以稳定的 v0.9.0 Android 功能面为基线：不包含后来试验性的本机 admin/恢复、UI 门禁、设备身份/准入、controller/邀请/租约或网盘。普通的“按 VPS 绑定 SSH 登录 key”仍保留，它只是登录凭据管理。
 
