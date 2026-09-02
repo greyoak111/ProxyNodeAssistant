@@ -32,6 +32,12 @@ clear_credential_values() {
   CREDENTIAL_SECRET=""
   CREDENTIAL_ACCOUNT=""
   CREDENTIAL_MODE=""
+  # These are base64 encodings of the custom values.  They are not plaintext,
+  # but clear them too so a long-lived maintenance shell does not keep a
+  # reusable credential representation after the operation returns.
+  encoded=""
+  account_encoded=""
+  password_encoded=""
 }
 
 credential_b64() {
