@@ -100,23 +100,28 @@ if ($toolkitOnlyBranchIndex -lt 0 -or $fullPlanIndex -lt 0 -or $toolkitOnlyBranc
 $appUi = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppUi.kt"
 Assert-Match $appUi 'BUILD 1\.0\.0-R104 / ANDROID' "Android UI build label is not revision R104"
 
-# Opening a connection dialog must not silently select the first history row.
-# The list remains visible, while the user explicitly taps a card to copy its
-# host/user/port into the form.  Password deliberately remains non-saveable so
-# a transient secret is never persisted by Compose.
-Assert-Match $appUi 'var host by rememberSaveable\(action\.code\) \{ mutableStateOf\(""\) \}' "Connection dialog host no longer starts blank"
-Assert-Match $appUi 'var user by rememberSaveable\(action\.code\) \{ mutableStateOf\("root"\) \}' "Connection dialog user default is not root"
-Assert-Match $appUi 'var port by rememberSaveable\(action\.code\) \{ mutableStateOf\("22"\) \}' "Connection dialog port default is not 22"
-Assert-NoMatch $appUi 'targets\.firstOrNull\(\)\?\.(id|host|user|port)' "Connection dialog still auto-fills from the first recent target"
-Assert-Match $appUi 'clickable \{ host = target\.host; user = target\.user; port = target\.port\.toString\(\) \}' "Recent-target cards no longer explicitly apply on click"
+# Opening a connection dialog restores only the latest non-secret endpoint.
+# A corresponding bound key may be selected, but a missing key leaves auth
+# unselected so the user must explicitly choose a method.  Password state must
+# remain non-saveable.
+Assert-Match $appUi 'val latestTarget = targets\.firstOrNull\(\)' "Connection dialog does not inspect the latest recent target"
+Assert-Match $appUi 'rememberSaveable\(action\.code, targetIdentity\) \{ mutableStateOf\(latestTarget\?\.host\.orEmpty\(\)\) \}' "Connection dialog host is not initialized from the latest target"
+Assert-Match $appUi 'rememberSaveable\(action\.code, targetIdentity\) \{ mutableStateOf\(latestTarget\?\.user \?: "root"\) \}' "Connection dialog user is not initialized from the latest target"
+Assert-Match $appUi 'rememberSaveable\(action\.code, targetIdentity\) \{ mutableStateOf\(\(latestTarget\?\.port \?: 22\)\.toString\(\)\) \}' "Connection dialog port is not initialized from the latest target"
+Assert-Match $appUi 'rememberSaveable\(action\.code, targetIdentity\) \{[\s\S]*mutableStateOf\(defaultAuthModeForTarget\(latestTarget, keys\)\)' "Connection dialog does not gate managed-key default on a local bound key"
+Assert-Match $appUi 'internal fun defaultAuthModeForTarget\(target: NodeTarget\?, keys: List<ManagedKeyRecord>\): AuthMode\?' "Android connection auth default helper is missing"
+Assert-Match $appUi 'mode != null && \(mode == AuthMode\.MANAGED_KEY \|\| password\.isNotBlank\(\)\)' "Connection dialog can launch without an explicit authentication choice"
+Assert-Match $appUi 'keys\.any \{ it\.targetId == target\.id && it\.status == KeyStatus\.BOUND \}' "Recent-target cards do not check the matching bound key"
+Assert-Match $appUi '已自动载入最近目标的地址' "Connection dialog does not explain latest-target auto-load"
 Assert-Match $appUi 'var password by remember \{ mutableStateOf\(""\) \}' "Connection dialog password became saveable"
 
 $desktopGui = Read-RepoFile "gui/ProxyNodeAssistant.Gui.cs"
 Assert-Match $desktopGui 'string legacy = IOPath\.Combine\(root, "TextNodeAssistant", "recent-targets\.tsv"\)' "Desktop history fallback does not use the legacy TextNodeAssistant path"
-Assert-Match $desktopGui 'if \(remoteForm\) RefreshRecentTargets\(false\)' "Desktop operation form still auto-applies the latest history entry"
-Assert-NoMatch $desktopGui 'if \(remoteForm\) RefreshRecentTargets\(true\)' "Desktop operation form still contains an implicit history apply"
-Assert-Match $desktopGui 'connectionHostInput\.Text == ""[\s\S]*historyUseButton\.RaiseEvent' "History smoke no longer verifies blank fields before explicit Use"
-Assert-Match $desktopGui 'historyUseButton\.RaiseEvent[\s\S]*connectionHostInput\.Text == target\.Host' "History smoke no longer verifies explicit Use applies the selected row"
+Assert-Match $desktopGui 'if \(remoteForm\) RefreshRecentTargets\(true\)' "Desktop operation form does not auto-load the latest endpoint"
+Assert-Match $desktopGui 'private static bool HasManagedKey\(RecentTarget target\)' "Desktop operation form does not gate managed-key default on a local key pair"
+Assert-Match $desktopGui 'connectionAuthMode\.SelectedIndex = HasManagedKey\(target\) \? 2 : 0' "Desktop target selection does not require an explicit auth method when no key exists"
+Assert-Match $desktopGui 'connectionHostInput\.Text == target\.Host[\s\S]*connectionAuthMode\.SelectedIndex == 0' "History smoke does not verify automatic endpoint load and explicit auth"
+Assert-Match $desktopGui 'historyUseButton\.RaiseEvent[\s\S]*connectionHostInput\.Text == target\.Host' "History smoke no longer verifies explicit Use remains idempotent"
 
 $installer = Read-RepoFile "runbook/proxy-node-assistant-v1.0.0/linux/00-auto-install-or-optimize.sh"
 $guiGuardIndex = $installer.IndexOf('PROXY_RUNBOOK_GUI_MODE')

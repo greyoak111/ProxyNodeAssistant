@@ -678,7 +678,7 @@
                                     <Button x:Name="HistoryDeleteButton" Grid.Column="3" Content="删除此条" Style="{StaticResource SecondaryButtonStyle}" Height="36" Margin="8,0,0,0" Padding="14,0" />
                                     <Button x:Name="HistoryClearButton" Grid.Column="4" Content="清空全部" Style="{StaticResource SecondaryButtonStyle}" Height="36" Margin="8,0,0,0" Padding="14,0" />
                                 </Grid>
-                                <TextBlock x:Name="HistoryPrivacyNote" Grid.Row="1" Text="只保存地址、SSH 用户与端口；不保存密码、域名、订阅或 key。" Foreground="#657793" FontSize="10" Margin="2,6,0,0" />
+                                <TextBlock x:Name="HistoryPrivacyNote" Grid.Row="1" Text="每次远端表单会自动载入最近目标，可修改；只保存地址、SSH 用户、端口与最后使用时间。密码每次输入，不保存。" Foreground="#657793" FontSize="10" Margin="2,6,0,0" />
                                 <Grid Grid.Row="2" Margin="0,13,0,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="1.25*" />

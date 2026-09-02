@@ -111,6 +111,7 @@ import com.proxynodeassistant.android.model.AuthMode
 import com.proxynodeassistant.android.model.KeyStatus
 import com.proxynodeassistant.android.model.KiwiUsage
 import com.proxynodeassistant.android.model.Language
+import com.proxynodeassistant.android.model.ManagedKeyRecord
 import com.proxynodeassistant.android.model.NodeTarget
 import com.proxynodeassistant.android.model.PromptKind
 import com.proxynodeassistant.android.model.RunStatus
@@ -153,7 +154,7 @@ fun PnaApp(viewModel: AppViewModel) {
     }
     val selectedAction = ui.selectedAction
     if (ui.showConnection && selectedAction != null) {
-        ConnectionDialog(selectedAction, ui.targets, ui.language, viewModel::dismissConnection, viewModel::launch)
+        ConnectionDialog(selectedAction, ui.targets, ui.keys, ui.language, viewModel::dismissConnection, viewModel::launch)
     }
 }
 
@@ -204,7 +205,7 @@ private fun DashboardScreen(language: Language, onAction: (ActionSpec) -> Unit) 
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().background(Panel).padding(16.dp)) {
             Text(if (language == Language.ZH) "节点基础设施运维控制面" else "NODE INFRASTRUCTURE CONTROL PLANE", fontWeight = FontWeight.Black, fontSize = 21.sp)
-            Text(if (language == Language.ZH) "每项远端操作重新选择节点和认证模式；Android 客户端不内置任何真实目标或秘密。" else "Every remote action re-selects its target and authentication mode. No real target or secret is embedded.", color = TextMuted, fontSize = 12.sp)
+            Text(if (language == Language.ZH) "每项远端操作会载入最近节点地址并要求确认认证方式；Android 客户端不内置任何真实目标或秘密。" else "Every remote action loads the latest node address and requires an explicit authentication choice. No real target or secret is embedded.", color = TextMuted, fontSize = 12.sp)
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                 FilterChip(selected = group == null, onClick = { group = null }, label = { Text(if (language == Language.ZH) "全部" else "ALL") })
@@ -259,20 +260,27 @@ private fun ActionCard(action: ActionSpec, language: Language, onAction: (Action
 private fun ConnectionDialog(
     action: ActionSpec,
     targets: List<NodeTarget>,
+    keys: List<ManagedKeyRecord>,
     language: Language,
     onDismiss: () -> Unit,
     onLaunch: (NodeTarget, AuthMode, String?) -> Unit,
 ) {
     val context = LocalContext.current
-    // A newly opened operation starts with neutral connection fields.  Recent
-    // targets are deliberately display-only until the user taps one of the
-    // cards below; otherwise merely opening a form can silently target an old
-    // VPS.  Action-scoped saveable state still survives rotation while this
-    // dialog is open, and the password remains a non-saveable field.
-    var host by rememberSaveable(action.code) { mutableStateOf("") }
-    var user by rememberSaveable(action.code) { mutableStateOf("root") }
-    var port by rememberSaveable(action.code) { mutableStateOf("22") }
-    var mode by rememberSaveable(action.code) { mutableStateOf(AuthMode.MANAGED_KEY) }
+    // Opening a form restores only the latest non-secret endpoint.  It never
+    // launches a workflow or restores a password.  Authentication remains
+    // unselected unless the matching managed-key pair is already present.
+    val latestTarget = targets.firstOrNull()
+    // Include the endpoint identity as a saveable input.  If history is
+    // refreshed while the dialog is being opened, Compose re-runs these
+    // initializers for the new target instead of retaining an old action's
+    // host/user/port state.
+    val targetIdentity = latestTarget?.id ?: "<none>"
+    var host by rememberSaveable(action.code, targetIdentity) { mutableStateOf(latestTarget?.host.orEmpty()) }
+    var user by rememberSaveable(action.code, targetIdentity) { mutableStateOf(latestTarget?.user ?: "root") }
+    var port by rememberSaveable(action.code, targetIdentity) { mutableStateOf((latestTarget?.port ?: 22).toString()) }
+    var mode by rememberSaveable(action.code, targetIdentity) {
+        mutableStateOf(defaultAuthModeForTarget(latestTarget, keys))
+    }
     var password by remember { mutableStateOf("") }
     var showPassword by rememberSaveable(action.code) { mutableStateOf(false) }
     val vpnActive = remember { isVpnActive(context) }
@@ -291,10 +299,10 @@ private fun ConnectionDialog(
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     SectionLabel(uiText(language, "登录认证方式", "AUTHENTICATION MODE"))
                     Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        FilterChip(selected = mode == AuthMode.MANAGED_KEY, onClick = { mode = AuthMode.MANAGED_KEY }, label = { Text(if (language == Language.ZH) "节点长期 KEY" else "MANAGED KEY") }, leadingIcon = { Icon(Icons.Outlined.Key, null, Modifier.size(17.dp)) })
+                        FilterChip(selected = mode == AuthMode.MANAGED_KEY, onClick = { mode = AuthMode.MANAGED_KEY; password = "" }, label = { Text(if (language == Language.ZH) "节点长期 KEY" else "MANAGED KEY") }, leadingIcon = { Icon(Icons.Outlined.Key, null, Modifier.size(17.dp)) })
                         FilterChip(selected = mode == AuthMode.TEMPORARY_PASSWORD, onClick = { mode = AuthMode.TEMPORARY_PASSWORD }, label = { Text(if (language == Language.ZH) "临时密码" else "ONE-TIME PASSWORD") }, leadingIcon = { Icon(Icons.Outlined.Lock, null, Modifier.size(17.dp)) })
                     }
-                    Text(if (language == Language.ZH) "长期 key 按 user@host:port 独立查找；若不存在，会先询问一次密码，再明确询问是否绑定。" else "Managed keys are isolated by user@host:port. If absent, one password is requested before an explicit bind prompt.", color = TextMuted, fontSize = 12.sp)
+                    Text(if (language == Language.ZH) "已自动载入最近目标的地址，可修改；有对应长期 key 会默认选中，否则必须明确选择认证方式。密码每次输入且不保存。" else "The latest target address is loaded automatically and remains editable. A matching managed key is selected by default; otherwise choose authentication explicitly. Passwords are entered each run and never saved.", color = TextMuted, fontSize = 12.sp)
 
                     if (vpnActive) {
                         OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(2.dp), border = BorderStroke(1.dp, Amber), colors = CardDefaults.outlinedCardColors(containerColor = Panel)) {
@@ -313,7 +321,13 @@ private fun ConnectionDialog(
                     if (targets.isNotEmpty()) {
                         SectionLabel(uiText(language, "最近使用的节点", "RECENT TARGETS"))
                         targets.take(8).forEach { target ->
-                            OutlinedCard(Modifier.fillMaxWidth().clickable { host = target.host; user = target.user; port = target.port.toString() }, shape = RoundedCornerShape(2.dp), border = BorderStroke(1.dp, GridLine), colors = CardDefaults.outlinedCardColors(containerColor = Panel)) {
+                            OutlinedCard(Modifier.fillMaxWidth().clickable {
+                                host = target.host
+                                user = target.user
+                                port = target.port.toString()
+                                mode = defaultAuthModeForTarget(target, keys)
+                                password = ""
+                            }, shape = RoundedCornerShape(2.dp), border = BorderStroke(1.dp, GridLine), colors = CardDefaults.outlinedCardColors(containerColor = Panel)) {
                                 Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Outlined.Dns, null, tint = Cyan); Spacer(Modifier.width(10.dp))
                                     Column { Text(target.label.ifBlank { target.host }, fontFamily = FontFamily.Monospace); Text(target.id, color = TextMuted, fontSize = 11.sp) }
@@ -341,8 +355,8 @@ private fun ConnectionDialog(
                     }
                     Spacer(Modifier.height(8.dp))
                     Button(
-                        onClick = { onLaunch(NodeTarget(host.trim(), user.trim(), port.toInt()), mode, password.takeIf { it.isNotBlank() }) },
-                        enabled = valid && (mode == AuthMode.MANAGED_KEY || password.isNotBlank()) && (!vpnActive || vpnAcknowledged),
+                        onClick = { onLaunch(NodeTarget(host.trim(), user.trim(), port.toInt()), requireNotNull(mode), password.takeIf { it.isNotBlank() }) },
+                        enabled = valid && mode != null && (mode == AuthMode.MANAGED_KEY || password.isNotBlank()) && (!vpnActive || vpnAcknowledged),
                         modifier = Modifier.fillMaxWidth().height(54.dp),
                         shape = RoundedCornerShape(2.dp),
                     ) { Text(if (language == Language.ZH) "建立安全会话并执行" else "ESTABLISH SESSION + EXECUTE", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) }
@@ -351,6 +365,18 @@ private fun ConnectionDialog(
         }
     }
 }
+
+/**
+ * Returns the safe default authentication mode for a remembered endpoint.
+ * A managed key is selected only for an explicitly bound matching target;
+ * otherwise null forces the user to choose a method in the connection form.
+ */
+internal fun defaultAuthModeForTarget(target: NodeTarget?, keys: List<ManagedKeyRecord>): AuthMode? =
+    if (target != null && keys.any { it.targetId == target.id && it.status == KeyStatus.BOUND }) {
+        AuthMode.MANAGED_KEY
+    } else {
+        null
+    }
 
 private fun isVpnActive(context: Context): Boolean = runCatching {
     val manager = context.getSystemService(ConnectivityManager::class.java)

@@ -355,6 +355,35 @@ namespace ProxyNodeAssistant.Gui
             return (target.Host ?? "").ToLowerInvariant() + "\0" + (target.User ?? "") + "\0" + target.Port;
         }
 
+        // Keep the GUI's managed-key probe aligned with the toolkit's
+        // per-node key layout.  This is intentionally a presence-only check:
+        // private-key contents are never read or displayed, and a missing key
+        // leaves authentication unselected so the user must choose a method.
+        private static string ManagedKeyPart(string value)
+        {
+            string cleaned = Regex.Replace(value ?? "", "[^A-Za-z0-9._-]+", "_").Trim('_');
+            return String.IsNullOrEmpty(cleaned) ? "node" : cleaned;
+        }
+
+        private static bool HasManagedKey(RecentTarget target)
+        {
+            if (target == null) return false;
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (String.IsNullOrWhiteSpace(home)) return false;
+            string leaf = ManagedKeyPart(target.Host) + "-" + ManagedKeyPart(target.User);
+            string[] roots =
+            {
+                IOPath.Combine(home, ".ssh", "proxy-runbook"),
+                IOPath.Combine(home, ".ssh", "text-node-assistant")
+            };
+            foreach (string root in roots)
+            {
+                string privateKey = IOPath.Combine(root, leaf, "id_ed25519");
+                if (File.Exists(privateKey) && File.Exists(privateKey + ".pub")) return true;
+            }
+            return false;
+        }
+
         private static List<RecentTarget> LoadRecentTargets()
         {
             List<RecentTarget> values = new List<RecentTarget>();
@@ -443,6 +472,10 @@ namespace ProxyNodeAssistant.Gui
             connectionHostInput.Text = target.Host;
             connectionUserInput.Text = target.User;
             connectionPortInput.Text = target.Port.ToString();
+            // Selecting a target may change which local managed key is
+            // available.  A key is selected only when its pair is present;
+            // otherwise the user must explicitly choose a login method.
+            connectionAuthMode.SelectedIndex = HasManagedKey(target) ? 2 : 0;
         }
 
         private void RunHistoryAction(Action action)
@@ -486,6 +519,7 @@ namespace ProxyNodeAssistant.Gui
             connectionHostInput.Text = "";
             connectionUserInput.Text = "root";
             connectionPortInput.Text = "22";
+            connectionAuthMode.SelectedIndex = 0;
             footerStatus.Text = english ? "Selected VPS history entry deleted" : "已删除所选 VPS 历史";
         }
 
@@ -503,6 +537,7 @@ namespace ProxyNodeAssistant.Gui
             connectionHostInput.Text = "";
             connectionUserInput.Text = "root";
             connectionPortInput.Text = "22";
+            connectionAuthMode.SelectedIndex = 0;
             footerStatus.Text = english ? "All VPS login history cleared" : "VPS 登录历史已全部清空";
         }
 
@@ -711,8 +746,8 @@ namespace ProxyNodeAssistant.Gui
             Find<TextBlock>("AuthFieldLabel").Text = english ? "SSH login method for this run" : "本次 SSH 登录方式";
             historyFieldLabel.Text = english ? "Recent VPS" : "最近 VPS";
             historyPrivacyNote.Text = english
-                ? "Stores only host, SSH user, port, and last-used time; never passwords, domains, subscriptions, or keys."
-                : "只保存地址、SSH 用户、端口与最后使用时间；不保存密码、域名、订阅或 key。";
+                ? "The latest target is loaded into each remote form and remains editable. Stores only host, SSH user, port, and last-used time; passwords are entered each run and never saved."
+                : "每次远端表单会自动载入最近目标，可修改；只保存地址、SSH 用户、端口与最后使用时间。密码每次输入，不保存。";
             historyUseButton.Content = english ? "Use" : "使用";
             historyDeleteButton.Content = english ? "Delete" : "删除此条";
             historyClearButton.Content = english ? "Clear all" : "清空全部";
@@ -809,10 +844,11 @@ namespace ProxyNodeAssistant.Gui
 
             bool remoteForm = UsesStandardRemoteForm(operation);
             remoteConnectionForm.Visibility = remoteForm ? Visibility.Visible : Visibility.Collapsed;
-            // Loading history must not silently choose a target.  The user
-            // explicitly clicks "Use" when they want a saved endpoint copied
-            // into this operation's form.
-            if (remoteForm) RefreshRecentTargets(false);
+            // Opening a remote form restores only the latest non-secret
+            // endpoint.  It never starts a workflow or restores a password.
+            // If the corresponding managed key pair is present locally, that
+            // method is selected; otherwise authentication remains explicit.
+            if (remoteForm) RefreshRecentTargets(true);
             if (fullMenu)
             {
                 operationHeaderTitle.Text = english ? "Full workflow menu" : "完整图形工作流菜单";
@@ -829,8 +865,8 @@ namespace ProxyNodeAssistant.Gui
             }
             operationHeaderSubtitle.Text = english ? "Fully graphical · no console window" : "全程图形化 · 不弹出控制台";
             operationLaunchHint.Text = remoteForm
-                ? (english ? "Later domains, email, confirmations, and choices continue in the graphical input area."
-                           : "后续域名、邮箱、确认和选择会继续在图形输入区完成。")
+                ? (english ? "The latest VPS target is loaded automatically and remains editable; passwords are entered each run and never saved."
+                           : "已自动载入最近 VPS 目标，可修改；密码每次输入且不会保存。后续确认和选择会继续在图形输入区完成。")
                 : (english ? "This workflow starts without a pre-filled VPS connection form. All prompts remain below."
                            : "本功能无需预填标准 VPS 连接表；后续提示仍全部在下方完成。");
             operationStartButton.Content = english ? "Start workflow  →" : "开始操作  →";
@@ -1666,17 +1702,20 @@ namespace ProxyNodeAssistant.Gui
                     SaveRecentTargets(new List<RecentTarget> { target });
                     OpenActionForCommandLine("1");
                     success = connectionHistory.Items.Count == 1 &&
-                              connectionHostInput.Text == "" &&
-                              connectionUserInput.Text == "root" &&
-                              connectionPortInput.Text == "22";
-                    // Selecting a history row only highlights it.  The
-                    // explicit Use button is the sole action that may fill the
-                    // connection fields.
+                              connectionHostInput.Text == target.Host &&
+                              connectionUserInput.Text == target.User &&
+                              connectionPortInput.Text == target.Port.ToString() &&
+                              // No matching managed key is created by this
+                              // smoke, so authentication must remain explicit.
+                              connectionAuthMode.SelectedIndex == 0;
+                    // The explicit Use button remains idempotent and can be
+                    // used after editing or switching history rows.
                     historyUseButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     success = success &&
                               connectionHostInput.Text == target.Host &&
                               connectionUserInput.Text == target.User &&
-                              connectionPortInput.Text == target.Port.ToString();
+                              connectionPortInput.Text == target.Port.ToString() &&
+                              connectionAuthMode.SelectedIndex == 0;
                     DeleteSelectedRecentTarget();
                     success = success && LoadRecentTargets().Count == 0;
                     string path = RecentTargetsPath();
