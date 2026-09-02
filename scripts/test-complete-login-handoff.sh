@@ -94,6 +94,11 @@ printf '%s\n' \
   'VPS_LOGIN_PASSWORD=fixture-vps' \
   'PANEL_USERNAME=legacy-panel' \
   'PANEL_PASSWORD=fixture-panel' > "$PNA_LEGACY_HANDOFF_DIR/HANDOFF-SECRETS.txt"
+# The handoff library resolves its roots when sourced.  Reload it after the
+# fixture switches roots so this test exercises the same paths that a fresh
+# installer process would use (and remains runnable as a non-root user).
+# shellcheck source=/dev/null
+. "$LIB"
 
 # shellcheck source=/dev/null
 handoff_init
@@ -117,5 +122,29 @@ if credential_store_set PANEL_PASSWORD UNKNOWN_NOT_RECOVERABLE >/dev/null 2>&1; 
   echo 'placeholder password entered the current-login store' >&2
   exit 1
 fi
+
+# A failed/older run can leave the account and password in different handoff
+# files (for example, the current file contains the account while the last
+# archive still carries the password).  The migration reader must recover the
+# missing halves without requiring a manual refresh or exposing either value.
+export PNA_HANDOFF_DIR="$TMP/split/new"
+export PNA_LEGACY_HANDOFF_DIR="$TMP/split/legacy"
+mkdir -p "$PNA_HANDOFF_DIR/handoff-archive" "$PNA_LEGACY_HANDOFF_DIR"
+# shellcheck source=/dev/null
+. "$LIB"
+handoff_init
+printf '%s\n' \
+  'HANDOFF_RUN_STARTED=split-current' \
+  'VPS_ACCOUNT=split-root' \
+  'XUI_USERNAME=split-panel' > "$HANDOFF_FILE"
+printf '%s\n' \
+  'HANDOFF_RUN_STARTED=split-archive' \
+  'VPS_PASSWORD=split-vps-password' \
+  'XUI_PASSWORD=split-panel-password' > "$HANDOFF_ARCHIVE/HANDOFF-split.txt"
+credential_store_seed_from_handoffs
+test "$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_USER)" = split-root
+test "$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_PASSWORD)" = split-vps-password
+test "$(credential_value_from_file "$HANDOFF_LOGIN_STORE" PANEL_USERNAME)" = split-panel
+test "$(credential_value_from_file "$HANDOFF_LOGIN_STORE" PANEL_PASSWORD)" = split-panel-password
 
 echo COMPLETE_LOGIN_HANDOFF_TEST_OK

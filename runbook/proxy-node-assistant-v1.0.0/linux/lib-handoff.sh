@@ -128,32 +128,73 @@ credential_store_delete_pair() {
 }
 
 credential_store_seed_pair() {
-  local key_user="$1" key_password="$2" file user password
-  # Prefer a complete current store. If it is incomplete, a legacy store or
-  # any archived handoff may still contain the pair.
-  if credential_value_from_file "$HANDOFF_LOGIN_STORE" "$key_user" >/dev/null 2>&1 &&
-     credential_value_from_file "$HANDOFF_LOGIN_STORE" "$key_password" >/dev/null 2>&1; then
+  local key_user="$1" key_password="$2" file user password candidate
+  local store_user="" store_password="" legacy_store
+
+  # A complete protected store is authoritative.  It is written only after a
+  # credential has been generated or verified, so never replace it merely
+  # because a handoff archive contains a different (possibly stale) value.
+  store_user="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" "$key_user" 2>/dev/null || true)"
+  store_password="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" "$key_password" 2>/dev/null || true)"
+  if [ -n "$store_user" ] && [ -n "$store_password" ]; then
     return 0
   fi
-  if [ "$LEGACY_HANDOFF_DIR" != "$HANDOFF_DIR" ] && [ -r "$LEGACY_HANDOFF_DIR/CURRENT-LOGIN-CREDENTIALS.env" ]; then
-    user="$(credential_value_from_file "$LEGACY_HANDOFF_DIR/CURRENT-LOGIN-CREDENTIALS.env" "$key_user" 2>/dev/null || true)"
-    password="$(credential_value_from_file "$LEGACY_HANDOFF_DIR/CURRENT-LOGIN-CREDENTIALS.env" "$key_password" 2>/dev/null || true)"
+
+  # v0.9.x kept the protected store under the legacy root.  Prefer a complete
+  # legacy pair before considering split values from unrelated runs.
+  legacy_store="$LEGACY_HANDOFF_DIR/CURRENT-LOGIN-CREDENTIALS.env"
+  if [ "$LEGACY_HANDOFF_DIR" != "$HANDOFF_DIR" ] && [ -r "$legacy_store" ]; then
+    user="$(credential_value_from_file "$legacy_store" "$key_user" 2>/dev/null || true)"
+    password="$(credential_value_from_file "$legacy_store" "$key_password" 2>/dev/null || true)"
     if [ -n "$user" ] && [ -n "$password" ]; then
-      credential_store_set "$key_user" "$user"
-      credential_store_set "$key_password" "$password"
-      return 0
+      [ -n "$store_user" ] || store_user="$user"
+      [ -n "$store_password" ] || store_password="$password"
     fi
   fi
+
+  # First pass: preserve a complete pair from the newest source.  This keeps
+  # account/password provenance together whenever possible and avoids mixing
+  # values from two rotations.
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     user="$(credential_value_from_file "$file" "$key_user" 2>/dev/null || true)"
     password="$(credential_value_from_file "$file" "$key_password" 2>/dev/null || true)"
     if [ -n "$user" ] && [ -n "$password" ]; then
-      credential_store_set "$key_user" "$user"
-      credential_store_set "$key_password" "$password"
-      return 0
+      [ -n "$store_user" ] || store_user="$user"
+      [ -n "$store_password" ] || store_password="$password"
+      # A complete file is safer than a split fallback; use it immediately
+      # unless a protected store already supplied one side.  In that case the
+      # store remains the anchor and only its missing half is filled below.
+      if [ -z "$store_user" ] || [ -z "$store_password" ]; then
+        store_user="$user"
+        store_password="$password"
+      fi
+      break
     fi
   done < <(handoff_all_candidate_files)
+
+  # Second pass: older handoffs can be interrupted between writing the account
+  # and password lines (or can use different v0.9 aliases).  Fill only missing
+  # halves, in current/newest-to-oldest order.  We never overwrite a value
+  # already recovered from the protected store or a complete pair.
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    if [ -z "$store_user" ]; then
+      candidate="$(credential_value_from_file "$file" "$key_user" 2>/dev/null || true)"
+      [ -n "$candidate" ] && store_user="$candidate"
+    fi
+    if [ -z "$store_password" ]; then
+      candidate="$(credential_value_from_file "$file" "$key_password" 2>/dev/null || true)"
+      [ -n "$candidate" ] && store_password="$candidate"
+    fi
+    [ -n "$store_user" ] && [ -n "$store_password" ] && break
+  done < <(handoff_all_candidate_files)
+
+  if [ -n "$store_user" ] && [ -n "$store_password" ]; then
+    credential_store_set "$key_user" "$store_user"
+    credential_store_set "$key_password" "$store_password"
+    return 0
+  fi
   return 1
 }
 
