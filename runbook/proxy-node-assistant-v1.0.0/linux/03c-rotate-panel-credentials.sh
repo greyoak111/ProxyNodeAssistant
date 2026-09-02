@@ -82,6 +82,11 @@ case "$CREDENTIAL_MODE" in
     ;;
 esac
 
+# The upstream x-ui CLI exposes credential mutation only as command-line
+# flags. The short-lived local child below therefore receives PASSWORD in
+# argv; this is unavoidable for that API, and the value is never interpolated
+# into the SSH command, shell history, or ordinary workflow output. Keep
+# tracing disabled around this call and do not add diagnostic logging here.
 "$XUI" setting -username "$USERNAME" -password "$PASSWORD"
 systemctl restart x-ui
 sleep 2

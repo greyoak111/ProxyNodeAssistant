@@ -720,6 +720,10 @@ func (a *App) writeCredentialInput(c Connection, values map[string]string) (stri
 	command := "set -Eeuo pipefail; umask 077; set -C; cat > " + shQuote(path) + "; set +C; chmod 600 " + shQuote(path)
 	result := a.rootCaptureWithInput(c, command, []byte(content.String()))
 	if !result.OK() {
+		// A failed SSH write can leave a partial root-only file behind. Clean
+		// that exact generated path before returning; callers cannot defer a
+		// cleanup because no path is returned on error.
+		a.removeInstallAutoInput(c, path)
 		return "", fmt.Errorf("failed to write one-run credential input (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}
 	return path, nil
@@ -837,7 +841,7 @@ func (a *App) rotatePanelCredentials() error {
 			return err
 		}
 		customAccount = strings.TrimSpace(customAccount)
-		if !userPartPattern.MatchString(customAccount) {
+		if !validPanelAccount(customAccount) {
 			return errors.New(a.msg("面板账号格式无效。", "Invalid panel account format."))
 		}
 		customPassword, err = a.promptMatchingSecret("3x-ui 面板密码", "3x-ui panel password")

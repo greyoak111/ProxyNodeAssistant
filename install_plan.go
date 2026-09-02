@@ -169,7 +169,15 @@ func validCredentialMode(value CredentialMode) bool {
 }
 
 func validCredentialSecret(value string) bool {
-	return len(value) >= 8 && len(value) <= 256 && value != "" && !strings.ContainsAny(value, "\r\n")
+	return len(value) >= 8 && len(value) <= 256 && value != "" && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+// 3x-ui stores the panel username in its login database and accepts the same
+// conservative account shape as the runbook. Keep the client-side limit in
+// lockstep with 03c-rotate-panel-credentials.sh so an overlong value is
+// rejected before any one-run secret file is created.
+func validPanelAccount(value string) bool {
+	return len(value) >= 1 && len(value) <= 64 && userPartPattern.MatchString(value)
 }
 
 func (p CredentialPlan) validateFor(existingNode bool) error {
@@ -186,14 +194,14 @@ func (p CredentialPlan) validateFor(existingNode bool) error {
 		return fmt.Errorf("fresh install cannot preserve panel credentials")
 	}
 	if p.VPSMode == CredentialCustom && !validCredentialSecret(p.VPSPassword) {
-		return fmt.Errorf("custom VPS password must be 8..256 characters without CR/LF")
+		return fmt.Errorf("custom VPS password must be 8..256 characters without NUL/CR/LF")
 	}
 	if p.PanelMode == CredentialCustom {
-		if !userPartPattern.MatchString(p.PanelAccount) {
+		if !validPanelAccount(p.PanelAccount) {
 			return fmt.Errorf("custom panel account has invalid characters")
 		}
 		if !validCredentialSecret(p.PanelPassword) {
-			return fmt.Errorf("custom panel password must be 8..256 characters without CR/LF")
+			return fmt.Errorf("custom panel password must be 8..256 characters without NUL/CR/LF")
 		}
 	}
 	return nil

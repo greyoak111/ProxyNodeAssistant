@@ -310,7 +310,7 @@ func (a *App) promptMatchingSecret(labelZH, labelEN string) (string, error) {
 		return "", errInputClosed
 	}
 	if !validCredentialSecret(first) {
-		return "", errors.New(a.msg("密码必须为 8—256 个字符且不能含换行。", "Password must be 8-256 characters and must not contain a newline."))
+		return "", errors.New(a.msg("密码必须为 8—256 个字符且不能含换行或 NUL。", "Password must be 8-256 characters and must not contain a newline or NUL."))
 	}
 	second := a.secretPromptExact(a.msg("请再次输入"+labelZH, "Repeat the "+labelEN))
 	if a.inputClosed {
@@ -345,7 +345,7 @@ func (a *App) chooseCredentialPlan(existingNode bool) (CredentialPlan, error) {
 			return CredentialPlan{}, err
 		}
 		plan.PanelAccount = strings.TrimSpace(plan.PanelAccount)
-		if !userPartPattern.MatchString(plan.PanelAccount) {
+		if !validPanelAccount(plan.PanelAccount) {
 			return CredentialPlan{}, errors.New(a.msg("面板账号格式无效。", "Invalid panel account format."))
 		}
 		plan.PanelPassword, err = a.promptMatchingSecret("3x-ui 面板密码", "3x-ui panel password")
@@ -522,6 +522,10 @@ func (a *App) writeInstallAutoInput(c Connection, plan InstallPlan) (string, err
 	command := "set -Eeuo pipefail; umask 077; set -C; cat > " + shQuote(path) + "; set +C; chmod 600 " + shQuote(path)
 	result := a.rootCaptureWithInput(c, command, []byte(content))
 	if !result.OK() {
+		// The remote redirection may have created a partial file before SSH or
+		// chmod failed. Remove only the generated one-run namespace path; never
+		// attempt cleanup on a caller-supplied arbitrary path.
+		a.removeInstallAutoInput(c, path)
 		return "", fmt.Errorf("failed to write one-run input (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}
 	return path, nil

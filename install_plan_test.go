@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -177,5 +179,51 @@ func TestCredentialPlanRejectsShortOrUnsafeCustomSecret(t *testing.T) {
 	plan.Credentials.VPSPassword = "valid-pass\nunsafe"
 	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "custom VPS password") {
 		t.Fatalf("newline custom VPS password should be rejected, got %v", err)
+	}
+	plan.Credentials.VPSPassword = "valid-pass\x00unsafe"
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "custom VPS password") {
+		t.Fatalf("NUL custom VPS password should be rejected, got %v", err)
+	}
+}
+
+func TestCredentialPlanPanelAccountLengthMatchesRunbook(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Credentials = CredentialPlan{
+		VPSMode:       CredentialRandom,
+		PanelMode:     CredentialCustom,
+		PanelAccount:  "a" + strings.Repeat("b", 63),
+		PanelPassword: "panel-custom-secret",
+	}
+	if err := plan.validateFor(false); err != nil {
+		t.Fatalf("64-character panel account should validate: %v", err)
+	}
+	plan.Credentials.PanelAccount += "c"
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "panel account") {
+		t.Fatalf("65-character panel account should be rejected, got %v", err)
+	}
+}
+
+func TestCredentialMutationModeCancelAndClosedInput(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "cancel", input: "0\n", wantErr: false},
+		{name: "closed", input: "", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app := &App{reader: bufio.NewReader(strings.NewReader(test.input)), lang: LangEN}
+			mode, err := app.chooseCredentialMutationMode("Panel", "Panel")
+			if test.wantErr {
+				if !errors.Is(err, errInputClosed) {
+					t.Fatalf("closed input error = %v, want %v", err, errInputClosed)
+				}
+				return
+			}
+			if err != nil || mode != "" {
+				t.Fatalf("cancel should be a no-op, mode=%q err=%v", mode, err)
+			}
+		})
 	}
 }
