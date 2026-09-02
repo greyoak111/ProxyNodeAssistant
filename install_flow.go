@@ -276,6 +276,85 @@ func (a *App) chooseWarpMode() (WarpMode, error) {
 	}
 }
 
+func (a *App) chooseCredentialMode(labelZH, labelEN string, existingNode bool) (CredentialMode, error) {
+	a.println()
+	a.println(a.msg(labelZH+"凭据策略：", labelEN+" credential policy:"))
+	if existingNode {
+		a.println(a.msg("[0] 保留并验证当前凭据（不改密码）", "[0] Preserve and verify the current credentials (no password change)"))
+	}
+	a.println(a.msg("[1] 生成新的随机凭据", "[1] Generate new random credentials"))
+	a.println(a.msg("[2] 自定义凭据（密码仅本次加密输入，绝不写入设置/命令）", "[2] Custom credentials (secret is sent only for this run; never saved in settings/argv)"))
+	for {
+		answer := strings.ToLower(strings.TrimSpace(a.prompt(a.msg(labelZH+"策略（必须明确选择）", labelEN+" policy (explicit choice required)"))))
+		if a.inputClosed {
+			return "", errInputClosed
+		}
+		switch answer {
+		case "0":
+			if existingNode {
+				return CredentialPreserve, nil
+			}
+		case "1", "r", "random":
+			return CredentialRandom, nil
+		case "2", "c", "custom":
+			return CredentialCustom, nil
+		}
+		a.println(a.msg("选择无效；凭据策略不会静默采用默认值。", "Invalid selection; credential policy is never silently defaulted."))
+	}
+}
+
+func (a *App) promptMatchingSecret(labelZH, labelEN string) (string, error) {
+	first := a.secretPromptExact(a.msg(labelZH+"（遮罩输入）", labelEN+" (masked input)"))
+	if a.inputClosed {
+		return "", errInputClosed
+	}
+	if !validCredentialSecret(first) {
+		return "", errors.New(a.msg("密码必须为 8—256 个字符且不能含换行。", "Password must be 8-256 characters and must not contain a newline."))
+	}
+	second := a.secretPromptExact(a.msg("请再次输入"+labelZH, "Repeat the "+labelEN))
+	if a.inputClosed {
+		return "", errInputClosed
+	}
+	if first != second {
+		return "", errors.New(a.msg("两次密码不一致，本次未写入远端。", "The two passwords do not match; nothing was written remotely."))
+	}
+	return first, nil
+}
+
+func (a *App) chooseCredentialPlan(existingNode bool) (CredentialPlan, error) {
+	plan := CredentialPlan{}
+	var err error
+	plan.VPSMode, err = a.chooseCredentialMode("VPS 登录", "VPS login", existingNode)
+	if err != nil {
+		return CredentialPlan{}, err
+	}
+	if plan.VPSMode == CredentialCustom {
+		plan.VPSPassword, err = a.promptMatchingSecret("VPS 登录密码", "VPS login password")
+		if err != nil {
+			return CredentialPlan{}, err
+		}
+	}
+	plan.PanelMode, err = a.chooseCredentialMode("3x-ui 面板", "3x-ui panel", existingNode)
+	if err != nil {
+		return CredentialPlan{}, err
+	}
+	if plan.PanelMode == CredentialCustom {
+		plan.PanelAccount, err = a.required(a.msg("自定义 3x-ui 面板账号（字母/数字/._-）", "Custom 3x-ui panel account (letters/digits/._-)"))
+		if err != nil {
+			return CredentialPlan{}, err
+		}
+		plan.PanelAccount = strings.TrimSpace(plan.PanelAccount)
+		if !userPartPattern.MatchString(plan.PanelAccount) {
+			return CredentialPlan{}, errors.New(a.msg("面板账号格式无效。", "Invalid panel account format."))
+		}
+		plan.PanelPassword, err = a.promptMatchingSecret("3x-ui 面板密码", "3x-ui panel password")
+		if err != nil {
+			return CredentialPlan{}, err
+		}
+	}
+	return plan, nil
+}
+
 func (a *App) chooseSS2022Port(existingNode bool, detected ...int) (int, error) {
 	defaultPort := defaultSS2022TCPPort
 	if existingNode && len(detected) > 0 && detected[0] >= 1024 && detected[0] <= 65535 {
@@ -357,6 +436,10 @@ func (a *App) collectInstallPlan(existingNode bool, detectedSS2022Port ...int) (
 	if err != nil {
 		return InstallPlan{}, err
 	}
+	plan.Credentials, err = a.chooseCredentialPlan(existingNode)
+	if err != nil {
+		return InstallPlan{}, err
+	}
 	plan.Preferences.BackupBeforeChange = true
 	plan.Preferences.PruneAfterSuccess = a.yes(a.msg("成功后清理多余远端备份，并只保留一份新验证的当前配置备份？", "After success, prune redundant remote backups and keep one newly verified current-config backup?"), a.installPrefs.PruneAfterSuccess)
 	plan.Preferences.OpenPanelOnSuccess = a.yes(a.msg("成功后通过 127.0.0.1 SSH 隧道打开 3x-ui 面板？", "After success, open 3x-ui through a 127.0.0.1 SSH tunnel?"), a.installPrefs.OpenPanelOnSuccess)
@@ -422,8 +505,20 @@ func (a *App) writeInstallAutoInput(c Connection, plan InstallPlan) (string, err
 		"GRAY_EMAIL_B64=" + encode(plan.Gray.Email) + "\n" +
 		"ORANGE_DOMAIN_B64=" + encode(plan.Orange.Domain) + "\n" +
 		"ORANGE_EMAIL_B64=" + encode(plan.Orange.Email) + "\n" +
-		"LANG=" + string(a.lang) + "\n"
-	command := "set -Eeuo pipefail; umask 077; test ! -e " + shQuote(path) + "; cat > " + shQuote(path) + "; chmod 600 " + shQuote(path)
+		"LANG=" + string(a.lang) + "\n" +
+		"VPS_PASSWORD_MODE=" + string(plan.Credentials.VPSMode) + "\n" +
+		"PANEL_CREDENTIAL_MODE=" + string(plan.Credentials.PanelMode) + "\n"
+	if plan.Credentials.VPSMode == CredentialCustom {
+		content += "VPS_PASSWORD_B64=" + encode(plan.Credentials.VPSPassword) + "\n"
+	}
+	if plan.Credentials.PanelMode == CredentialCustom {
+		content += "PANEL_USERNAME_B64=" + encode(plan.Credentials.PanelAccount) + "\n" +
+			"PANEL_PASSWORD_B64=" + encode(plan.Credentials.PanelPassword) + "\n"
+	}
+	// Bash noclobber makes the redirection use O_EXCL.  The explicit atomic
+	// create closes the /tmp symlink/TOCTOU window that a test-then-cat sequence
+	// would leave open while running as root.
+	command := "set -Eeuo pipefail; umask 077; set -C; cat > " + shQuote(path) + "; set +C; chmod 600 " + shQuote(path)
 	result := a.rootCaptureWithInput(c, command, []byte(content))
 	if !result.OK() {
 		return "", fmt.Errorf("failed to write one-run input (exit %d): %s", result.ExitCode, processFailureDetail(result))
@@ -473,5 +568,7 @@ func (a *App) installEnvironment(c Connection, plan InstallPlan, inputPath, remo
 		" TNA_CDN_ORIGIN_PORT=" + shQuote(fmt.Sprint(plan.Ports.CDNEdgeOrigin)) +
 		" TNA_WARP_PORT=" + shQuote(fmt.Sprint(plan.Ports.WarpLoopback)) +
 		" PNA_SS2022_PORT=" + shQuote(fmt.Sprint(plan.Ports.SS2022TCP)) +
+		" TNA_VPS_PASSWORD_MODE=" + shQuote(string(plan.Credentials.VPSMode)) +
+		" TNA_PANEL_CREDENTIAL_MODE=" + shQuote(string(plan.Credentials.PanelMode)) +
 		" TNA_AUTO_INPUT=" + shQuote(inputPath)
 }

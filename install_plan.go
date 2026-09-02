@@ -43,6 +43,28 @@ const (
 	WarpEnsureOn WarpMode = "ensure-on"
 )
 
+// CredentialMode controls how a login secret is obtained for this run.
+// CredentialPlan values are ephemeral; only these mode strings are safe to
+// display or persist.
+type CredentialMode string
+
+const (
+	CredentialPreserve CredentialMode = "preserve"
+	CredentialRandom   CredentialMode = "random"
+	CredentialCustom   CredentialMode = "custom"
+)
+
+// CredentialPlan is attached to the in-memory install plan only. Secret
+// values are sent through a root-owned one-run input file and are excluded
+// from JSON, previews, diagnostics, and shell command lines.
+type CredentialPlan struct {
+	VPSMode       CredentialMode `json:"-"`
+	VPSPassword   string         `json:"-"`
+	PanelMode     CredentialMode `json:"-"`
+	PanelAccount  string         `json:"-"`
+	PanelPassword string         `json:"-"`
+}
+
 // PortPlan keeps the fixed Reality/CDN/WARP coordination while allowing the
 // SS2022 TCP listener to be moved when a provider or local path requires it.
 type PortPlan struct {
@@ -77,6 +99,7 @@ type InstallPlan struct {
 	Ports       PortPlan           `json:"ports"`
 	Gray        RouteIdentity      `json:"-"`
 	Orange      RouteIdentity      `json:"-"`
+	Credentials CredentialPlan     `json:"-"`
 }
 
 func defaultInstallPreferences() InstallPreferences {
@@ -102,7 +125,11 @@ func defaultPortPlan() PortPlan {
 }
 
 func defaultInstallPlan() InstallPlan {
-	return InstallPlan{Preferences: defaultInstallPreferences(), Ports: defaultPortPlan()}
+	return InstallPlan{
+		Preferences: defaultInstallPreferences(),
+		Ports:       defaultPortPlan(),
+		Credentials: CredentialPlan{VPSMode: CredentialRandom, PanelMode: CredentialRandom},
+	}
 }
 
 func validRouteMode(value RouteMode) bool {
@@ -130,6 +157,46 @@ func validWarpMode(value WarpMode) bool {
 	default:
 		return false
 	}
+}
+
+func validCredentialMode(value CredentialMode) bool {
+	switch value {
+	case CredentialPreserve, CredentialRandom, CredentialCustom:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCredentialSecret(value string) bool {
+	return len(value) >= 8 && len(value) <= 256 && value != "" && !strings.ContainsAny(value, "\r\n")
+}
+
+func (p CredentialPlan) validateFor(existingNode bool) error {
+	if !validCredentialMode(p.VPSMode) {
+		return fmt.Errorf("unsupported VPS credential mode %q", p.VPSMode)
+	}
+	if !validCredentialMode(p.PanelMode) {
+		return fmt.Errorf("unsupported panel credential mode %q", p.PanelMode)
+	}
+	if !existingNode && p.VPSMode == CredentialPreserve {
+		return fmt.Errorf("fresh install cannot preserve VPS credentials")
+	}
+	if !existingNode && p.PanelMode == CredentialPreserve {
+		return fmt.Errorf("fresh install cannot preserve panel credentials")
+	}
+	if p.VPSMode == CredentialCustom && !validCredentialSecret(p.VPSPassword) {
+		return fmt.Errorf("custom VPS password must be 8..256 characters without CR/LF")
+	}
+	if p.PanelMode == CredentialCustom {
+		if !userPartPattern.MatchString(p.PanelAccount) {
+			return fmt.Errorf("custom panel account has invalid characters")
+		}
+		if !validCredentialSecret(p.PanelPassword) {
+			return fmt.Errorf("custom panel password must be 8..256 characters without CR/LF")
+		}
+	}
+	return nil
 }
 
 func (p PortPlan) validate() error {
@@ -170,6 +237,9 @@ func (p InstallPlan) validateFor(existingNode bool) error {
 	}
 	if !p.Preferences.BackupBeforeChange {
 		return fmt.Errorf("backup-before-change cannot be disabled in v1.0.0")
+	}
+	if err := p.Credentials.validateFor(existingNode); err != nil {
+		return err
 	}
 	if err := p.Ports.validate(); err != nil {
 		return err
@@ -223,6 +293,8 @@ func (p InstallPlan) reviewLines() []string {
 		fmt.Sprintf("BACKUP_BEFORE_CHANGE=%t", p.Preferences.BackupBeforeChange),
 		fmt.Sprintf("PRUNE_AFTER_SUCCESS=%t", p.Preferences.PruneAfterSuccess),
 		fmt.Sprintf("OPEN_PANEL_ON_SUCCESS=%t", p.Preferences.OpenPanelOnSuccess),
+		"VPS_CREDENTIAL_MODE=" + string(p.Credentials.VPSMode),
+		"PANEL_CREDENTIAL_MODE=" + string(p.Credentials.PanelMode),
 		fmt.Sprintf("PORT_PRESET=reality:%d shadow:%d cdn:%d warp:%d ss2022-tcp:%d", p.Ports.RealityProduction, p.Ports.RealityShadow, p.Ports.CDNEdgeOrigin, p.Ports.WarpLoopback, p.Ports.SS2022TCP),
 	}
 	if p.Preferences.RouteMode != RouteKeep && p.Preferences.RouteMode != RouteOrange {
@@ -230,6 +302,11 @@ func (p InstallPlan) reviewLines() []string {
 	}
 	if p.Preferences.RouteMode != RouteKeep && p.Preferences.RouteMode != RouteGray {
 		values = append(values, "ORANGE_DOMAIN="+p.Orange.Domain, "ORANGE_EMAIL="+maskEmail(p.Orange.Email))
+	}
+	if p.Credentials.PanelMode == CredentialCustom {
+		// The account name is not a secret, but the password is intentionally
+		// absent from this review block and all logs.
+		values = append(values, "PANEL_ACCOUNT="+p.Credentials.PanelAccount)
 	}
 	sort.Strings(values)
 	return values
@@ -245,6 +322,8 @@ func (p InstallPlan) preferenceSummaryLines() []string {
 		"PLAN_WARP=" + string(p.Preferences.WarpMode),
 		fmt.Sprintf("PLAN_PRUNE=%t", p.Preferences.PruneAfterSuccess),
 		fmt.Sprintf("PLAN_OPEN_PANEL=%t", p.Preferences.OpenPanelOnSuccess),
+		"PLAN_VPS_CREDENTIALS=" + string(p.Credentials.VPSMode),
+		"PLAN_PANEL_CREDENTIALS=" + string(p.Credentials.PanelMode),
 		fmt.Sprintf("PORT_PRESET=%d/%d/%d/%d/%d", p.Ports.RealityProduction, p.Ports.RealityShadow, p.Ports.CDNEdgeOrigin, p.Ports.WarpLoopback, p.Ports.SS2022TCP),
 	}
 	sort.Strings(values)

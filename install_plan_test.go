@@ -125,3 +125,57 @@ func TestInstallPlanRequiresBackupBeforeChange(t *testing.T) {
 		t.Fatalf("expected mandatory backup error, got %v", err)
 	}
 }
+
+func TestCredentialPlanCustomValidationAndRedaction(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Credentials = CredentialPlan{
+		VPSMode:       CredentialCustom,
+		VPSPassword:   "vps-custom-secret",
+		PanelMode:     CredentialCustom,
+		PanelAccount:  "operator_1",
+		PanelPassword: "panel-custom-secret",
+	}
+	if err := plan.validateFor(false); err != nil {
+		t.Fatalf("custom credential plan should validate: %v", err)
+	}
+	review := strings.Join(plan.reviewLines(), "\n")
+	for _, secret := range []string{plan.Credentials.VPSPassword, plan.Credentials.PanelPassword} {
+		if strings.Contains(review, secret) {
+			t.Fatalf("credential secret leaked into install review: %q", review)
+		}
+	}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(data)
+	for _, secret := range []string{plan.Credentials.VPSPassword, plan.Credentials.PanelPassword, plan.Credentials.PanelAccount} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("ephemeral credential leaked into plan JSON: %q", serialized)
+		}
+	}
+}
+
+func TestCredentialPlanFreshCannotPreserve(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Credentials.VPSMode = CredentialPreserve
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "fresh install cannot preserve VPS") {
+		t.Fatalf("fresh plan should reject preserved VPS credentials, got %v", err)
+	}
+}
+
+func TestCredentialPlanRejectsShortOrUnsafeCustomSecret(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Credentials = CredentialPlan{
+		VPSMode:     CredentialCustom,
+		VPSPassword: "short",
+		PanelMode:   CredentialRandom,
+	}
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "custom VPS password") {
+		t.Fatalf("short custom VPS password should be rejected, got %v", err)
+	}
+	plan.Credentials.VPSPassword = "valid-pass\nunsafe"
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "custom VPS password") {
+		t.Fatalf("newline custom VPS password should be rejected, got %v", err)
+	}
+}

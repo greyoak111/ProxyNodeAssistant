@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -686,6 +687,66 @@ func (a *App) safeRepairWithConn(c Connection) error {
 	return a.diagnoseWithConn(c, false)
 }
 
+// writeCredentialInput sends custom login values over SSH stdin into a
+// root-owned one-run file.  No secret is interpolated into the remote command
+// line, process environment, or ordinary workflow output.  The corresponding
+// rotation script removes the file on exit; callers also remove it on return.
+func (a *App) writeCredentialInput(c Connection, values map[string]string) (string, error) {
+	if len(values) == 0 {
+		return "", errors.New("credential input cannot be empty")
+	}
+	path, err := randomOneRunInputPath()
+	if err != nil {
+		return "", fmt.Errorf("could not create one-run credential input name: %w", err)
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if !regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`).MatchString(key) {
+			return "", fmt.Errorf("invalid credential input key %q", key)
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var content strings.Builder
+	for _, key := range keys {
+		content.WriteString(key)
+		content.WriteByte('=')
+		content.WriteString(base64.StdEncoding.EncodeToString([]byte(values[key])))
+		content.WriteByte('\n')
+	}
+	// Bash noclobber makes the redirection use O_EXCL.  The explicit atomic
+	// create closes the /tmp symlink/TOCTOU window that a test-then-cat sequence
+	// would leave open while running as root.
+	command := "set -Eeuo pipefail; umask 077; set -C; cat > " + shQuote(path) + "; set +C; chmod 600 " + shQuote(path)
+	result := a.rootCaptureWithInput(c, command, []byte(content.String()))
+	if !result.OK() {
+		return "", fmt.Errorf("failed to write one-run credential input (exit %d): %s", result.ExitCode, processFailureDetail(result))
+	}
+	return path, nil
+}
+
+func (a *App) chooseCredentialMutationMode(labelZH, labelEN string) (CredentialMode, error) {
+	a.println(a.msg("[1] 生成新的随机凭据", "[1] Generate new random credentials"))
+	a.println(a.msg("[2] 自定义凭据（遮罩输入；只在本次 SSH 操作中使用）", "[2] Custom credentials (masked input; used only for this SSH operation)"))
+	a.println(a.msg("[0] 取消", "[0] Cancel"))
+	for {
+		answer := strings.ToLower(strings.TrimSpace(a.prompt(a.msg(labelZH+"策略", labelEN+" policy"))))
+		if a.inputClosed {
+			return "", errInputClosed
+		}
+		switch answer {
+		case "1", "r", "random":
+			return CredentialRandom, nil
+		case "2", "c", "custom":
+			return CredentialCustom, nil
+		case "0", "q", "quit", "cancel":
+			return "", nil
+		default:
+			a.println(a.msg("请输入 1、2 或 0。", "Enter 1, 2, or 0."))
+		}
+	}
+}
+
 func (a *App) rotateVPSPassword() error {
 	c, err := a.readyConn()
 	if err != nil {
@@ -701,11 +762,45 @@ func (a *App) rotateVPSPassword() error {
 	if !userPartPattern.MatchString(user) {
 		return errors.New(a.msg("用户名格式无效。", "Invalid username."))
 	}
-	if !a.yes(a.msg("确认生成高强度随机密码并立即写入？SSH key 已存在，不会因此失联。", "Generate a high-entropy random password and apply it now? SSH key authentication is already available."), false) {
+	a.println(a.msg("VPS 登录密码策略：", "VPS login password policy:"))
+	mode, err := a.chooseCredentialMutationMode("VPS 登录", "VPS login")
+	if err != nil || mode == "" {
+		return err
+	}
+	customPassword := ""
+	if mode == CredentialCustom {
+		customPassword, err = a.promptMatchingSecret("VPS 登录密码", "VPS login password")
+		if err != nil {
+			return err
+		}
+	}
+	confirmPrompt := a.msg("确认立即写入 VPS 登录密码？SSH key 已存在，不会因此失联。", "Apply this VPS login password now? SSH key authentication is already available.")
+	if mode == CredentialRandom {
+		confirmPrompt = a.msg("确认生成高强度随机密码并立即写入？SSH key 已存在，不会因此失联。", "Generate a high-entropy random password and apply it now? SSH key authentication is already available.")
+	}
+	if !a.yes(confirmPrompt, false) {
 		return nil
 	}
-	command := "source " + remoteRoot + "/linux/lib-handoff.sh; handoff_begin_run; bash " + remoteRoot + "/linux/01a-rotate-vps-password.sh " + shQuote(user)
+	inputPath := ""
+	if mode == CredentialCustom {
+		inputPath, err = a.writeCredentialInput(c, map[string]string{"VPS_PASSWORD_B64": customPassword})
+		if err != nil {
+			return err
+		}
+		defer a.removeInstallAutoInput(c, inputPath)
+	}
+	command := "source " + remoteRoot + "/linux/lib-handoff.sh; handoff_begin_run; "
+	command += "PNA_VPS_PASSWORD_MODE=" + shQuote(string(mode))
+	if inputPath != "" {
+		command += " PNA_CREDENTIAL_INPUT=" + shQuote(inputPath)
+	}
+	command += " bash " + remoteRoot + "/linux/01a-rotate-vps-password.sh " + shQuote(user)
 	result := a.rootCapture(c, command)
+	if inputPath != "" {
+		// Do not keep a custom secret file around while fetching/rendering the
+		// handoff.  The deferred cleanup below remains the failure fallback.
+		a.removeInstallAutoInput(c, inputPath)
+	}
 	if !result.OK() {
 		return fmt.Errorf(a.msg("密码轮换失败（退出码 %d）：%s", "Password rotation failed (exit %d): %s"), result.ExitCode, processFailureDetail(result))
 	}
@@ -730,11 +825,56 @@ func (a *App) rotatePanelCredentials() error {
 		return err
 	}
 	a.println(a.msg("注意：修改 3x-ui 用户名/密码会注销现有会话，也可能关闭现有 2FA。", "Warning: rotating 3x-ui credentials logs out current sessions and may disable existing 2FA."))
-	if !a.yes(a.msg("继续生成新的随机面板用户名和密码？", "Continue with a new random panel username and password?"), false) {
+	a.println(a.msg("3x-ui 面板凭据策略：", "3x-ui panel credential policy:"))
+	mode, err := a.chooseCredentialMutationMode("3x-ui 面板", "3x-ui panel")
+	if err != nil || mode == "" {
+		return err
+	}
+	customAccount, customPassword := "", ""
+	if mode == CredentialCustom {
+		customAccount, err = a.required(a.msg("自定义 3x-ui 面板账号（字母/数字/._-）", "Custom 3x-ui panel account (letters/digits/._-)"))
+		if err != nil {
+			return err
+		}
+		customAccount = strings.TrimSpace(customAccount)
+		if !userPartPattern.MatchString(customAccount) {
+			return errors.New(a.msg("面板账号格式无效。", "Invalid panel account format."))
+		}
+		customPassword, err = a.promptMatchingSecret("3x-ui 面板密码", "3x-ui panel password")
+		if err != nil {
+			return err
+		}
+	}
+	confirmPrompt := a.msg("继续生成新的随机面板用户名和密码？", "Continue with a new random panel username and password?")
+	if mode == CredentialCustom {
+		confirmPrompt = a.msg("确认立即写入自定义面板账号和密码？现有会话会失效。", "Apply the custom panel account and password now? Existing sessions will be logged out.")
+	}
+	if !a.yes(confirmPrompt, false) {
 		return nil
 	}
-	command := "source " + remoteRoot + "/linux/lib-handoff.sh; handoff_begin_run; bash " + remoteRoot + "/linux/03c-rotate-panel-credentials.sh"
+	inputPath := ""
+	if mode == CredentialCustom {
+		inputPath, err = a.writeCredentialInput(c, map[string]string{
+			"PANEL_USERNAME_B64": customAccount,
+			"PANEL_PASSWORD_B64": customPassword,
+		})
+		if err != nil {
+			return err
+		}
+		defer a.removeInstallAutoInput(c, inputPath)
+	}
+	command := "source " + remoteRoot + "/linux/lib-handoff.sh; handoff_begin_run; "
+	command += "PNA_PANEL_CREDENTIAL_MODE=" + shQuote(string(mode))
+	if inputPath != "" {
+		command += " PNA_CREDENTIAL_INPUT=" + shQuote(inputPath)
+	}
+	command += " bash " + remoteRoot + "/linux/03c-rotate-panel-credentials.sh"
 	result := a.rootCapture(c, command)
+	if inputPath != "" {
+		// Do not keep a custom secret file around while fetching/rendering the
+		// handoff.  The deferred cleanup below remains the failure fallback.
+		a.removeInstallAutoInput(c, inputPath)
+	}
 	if !result.OK() {
 		return fmt.Errorf(a.msg("面板凭据轮换失败（退出码 %d）：%s", "Panel credential rotation failed (exit %d): %s"), result.ExitCode, processFailureDetail(result))
 	}

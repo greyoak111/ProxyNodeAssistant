@@ -64,6 +64,13 @@ func TestInstallEnvironmentCarriesOnlyModesPortsAndRandomInput(t *testing.T) {
 	plan := validGrayPlan()
 	plan.Preferences.RouteMode = RouteDual
 	plan.Orange = RouteIdentity{Domain: "cdn.example.com", Email: "cdn-ops@example.com"}
+	plan.Credentials = CredentialPlan{
+		VPSMode:       CredentialCustom,
+		VPSPassword:   "vps-secret-not-in-command",
+		PanelMode:     CredentialCustom,
+		PanelAccount:  "operator_1",
+		PanelPassword: "panel-secret-not-in-command",
+	}
 	environment := app.installEnvironment(Connection{User: "root"}, plan, "/tmp/proxy-node-assistant-auto-input-001122", "1")
 	for _, required := range []string{
 		"TNA_ROUTE_MODE='dual'",
@@ -76,13 +83,15 @@ func TestInstallEnvironmentCarriesOnlyModesPortsAndRandomInput(t *testing.T) {
 		"TNA_CDN_ORIGIN_PORT='8443'",
 		"TNA_WARP_PORT='40000'",
 		"PNA_SS2022_PORT='32443'",
+		"TNA_VPS_PASSWORD_MODE='custom'",
+		"TNA_PANEL_CREDENTIAL_MODE='custom'",
 		"TNA_AUTO_INPUT='/tmp/proxy-node-assistant-auto-input-001122'",
 	} {
 		if !strings.Contains(environment, required) {
 			t.Fatalf("install environment is missing %q: %s", required, environment)
 		}
 	}
-	for _, secretOrIdentity := range []string{plan.Gray.Domain, plan.Gray.Email, plan.Orange.Domain, plan.Orange.Email} {
+	for _, secretOrIdentity := range []string{plan.Gray.Domain, plan.Gray.Email, plan.Orange.Domain, plan.Orange.Email, plan.Credentials.VPSPassword, plan.Credentials.PanelPassword, plan.Credentials.PanelAccount} {
 		if strings.Contains(environment, secretOrIdentity) {
 			t.Fatalf("install environment leaked route identity %q: %s", secretOrIdentity, environment)
 		}

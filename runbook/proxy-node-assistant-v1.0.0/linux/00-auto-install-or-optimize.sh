@@ -95,6 +95,12 @@ WARP_LOOPBACK_PORT="${TNA_WARP_LOOPBACK_PORT:-${TNA_WARP_PORT:-40000}}"
 # explicitly supplied by an existing-node migration; it is not the new default.
 SS2022_TCP_PORT="${PNA_SS2022_PORT:-32443}"
 
+# Login credential policy is supplied by the v1 client in the one-run input
+# file.  Empty values retain the v0.9.x interactive behavior for operators who
+# invoke this script directly; a v1 client always sends an explicit mode.
+VPS_PASSWORD_MODE="${TNA_VPS_PASSWORD_MODE:-}"
+PANEL_CREDENTIAL_MODE="${TNA_PANEL_CREDENTIAL_MODE:-}"
+
 config_error() {
   red "INSTALL_PLAN_INVALID: $*"
   exit 64
@@ -212,10 +218,24 @@ if [ -n "$AUTO_INPUT" ] && [ ! -r "$AUTO_INPUT" ]; then
   config_error "TNA_AUTO_INPUT is not readable"
 fi
 if [ -n "$AUTO_INPUT" ]; then
+  # The desktop/Android client creates this root-only file with an atomic
+  # O_EXCL write.  Validate it before reading even non-secret mode fields so a
+  # caller cannot make the root installer inspect an arbitrary path or symlink.
+  [[ "$AUTO_INPUT" =~ ^/tmp/proxy-node-assistant-(auto-input|credential-input)-[0-9a-f]{6,64}$ ]] || \
+    config_error "TNA_AUTO_INPUT is outside the one-run namespace"
+  [ ! -L "$AUTO_INPUT" ] || config_error "TNA_AUTO_INPUT must not be a symlink"
+  [ "$(stat -c '%u' -- "$AUTO_INPUT" 2>/dev/null || echo 99999)" = "0" ] || \
+    config_error "TNA_AUTO_INPUT must be root-owned"
+  case "$(stat -c '%a' -- "$AUTO_INPUT" 2>/dev/null || echo 000)" in
+    600|400) ;;
+    *) config_error "TNA_AUTO_INPUT must have mode 0600 or stricter" ;;
+  esac
   GDB64="$(sed -n 's/^GRAY_DOMAIN_B64=//p' "$AUTO_INPUT" | sed -n '1p')"
   GEB64="$(sed -n 's/^GRAY_EMAIL_B64=//p' "$AUTO_INPUT" | sed -n '1p')"
   ODB64="$(sed -n 's/^ORANGE_DOMAIN_B64=//p' "$AUTO_INPUT" | sed -n '1p')"
   OEB64="$(sed -n 's/^ORANGE_EMAIL_B64=//p' "$AUTO_INPUT" | sed -n '1p')"
+  [ -n "$VPS_PASSWORD_MODE" ] || VPS_PASSWORD_MODE="$(sed -n 's/^VPS_PASSWORD_MODE=//p' "$AUTO_INPUT" | sed -n '1p')"
+  [ -n "$PANEL_CREDENTIAL_MODE" ] || PANEL_CREDENTIAL_MODE="$(sed -n 's/^PANEL_CREDENTIAL_MODE=//p' "$AUTO_INPUT" | sed -n '1p')"
   [ -n "$GDB64" ] || GDB64="$(sed -n 's/^DOMAIN_B64=//p' "$AUTO_INPUT" | sed -n '1p')"
   [ -n "$GEB64" ] || GEB64="$(sed -n 's/^EMAIL_B64=//p' "$AUTO_INPUT" | sed -n '1p')"
   LB="$(sed -n 's/^LANG=//p' "$AUTO_INPUT" | sed -n '1p')"
@@ -224,9 +244,19 @@ if [ -n "$AUTO_INPUT" ]; then
   [ -n "$ODB64" ] && INPUT_ORANGE_DOMAIN="$(printf '%s' "$ODB64" | base64 -d 2>/dev/null || true)"
   [ -n "$OEB64" ] && INPUT_ORANGE_EMAIL="$(printf '%s' "$OEB64" | base64 -d 2>/dev/null || true)"
   case "$LB" in zh|en) RUN_LANG="$LB";; esac
-  # The decoded values now live only in this process. Remove the randomized
-  # one-run file immediately; the EXIT trap remains as the failure fallback.
-  cleanup_auto_input
+  # The route-only legacy path used to remove the one-run file immediately; the EXIT trap remains as the failure fallback. Explicit credential modes defer
+  # removal until both rotation scripts have consumed the 0600 file.  The
+  # rotation scripts validate ownership/path and the outer EXIT trap remains a
+  # second cleanup boundary.  Route identities are still held only in this
+  # process after decoding.
+fi
+
+VPS_PASSWORD_MODE="${VPS_PASSWORD_MODE:-legacy}"
+PANEL_CREDENTIAL_MODE="${PANEL_CREDENTIAL_MODE:-legacy}"
+case "$VPS_PASSWORD_MODE" in legacy|preserve|random|custom) ;; *) config_error "unknown VPS password mode '$VPS_PASSWORD_MODE'" ;; esac
+case "$PANEL_CREDENTIAL_MODE" in legacy|preserve|random|custom) ;; *) config_error "unknown panel credential mode '$PANEL_CREDENTIAL_MODE'" ;; esac
+if [ "$VPS_PASSWORD_MODE" = custom ] || [ "$PANEL_CREDENTIAL_MODE" = custom ]; then
+  [ -n "$AUTO_INPUT" ] || config_error "custom credentials require a one-run input file"
 fi
 
 [ "$(id -u)" -eq 0 ] || { red "Run as root/sudo."; exit 1; }
@@ -484,6 +514,21 @@ if [ -z "$CLEAN_PATH" ] || [ "${#CLEAN_PATH}" -lt 10 ]; then
   fi
 fi
 
+# The client-selected v1 policy is applied before exporting/validating the
+# panel handoff.  `legacy` keeps the direct-script v0.9.x behavior; explicit
+# preserve/random/custom choices never fall back to an implicit mutation.
+case "$PANEL_CREDENTIAL_MODE" in
+  random)
+    PNA_PANEL_CREDENTIAL_MODE=random bash "$ROOT/linux/03c-rotate-panel-credentials.sh"
+    ;;
+  custom)
+    PNA_PANEL_CREDENTIAL_MODE=custom PNA_CREDENTIAL_INPUT="$AUTO_INPUT" PNA_CREDENTIAL_INPUT_KEEP=1 \
+      bash "$ROOT/linux/03c-rotate-panel-credentials.sh"
+    ;;
+  preserve|legacy)
+    ;;
+esac
+
 # Fresh official credentials are shown in full; existing panel creds are exported where retrievable.
 bash "$ROOT/linux/03d-export-panel-handoff.sh" "$NODE_MODE"
 
@@ -497,6 +542,12 @@ if [ -n "$PANEL_STORED_USER" ] && [ -n "$PANEL_STORED_PASSWORD" ] && xui_passwor
   credential_store_set PANEL_USERNAME "$PANEL_STORED_USER"
   credential_store_set PANEL_PASSWORD "$PANEL_STORED_PASSWORD"
   green "PANEL_LOGIN_CREDENTIALS_VERIFIED_AND_RETAINED"
+elif [ "$PANEL_CREDENTIAL_MODE" = "preserve" ]; then
+  red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: requested panel credential preservation, but the retained password could not be verified."
+  exit 83
+elif [ "$PANEL_CREDENTIAL_MODE" = "random" ] || [ "$PANEL_CREDENTIAL_MODE" = "custom" ]; then
+  red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: requested panel credential policy did not produce a verifiable login."
+  exit 83
 else
   credential_store_delete_pair PANEL
   handoff_delete PANEL_USERNAME
@@ -556,7 +607,31 @@ step "SSH / VPS LOGIN CREDENTIALS"
 STORED_VPS_USER="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_USER 2>/dev/null || true)"
 STORED_VPS_PASSWORD="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_PASSWORD 2>/dev/null || true)"
 VPS_PASSWORD_READY=0
-if [ -f "$PRIVATE_DIR/vps-password-generated.marker" ] && [ -n "$(credential_value_from_file "$HANDOFF_FILE" VPS_LOGIN_PASSWORD 2>/dev/null || true)" ]; then
+if [ "$VPS_PASSWORD_MODE" = "random" ]; then
+  PROXY_RUNBOOK_LOGIN_USER="$LOGIN_USER" PNA_VPS_PASSWORD_MODE=random \
+    bash "$ROOT/linux/01a-rotate-vps-password.sh" "$LOGIN_USER"
+  touch "$PRIVATE_DIR/vps-password-generated.marker"; chmod 600 "$PRIVATE_DIR/vps-password-generated.marker"
+  VPS_PASSWORD_READY=1
+elif [ "$VPS_PASSWORD_MODE" = "custom" ]; then
+  PROXY_RUNBOOK_LOGIN_USER="$LOGIN_USER" PNA_VPS_PASSWORD_MODE=custom \
+    PNA_CREDENTIAL_INPUT="$AUTO_INPUT" PNA_CREDENTIAL_INPUT_KEEP=1 \
+    bash "$ROOT/linux/01a-rotate-vps-password.sh" "$LOGIN_USER"
+  touch "$PRIVATE_DIR/vps-password-generated.marker"; chmod 600 "$PRIVATE_DIR/vps-password-generated.marker"
+  VPS_PASSWORD_READY=1
+elif [ "$VPS_PASSWORD_MODE" = "preserve" ]; then
+  if [ "$STORED_VPS_USER" = "$LOGIN_USER" ] && [ -n "$STORED_VPS_PASSWORD" ]; then
+    # Re-apply a retained password only when explicitly requested. The SSH key
+    # remains the transport anchor during this operation.
+    printf '%s:%s\n' "$LOGIN_USER" "$STORED_VPS_PASSWORD" | chpasswd
+    handoff_set VPS_LOGIN_USER "$LOGIN_USER"
+    handoff_set VPS_LOGIN_PASSWORD "$STORED_VPS_PASSWORD"
+    green "VPS_LOGIN_CREDENTIALS_REAPPLIED_AND_RETAINED"
+    VPS_PASSWORD_READY=1
+  else
+    red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: requested VPS credential preservation, but no retained password is available."
+    exit 84
+  fi
+elif [ -f "$PRIVATE_DIR/vps-password-generated.marker" ] && [ -n "$(credential_value_from_file "$HANDOFF_FILE" VPS_LOGIN_PASSWORD 2>/dev/null || true)" ]; then
   green "A runbook-generated VPS password is already present; not rotating it again automatically."
   VPS_PASSWORD_READY=1
 elif [ "$STORED_VPS_USER" = "$LOGIN_USER" ] && [ -n "$STORED_VPS_PASSWORD" ]; then
@@ -585,6 +660,10 @@ else
   fi
 fi
 [ "$VPS_PASSWORD_READY" -eq 1 ] || { red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: VPS password was not established."; exit 84; }
+# No credential value is needed from the auto-input file after both explicit
+# rotation branches have run. Remove it before the remainder of the wizard;
+# the EXIT trap still covers failures before this point.
+cleanup_auto_input
 handoff_login_form_complete || {
   red "LOGIN_CREDENTIAL_FORM_INCOMPLETE: refusing to print or copy a partial credential handoff."
   exit 85
