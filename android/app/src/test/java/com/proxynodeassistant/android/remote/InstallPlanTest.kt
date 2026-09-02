@@ -131,6 +131,13 @@ class InstallPlanTest {
         )
         assertThrows(IllegalArgumentException::class.java) { invalidSecret.validate(existingNode = true) }
 
+        val nulSecret = AndroidCredentialPlan(
+            vpsMode = InstallCredentialMode.CUSTOM,
+            vpsPassword = "valid\u0000secret",
+            panelMode = InstallCredentialMode.RANDOM,
+        )
+        assertThrows(IllegalArgumentException::class.java) { nulSecret.validate(existingNode = true) }
+
         val invalidPanel = AndroidCredentialPlan(
             vpsMode = InstallCredentialMode.RANDOM,
             panelMode = InstallCredentialMode.CUSTOM,

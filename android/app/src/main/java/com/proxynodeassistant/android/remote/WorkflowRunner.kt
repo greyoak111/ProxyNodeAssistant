@@ -26,12 +26,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -1080,7 +1082,7 @@ class WorkflowRunner(
         while (true) {
             val answer = Validation.singleLineSecret(prompts.ask(title, message, PromptKind.SECRET, placeholder = tr("至少 8 个字符", "at least 8 characters")))
             if (AndroidCredentialPlan.validSecret(answer)) return answer
-            log("INPUT_REJECTED: $title (8..256 characters, no CR/LF)")
+            log("INPUT_REJECTED: $title (8..256 characters, no NUL/CR/LF)")
         }
     }
 
@@ -1113,17 +1115,27 @@ class WorkflowRunner(
         val path = "/tmp/proxy-node-assistant-$kind-${randomToken()}"
         val payload = Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP) + "\n"
         val payloadBytes = payload.toByteArray(Charsets.US_ASCII)
-        val result = handle.exec(
-            // `head -c` consumes the exact payload and closes its pipe.  This
-            // gives base64 an EOF even though the SSH session remains open
-            // for the command's stdout/stderr pumps.
-            "set -Eeuo pipefail; umask 077; set -C; head -c ${payloadBytes.size} | base64 -d > ${SshHandle.shellQuote(path)}; set +C; chmod 600 ${SshHandle.shellQuote(path)}; test \"\$(stat -c '%u %a' ${SshHandle.shellQuote(path)} 2>/dev/null)\" = '0 600'",
-            root = true,
-            stdinBytes = payloadBytes,
-            log = { },
-        )
-        check(result.ok) { "one-run input creation failed (exit ${result.exitCode})" }
-        return path
+        try {
+            val result = handle.exec(
+                // `head -c` consumes the exact payload and closes its pipe.  This
+                // gives base64 an EOF even though the SSH session remains open
+                // for the command's stdout/stderr pumps.
+                "set -Eeuo pipefail; umask 077; set -C; head -c ${payloadBytes.size} | base64 -d > ${SshHandle.shellQuote(path)}; set +C; chmod 600 ${SshHandle.shellQuote(path)}; test \"\$(stat -c '%u %a' ${SshHandle.shellQuote(path)} 2>/dev/null)\" = '0 600'",
+                root = true,
+                stdinBytes = payloadBytes,
+                log = { },
+            )
+            check(result.ok) { "one-run input creation failed (exit ${result.exitCode})" }
+            return path
+        } catch (error: Throwable) {
+            // The caller cannot receive the path when exec/check fails.  Clean
+            // it here in a non-cancellable context so a failed or cancelled
+            // [5]/[6] custom-credential run never leaves a root-readable secret
+            // in /tmp.  The command is bounded by removeOneRunInput's exact
+            // namespace/shape check.
+            withContext(NonCancellable) { removeOneRunInput(handle, path) }
+            throw error
+        }
     }
 
     private suspend fun removeOneRunInput(handle: SshHandle, path: String) {
@@ -2551,8 +2563,8 @@ class WorkflowRunner(
 
     companion object {
         const val VERSION = "1.0.0"
-        const val BUILD_ID = "20260901-v100-ss2022-r102"
-        const val BUILD_REVISION = 102
+        const val BUILD_ID = "20260901-v100-ss2022-r103"
+        const val BUILD_REVISION = 103
         const val REMOTE_ROOT = "/opt/proxy-node-assistant-current"
         const val LEGACY_TEXT_REMOTE_ROOT = "/opt/text-node-assistant-current"
         const val LEGACY_REMOTE_ROOT = "/opt/proxy-runbook-current"

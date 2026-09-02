@@ -65,11 +65,11 @@ internal data class AndroidCredentialPlan(
             require(panelMode != InstallCredentialMode.PRESERVE) { "fresh install cannot preserve panel credentials" }
         }
         if (vpsMode == InstallCredentialMode.CUSTOM) {
-            require(validSecret(vpsPassword)) { "custom VPS password must be 8..256 characters without CR/LF" }
+            require(validSecret(vpsPassword)) { "custom VPS password must be 8..256 characters without NUL/CR/LF" }
         }
         if (panelMode == InstallCredentialMode.CUSTOM) {
             require(validPanelAccount(panelAccount)) { "custom panel account has invalid characters" }
-            require(validSecret(panelPassword)) { "custom panel password must be 8..256 characters without CR/LF" }
+            require(validSecret(panelPassword)) { "custom panel password must be 8..256 characters without NUL/CR/LF" }
         }
     }
 
@@ -85,9 +85,10 @@ internal data class AndroidCredentialPlan(
 
         fun validPanelAccount(value: String): Boolean = panelAccountPattern.matches(value)
 
-        /** Keep spaces meaningful; reject only empty/newline-containing values. */
+        /** Keep spaces meaningful; reject empty values and shell/control delimiters. */
         fun validSecret(value: String): Boolean =
-            value.length in 8..256 && value.isNotEmpty() && !value.contains('\r') && !value.contains('\n')
+            value.length in 8..256 && value.isNotEmpty() &&
+                !value.contains('\u0000') && !value.contains('\r') && !value.contains('\n')
     }
 }
 
