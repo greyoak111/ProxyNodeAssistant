@@ -13,6 +13,11 @@ chmod 700 "$PRIVATE_DIR"
 chmod 755 "$PUBLIC_DIR"
 
 . "$ROOT/linux/lib-handoff.sh"
+# The panel handoff validation below calls xui_password_login_works before the
+# optional WARP reconciliation stage.  Source the helper at process start so
+# existing-node runs cannot reach that check with an undefined function.
+# shellcheck source=lib-xui-api.sh
+. "$ROOT/linux/lib-xui-api.sh"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -876,7 +881,6 @@ fi
 
 if [ "$WARP_OK" -eq 1 ] && [ "$WARP_ROUTE_RECONCILE" -eq 1 ]; then
   step "PERSISTENT OPENAI -> WARP ROUTING"
-  . "$ROOT/linux/lib-xui-api.sh"
   if xui_api_context; then
     XR="$(xui_auth_curl -X POST "${XUI_BASE}/panel/api/xray/" || true)"
     HAVE="$(jq -r '

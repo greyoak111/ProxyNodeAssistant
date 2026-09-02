@@ -104,6 +104,28 @@ if ($unsafeEmailOutput) {
 Require-Literal 'echo "  proxy-node"' 'the final maintenance command must prefer the reset product command'
 Require-Literal 'legacy compatibility command: text-node' 'the old maintenance command may remain only as an explicit compatibility hint'
 
+# The existing-node credential handoff verifies the retained panel password
+# before the later WARP stage.  Keep the x-ui helper loaded before that call;
+# otherwise Bash reaches xui_password_login_works as an undefined command and
+# incorrectly reports a remote rc=83/command-not-found failure.
+$coreLines = $source -split "`n"
+$xuiHelperLine = 0
+$panelLoginCheckLine = 0
+for ($i = 0; $i -lt $coreLines.Count; $i++) {
+    if ($coreLines[$i].Trim() -eq '. "$ROOT/linux/lib-xui-api.sh"') {
+        if ($xuiHelperLine -ne 0) {
+            throw 'the core installer sources lib-xui-api.sh more than once'
+        }
+        $xuiHelperLine = $i + 1
+    }
+    if ($coreLines[$i] -match 'xui_password_login_works "\$PANEL_STORED_USER"') {
+        $panelLoginCheckLine = $i + 1
+    }
+}
+if ($xuiHelperLine -eq 0 -or $panelLoginCheckLine -eq 0 -or $xuiHelperLine -ge $panelLoginCheckLine) {
+    throw 'lib-xui-api.sh must be sourced before retained panel credential verification'
+}
+
 # The remote maintenance menu is another user-facing credential entry point,
 # not just the desktop/Android front end.  Keep its P/X actions in parity with
 # the clients: random/custom/cancel, masked confirmation, and a root-only
