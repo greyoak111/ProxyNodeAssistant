@@ -143,8 +143,11 @@ func TestSS2022AllowlistMenuHasSeparateCRUDEntry(t *testing.T) {
 	if !strings.Contains(allowlistText, hint) {
 		t.Fatalf("one-shot allowlist action does not point to the parallel CRUD action: %s", hint)
 	}
-	if !strings.Contains(allowlistText, `ss2022ScriptCommand("allow", observed)+"; "+ss2022ScriptCommand("status")`) {
+	if !strings.Contains(allowlistText, `ss2022ScriptCommand("allow", observed)+" && "+ss2022ScriptCommand("status")`) {
 		t.Fatal("one-shot allowlist mutation does not use the compatibility root resolver")
+	}
+	if !strings.Contains(allowlistText, `ss2022ScriptCommand("status") + " && " + ss2022ScriptCommand("list")`) {
+		t.Fatal("one-shot status/list path does not fail closed when status is unhealthy")
 	}
 	if strings.Contains(allowlistText, `"bash "+remoteRoot+"/linux/23-ss2022-tcp.sh allow`) {
 		t.Fatal("one-shot allowlist mutation still hard-codes the canonical toolkit root")

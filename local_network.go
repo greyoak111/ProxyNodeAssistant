@@ -359,7 +359,10 @@ func ss2022ScriptCommand(args ...string) string {
 // hard-coding remoteRoot here used to make the allowlist screen appear to work
 // while silently querying a different (or missing) toolkit path.
 func ss2022StatusAndListCommand() string {
-	return ss2022ScriptCommand("status") + "; " + ss2022ScriptCommand("list")
+	// Keep the status exit code authoritative.  A semicolon would let a
+	// successful list mask an inactive service or an unenforced firewall and
+	// make OP:19 report a false healthy state.
+	return ss2022ScriptCommand("status") + " && " + ss2022ScriptCommand("list")
 }
 
 // parseSS2022Allowlist accepts the marker block emitted by the remote helper
@@ -617,7 +620,8 @@ func (a *App) manageSS2022Allowlist() error {
 	if !a.yes(fmt.Sprintf(a.msg("把当前精确公网 IPv4 %s 加入这台 VPS 的 SS2022 TCP 白名单？", "Add exact current public IPv4 %s to this VPS's SS2022 TCP allowlist?"), observed), false) {
 		return nil
 	}
-	result := a.rootCapture(c, ss2022ScriptCommand("allow", observed)+"; "+ss2022ScriptCommand("status"))
+	// Do not let a successful follow-up status hide a failed allow mutation.
+	result := a.rootCapture(c, ss2022ScriptCommand("allow", observed)+" && "+ss2022ScriptCommand("status"))
 	if !result.OK() {
 		return fmt.Errorf("SS2022 allowlist update failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}
