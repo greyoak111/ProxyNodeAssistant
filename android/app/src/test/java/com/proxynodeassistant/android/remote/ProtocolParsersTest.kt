@@ -131,6 +131,11 @@ class ProtocolParsersTest {
         )
         assertFalse(
             WorkflowRunner.sameVersionIncompleteRepairAllowed(
+                probe(buildId = "", revision = WorkflowRunner.BUILD_REVISION),
+            ),
+        )
+        assertFalse(
+            WorkflowRunner.sameVersionIncompleteRepairAllowed(
                 probe(complete = true, buildId = WorkflowRunner.BUILD_ID, revision = WorkflowRunner.BUILD_REVISION),
             ),
         )

@@ -2621,13 +2621,15 @@ class WorkflowRunner(
          * Only action [1] may replace a partial same-version toolkit, and it
          * does so after the exact APPLY confirmation.  A newer revision (or a
          * divergent ID at the same revision) must remain protected from an
-         * older Android client; missing metadata is treated as an interrupted
-         * upload and is therefore repairable.
+         * older Android client. A revision-zero probe is treated as an
+         * interrupted upload (the metadata was never written), but a
+         * current-revision probe with a blank or divergent ID is ambiguous and
+         * is rejected fail-closed.
          */
         fun sameVersionIncompleteRepairAllowed(probe: ToolkitProbe): Boolean {
             if (!probe.installed || probe.complete || probe.version != VERSION || probe.buildRevision < 0) return false
             if (probe.buildRevision > BUILD_REVISION) return false
-            if (probe.buildRevision == BUILD_REVISION && probe.buildId.isNotBlank() && probe.buildId != BUILD_ID) return false
+            if (probe.buildRevision == BUILD_REVISION && probe.buildId != BUILD_ID) return false
             return true
         }
 
