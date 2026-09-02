@@ -569,6 +569,43 @@ list_sources() {
   echo 'PNA_SS2022_ALLOWLIST_END'
 }
 
+# The ordinary `list` command is kept byte-for-byte compatible with the
+# original maintenance flow.  `snapshot` uses this stricter emitter instead:
+# it rejects a hand-edited state file containing a range, a private address,
+# a malformed line, or duplicate entries before returning data to a client.
+# This keeps the machine-readable management path fail-closed while retaining
+# the small atomic `allow` / `remove` / `list` primitives for older clients.
+list_sources_strict() {
+  local source normalized
+  declare -A seen=()
+  [ -s "$META_FILE" ] || die "service_not_installed"
+  [ "$(meta_value OWNER)" = "$OWNER" ] || die "refused_unmanaged_state"
+  [ -f "$ALLOWLIST_FILE" ] || die "allowlist_missing"
+  echo 'PNA_SS2022_ALLOWLIST_BEGIN'
+  while IFS= read -r source || [ -n "$source" ]; do
+    # Empty lines are not entries.  They are ignored here rather than emitted
+    # as an ambiguous `SOURCE=` record.
+    [ -n "$source" ] || continue
+    normalized="$(normalize_source "$source" 2>/dev/null || true)"
+    [ -n "$normalized" ] && [ "$normalized" = "$source" ] || die "invalid_allowlist_state"
+    [[ -z "${seen[$source]+present}" ]] || die "duplicate_allowlist_state"
+    seen["$source"]=1
+    printf 'SOURCE=%s\n' "$source"
+    previous="$source"
+  done < "$ALLOWLIST_FILE"
+  echo 'PNA_SS2022_ALLOWLIST_END'
+}
+
+# Read the status and allowlist as one fail-closed operation.  `status` is
+# deliberately called first and its non-zero result is propagated, so an
+# inactive service, missing listener, or unenforced firewall can never be
+# mistaken for a healthy empty list.  On success the existing status/list
+# markers are emitted unchanged for clients that already parse them.
+snapshot() {
+  status || return $?
+  list_sources_strict
+}
+
 uninstall_service() {
   local purge_state="${1:-keep-state}"
   if [ -e "$UNIT_FILE" ] && ! grep -Fqx '# Managed by ProxyNodeAssistant v1.0.0' "$UNIT_FILE" 2>/dev/null; then
@@ -617,11 +654,12 @@ case "$MODE" in
   allow) allow_source "${1:-}" ;;
   remove) remove_source "${1:-}" ;;
   list) list_sources ;;
+  snapshot) snapshot ;;
   status) status ;;
   handoff) write_handoff; echo 'PNA_SS2022_HANDOFF_UPDATED=1' ;;
   retire-trial-after-verify) retire_trial_after_verify "${1:-}" ;;
   firewall-apply) "$FIREWALL_HELPER" apply ;;
   uninstall) uninstall_service "${1:-keep-state}" ;;
-  *) die "usage: $0 {ensure [port] [initial-ip]|allow ip|remove ip|list|status|handoff|retire-trial-after-verify [old-port]|uninstall [keep-state|purge-state]}" ;;
+  *) die "usage: $0 {ensure [port] [initial-ip]|allow ip|remove ip|list|snapshot|status|handoff|retire-trial-after-verify [old-port]|uninstall [keep-state|purge-state]}" ;;
 esac
 trap - EXIT

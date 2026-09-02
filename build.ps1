@@ -126,7 +126,8 @@ if (-not $SkipCommonValidation) {
         "scripts/test-feature-retirement-static.ps1",
         "scripts/test-reset-core-install-modes-static.ps1",
         "scripts/test-android-reset-static.ps1",
-        "scripts/test-deterministic-tar-static.ps1"
+        "scripts/test-deterministic-tar-static.ps1",
+        "scripts/test-ss2022-allowlist-static.ps1"
     )) {
         & powershell -NoProfile -ExecutionPolicy Bypass -File $staticTest
         if ($LASTEXITCODE -ne 0) { throw "Static reset-line validation failed: $staticTest" }
