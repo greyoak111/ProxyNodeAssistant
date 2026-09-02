@@ -81,17 +81,22 @@ Assert-Match $workflow 'PNA_CREDENTIAL_INPUT' "Android menu [5]/[6] no longer pa
 Assert-Match $workflow 'inputPath\?\.let \{ path -> withContext\(NonCancellable\) \{ removeOneRunInput\(handle, path\) \} \}' "Android menu [5]/[6] lost its cancellation-safe one-run cleanup"
 
 # Action [19] is an allowlist mutation, so it must fail closed before showing
-# the confirmation prompt. Keep status and list as separate calls: a successful
-# list command must never mask a missing/inactive listener or firewall.
-Assert-Match $workflow 'val status = handle\.exec\("bash \$REMOTE_ROOT/linux/23-ss2022-tcp\.sh status"' "Android action 19 lost the SS2022 status probe"
+# the confirmation prompt.  The implementation now resolves canonical and
+# legacy toolkit roots in one helper. Keep status and list as separate calls
+# here so a successful list command can never mask a failed/inactive listener
+# or firewall status.
+Assert-Match $workflow 'private fun ss2022Command\(' "Android SS2022 commands lost the canonical/legacy root resolver"
+Assert-Match $workflow 'val status = handle\.exec\(ss2022Command\("status"\)' "Android action 19 lost the SS2022 status probe"
 Assert-Match $workflow 'check\(status\.ok\)' "Android action 19 no longer treats a failed status command as fatal"
-Assert-Match $workflow 'statusValues\["PRESENT"\] == "1" && statusValues\["ACTIVE"\] == "1" && statusValues\["LISTENER"\] == "1" && statusValues\["FIREWALL"\] == "1"' "Android action 19 no longer fails closed on missing SS2022 readiness gates"
-Assert-Match $workflow 'val list = handle\.exec\("bash \$REMOTE_ROOT/linux/23-ss2022-tcp\.sh list"' "Android action 19 lost the separate SS2022 allowlist listing"
-$statusIndex = $workflow.IndexOf('val status = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh status"')
-$gateIndex = $workflow.IndexOf('statusValues["PRESENT"] == "1" && statusValues["ACTIVE"] == "1" && statusValues["LISTENER"] == "1" && statusValues["FIREWALL"] == "1"')
-$listIndex = $workflow.IndexOf('val list = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh list"')
-$promptIndex = $workflow.IndexOf('val answer = prompts.ask(', [Math]::Max($listIndex, 0))
-if ($statusIndex -lt 0 -or $gateIndex -lt $statusIndex -or $listIndex -lt $gateIndex -or $promptIndex -lt $listIndex) {
+Assert-Match $workflow 'PRESENT.*ACTIVE.*LISTENER.*FIREWALL' "Android action 19 no longer exposes all SS2022 readiness gates"
+Assert-Match $workflow 'val list = handle\.exec\(ss2022Command\("list"\)' "Android action 19 lost the separate SS2022 allowlist listing"
+$action19Start = $workflow.IndexOf('private suspend fun manageSS2022Allowlist(')
+$action19 = if ($action19Start -ge 0) { $workflow.Substring($action19Start) } else { '' }
+$statusIndex = $action19.IndexOf('val status = handle.exec(')
+$gateIndex = $action19.IndexOf('check(status.ok)')
+$listIndex = $action19.IndexOf('ss2022Command("list")')
+$promptIndex = $action19.IndexOf('val answer = prompts.ask(', [Math]::Max($listIndex, 0))
+if ($action19Start -lt 0 -or $statusIndex -lt 0 -or $gateIndex -lt $statusIndex -or $listIndex -lt $gateIndex -or $promptIndex -lt $listIndex) {
     throw "Android action 19 may prompt before the SS2022 status/list fail-closed checks"
 }
 $toolkitOnlyPromptIndex = $workflow.IndexOf('private suspend fun updateToolkitOnly(')
