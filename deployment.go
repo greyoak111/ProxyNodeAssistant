@@ -68,7 +68,11 @@ func usableHandoffCredential(value string) bool {
 // the current file after a valid value in an archived handoff; the placeholder
 // must not strand the operator during an in-place upgrade.  The optional alias
 // spellings also let a v1 form be re-imported without requiring the retired
-// VPS_LOGIN_/PANEL_USERNAME source keys to remain visible.
+// VPS_LOGIN_/PANEL_USERNAME source keys to remain visible. The candidate is
+// validated after trimming, but the original candidate is returned unchanged:
+// spaces can be intentional parts of a custom password and must survive a
+// handoff round-trip. Control characters are rejected before returning so a
+// malformed line cannot inject additional handoff records.
 func handoffCredentialValue(raw string, keys ...string) string {
 	wanted := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
@@ -76,15 +80,20 @@ func handoffCredentialValue(raw string, keys ...string) string {
 	}
 	value := ""
 	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
-		name, candidate, ok := strings.Cut(strings.TrimSpace(line), "=")
+		// Cut the original line instead of a trimmed copy. Trimming the line
+		// first would silently remove intentional leading/trailing spaces from
+		// a custom credential value.
+		name, candidate, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
 		if _, ok := wanted[strings.TrimSpace(name)]; !ok {
 			continue
 		}
-		candidate = strings.TrimSpace(candidate)
-		if usableHandoffCredential(candidate) {
+		if strings.ContainsAny(candidate, "\x00\r\n") {
+			continue
+		}
+		if usableHandoffCredential(strings.TrimSpace(candidate)) {
 			value = candidate
 		}
 	}

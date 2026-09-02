@@ -294,6 +294,25 @@ func TestLoginCredentialFormRecoversUsableValueAfterArchivedPlaceholder(t *testi
 	}
 }
 
+func TestLoginCredentialFormPreservesCustomCredentialEdgeSpaces(t *testing.T) {
+	input := strings.Join([]string{
+		"VPS_LOGIN_USER=root",
+		"VPS_LOGIN_PASSWORD=  vps secret  ",
+		"PANEL_USERNAME=panel-admin",
+		"PANEL_PASSWORD=\t panel secret \t",
+	}, "\n")
+	fields, err := loginCredentialFormFields(input)
+	if err != nil {
+		t.Fatalf("custom credentials with edge spaces were rejected: %v", err)
+	}
+	if got, want := fields["FORM_VPS_PASSWORD"], "  vps secret  "; got != want {
+		t.Fatalf("VPS password whitespace was not preserved: got %q want %q", got, want)
+	}
+	if got, want := fields["FORM_PANEL_PASSWORD"], "\t panel secret \t"; got != want {
+		t.Fatalf("panel password whitespace was not preserved: got %q want %q", got, want)
+	}
+}
+
 func TestLoginCredentialFormAcceptsCanonicalAliases(t *testing.T) {
 	input := strings.Join([]string{
 		"VPS_ACCOUNT=canonical-root",
