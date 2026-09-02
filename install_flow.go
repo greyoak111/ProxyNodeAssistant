@@ -280,8 +280,18 @@ func (a *App) chooseWarpMode() (WarpMode, error) {
 func (a *App) chooseCredentialMode(labelZH, labelEN string, existingNode bool) (CredentialMode, error) {
 	a.println()
 	a.println(a.msg(labelZH+"凭据策略：", labelEN+" credential policy:"))
+	// A read-only preflight may have found a complete protected handoff.  In
+	// that case an empty answer is a safe, explicit-preserve shortcut: the
+	// remote installer still verifies the retained values before applying the
+	// plan.  If readiness is unknown/incomplete, keep the old mandatory-choice
+	// behavior so a blank input can never guess or rotate a credential.
+	readinessComplete := existingNode && a.credentialReadiness.complete()
 	if existingNode {
-		a.println(a.msg("[0] 保留并验证当前凭据（不改密码）", "[0] Preserve and verify the current credentials (no password change)"))
+		if readinessComplete {
+			a.println(a.msg("[0] 保留并验证当前凭据（已识别；直接回车也表示保留）", "[0] Preserve and verify the current credentials (detected; Enter also preserves)"))
+		} else {
+			a.println(a.msg("[0] 保留并验证当前凭据（不改密码）", "[0] Preserve and verify the current credentials (no password change)"))
+		}
 	}
 	a.println(a.msg("[1] 生成新的随机凭据", "[1] Generate new random credentials"))
 	a.println(a.msg("[2] 自定义凭据（密码仅本次加密输入，绝不写入设置/命令）", "[2] Custom credentials (secret is sent only for this run; never saved in settings/argv)"))
@@ -289,6 +299,9 @@ func (a *App) chooseCredentialMode(labelZH, labelEN string, existingNode bool) (
 		answer := strings.ToLower(strings.TrimSpace(a.prompt(a.msg(labelZH+"策略（必须明确选择）", labelEN+" policy (explicit choice required)"))))
 		if a.inputClosed {
 			return "", errInputClosed
+		}
+		if answer == "" && readinessComplete {
+			return CredentialPreserve, nil
 		}
 		switch answer {
 		case "0":

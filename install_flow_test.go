@@ -1,12 +1,47 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestCredentialPolicyBlankPreservesOnlyAfterReadOnlyCompleteDetection(t *testing.T) {
+	complete := CredentialReadiness{
+		VPSUserPresent:       true,
+		VPSPasswordPresent:   true,
+		PanelUserPresent:      true,
+		PanelPasswordPresent:  true,
+		Complete:              true,
+		Source:                "handoff",
+	}
+	app := &App{
+		reader:             bufio.NewReader(strings.NewReader("\n")),
+		lang:               LangEN,
+		credentialReadiness: complete,
+	}
+	mode, err := app.chooseCredentialMode("VPS login", "VPS login", true)
+	if err != nil {
+		t.Fatalf("complete readiness should allow a blank preserve shortcut: %v", err)
+	}
+	if mode != CredentialPreserve {
+		t.Fatalf("blank input selected %q, want preserve", mode)
+	}
+
+	unknown := &App{
+		reader: bufio.NewReader(strings.NewReader("\n")),
+		lang:   LangEN,
+	}
+	if _, err := unknown.chooseCredentialMode("VPS login", "VPS login", true); err == nil {
+		t.Fatal("blank input must remain invalid when readiness is unknown")
+	}
+	if !unknown.inputClosed {
+		t.Fatal("EOF after the rejected blank input should stop the prompt loop")
+	}
+}
 
 func TestRandomOneRunInputPathIsBoundedAndUnique(t *testing.T) {
 	first, err := randomOneRunInputPath()

@@ -191,8 +191,8 @@ credential_store_seed_pair() {
   done < <(handoff_all_candidate_files)
 
   if [ -n "$store_user" ] && [ -n "$store_password" ]; then
-    credential_store_set "$key_user" "$store_user"
-    credential_store_set "$key_password" "$store_password"
+    credential_store_set "$key_user" "$store_user" || return 1
+    credential_store_set "$key_password" "$store_password" || return 1
     return 0
   fi
   return 1
