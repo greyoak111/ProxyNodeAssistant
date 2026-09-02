@@ -752,7 +752,7 @@ private fun formatDateTime(epochMs: Long, language: Language): String = SimpleDa
 @Composable
 private fun AboutScreen(language: Language) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageHeader("BUILD 1.0.0-R106 / ANDROID", if (language == Language.ZH) "原生 Kotlin + Compose；SSH 基于 ConnectBot 正式 sshlib；远端复用 ProxyNodeAssistant v1.0.0 工具包。" else "Native Kotlin + Compose; ConnectBot production sshlib; shared ProxyNodeAssistant v1.0.0 remote toolkit.")
+        PageHeader("BUILD 1.0.0-R107 / ANDROID", if (language == Language.ZH) "原生 Kotlin + Compose；SSH 基于 ConnectBot 正式 sshlib；远端复用 ProxyNodeAssistant v1.0.0 工具包。" else "Native Kotlin + Compose; ConnectBot production sshlib; shared ProxyNodeAssistant v1.0.0 remote toolkit.")
         LocalBlock(uiText(language, "隐私契约", "PRIVACY CONTRACT"), uiText(language, "不内置任何真实节点", "NO EMBEDDED TARGETS"), uiText(language, "APK 中不编译任何真实 VPS IP、域名、邮箱、密码、API Key、Token 或私钥。", "No real VPS IP, domain, email, password, API key, token, or private key is compiled into the APK."))
         LocalBlock(uiText(language, "SSH 主机公钥", "HOST KEY"), uiText(language, "首次信任 + 指纹固定", "TOFU + PINNING"), uiText(language, "首次连接必须明确确认 TRUST；主机公钥变化时必须输入不同的 REPLACE，并且只在密码学握手成功后保存。", "First-use fingerprints require explicit TRUST. A changed key requires the distinct REPLACE confirmation and is saved only after a successful cryptographic handshake."))
         LocalBlock(uiText(language, "失败即停止", "FAIL CLOSED"), uiText(language, "不串联伪成功", "NO CHAINED SUCCESS"), uiText(language, "远端非零退出码绝不会触发凭据复制或自动打开面板；结构化元数据必须通过标记和字段校验。", "Non-zero remote exit codes never trigger handoff copy or automatic panel opening. Structured metadata must pass marker and field validation."))

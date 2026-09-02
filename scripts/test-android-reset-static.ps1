@@ -27,8 +27,8 @@ Assert-Match $gradle 'versionName\s*=\s*"1\.0\.0"' "Android visible version is n
 $workflow = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/WorkflowRunner.kt"
 $protocolParsers = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/ProtocolParsers.kt"
 Assert-Match $workflow 'const val VERSION = "1\.0\.0"' "Android workflow visible version is not v1.0.0"
-Assert-Match $workflow 'const val BUILD_REVISION = 106' "Android workflow revision is not 106"
-Assert-Match $workflow 'const val BUILD_ID = "20260901-v100-ss2022-r106"' "Android workflow build id is not revision 106"
+Assert-Match $workflow 'const val BUILD_REVISION = 107' "Android workflow revision is not 107"
+Assert-Match $workflow 'const val BUILD_ID = "20260901-v100-ss2022-r107"' "Android workflow build id is not revision 107"
 Assert-Match $workflow 'Ss2022PortPolicy\.FORMAL_PORT' "Android workflow does not use the formal SS2022 port policy"
 Assert-Match $workflow 'Ss2022PortPolicy\.TRIAL_PORT' "Android workflow lost 30443 trial compatibility"
 Assert-Match $workflow 'const val REMOTE_ROOT = "/opt/proxy-node-assistant-current"' "Android workflow does not use the current ProxyNodeAssistant remote root"
@@ -113,7 +113,7 @@ if ($toolkitOnlyBranchIndex -lt 0 -or $fullPlanIndex -lt 0 -or $toolkitOnlyBranc
 }
 
 $appUi = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppUi.kt"
-Assert-Match $appUi 'BUILD 1\.0\.0-R106 / ANDROID' "Android UI build label is not revision R106"
+Assert-Match $appUi 'BUILD 1\.0\.0-R107 / ANDROID' "Android UI build label is not revision R107"
 
 $appViewModel = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppViewModel.kt"
 # The dashboard may remain mounted while a workflow or another process writes
@@ -182,8 +182,8 @@ foreach ($handoffRoot in @('text-node-assistant', 'proxy-runbook', 'proxy-node-a
 $androidBuilder = Read-RepoFile "android/build-android.ps1"
 Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/00-bootstrap-toolkit\.sh' "Android build no longer verifies the fresh-VPS bootstrap entry"
 Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/28-topology-reconcile\.sh' "Android build no longer verifies the explicit route reconciler"
-Assert-Match $androidBuilder '20260901-v100-ss2022-r106' "Android build no longer verifies the exact toolkit build id"
-Assert-Match $androidBuilder '\$archiveBuildRevision -ne "106"' "Android build no longer verifies toolkit revision 106"
+Assert-Match $androidBuilder '20260901-v100-ss2022-r107' "Android build no longer verifies the exact toolkit build id"
+Assert-Match $androidBuilder '\$archiveBuildRevision -ne "107"' "Android build no longer verifies toolkit revision 107"
 
 $installPlan = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/InstallPlan.kt"
 foreach ($requiredPlanValue in @('TNA_ROUTE_MODE', 'TNA_PERFORMANCE_MODE', 'TNA_WARP_MODE', 'TNA_COVER_TEMPLATE', 'TNA_REALITY_PRODUCTION_PORT', 'TNA_REALITY_SHADOW_PORT', 'TNA_CDN_ORIGIN_PORT', 'TNA_WARP_LOOPBACK_PORT', 'TNA_PLAN_CONFIRMED', 'TNA_AUTO_INPUT')) {
@@ -250,8 +250,8 @@ foreach ($entry in @(
 $archiveVersion = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_VERSION' | Out-String).Trim()
 $archiveBuildId = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID' | Out-String).Trim()
 $archiveRevision = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION' | Out-String).Trim()
-if ($archiveVersion -ne '1.0.0' -or $archiveBuildId -ne '20260901-v100-ss2022-r106' -or $archiveRevision -ne '106') {
-    throw "Embedded toolkit metadata is not the exact v1.0.0 revision-106 build"
+if ($archiveVersion -ne '1.0.0' -or $archiveBuildId -ne '20260901-v100-ss2022-r107' -or $archiveRevision -ne '107') {
+    throw "Embedded toolkit metadata is not the exact v1.0.0 revision-107 build"
 }
 
 Write-Host "ANDROID_RESET_STATIC_OK"

@@ -47,6 +47,24 @@ function Assert-DocumentContains {
     '--apply|--status'
 ) | ForEach-Object { Assert-Contains $_ }
 
+# jq programs in the retirement path must be literal single-quoted filters.
+# Shell interpolation of a multi-line filter was the source of the remote
+# quoting regression (including the old escaped jq id expression).  Values
+# such as an inbound id must cross the shell boundary with --argjson instead.
+@(
+    'Keep every jq program single-quoted and pass data with --arg/--argjson.',
+    "jq -c '",
+    'def tna_managed_client:',
+    '--argjson id "$id"',
+    '[.obj[] | select(.id == $id)'
+) | ForEach-Object { Assert-Contains $_ }
+if ($source.Contains('xui_managed_filter')) {
+    throw 'feature-retirement script still interpolates a shell jq filter variable'
+}
+if ($source.Contains('\$id')) {
+    throw 'feature-retirement script still escapes a jq variable for the shell'
+}
+
 @(
     'rm -rf -- /etc/proxy-node-assistant',
     'rm -rf -- "$STATE_DIR"',

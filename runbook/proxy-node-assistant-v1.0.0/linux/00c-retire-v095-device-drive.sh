@@ -190,16 +190,24 @@ collect_authorized_key_changes() {
   done < /etc/passwd
 }
 
-xui_managed_filter='def tna_managed_client:
-  (((.comment // "") | test("^(tna|pna)-device:")) or
-   ((.email // "") | test("^(tna|pna)-device:")));
-'
+# Keep every jq program single-quoted and pass data with --arg/--argjson.
+# The previous implementation interpolated a multi-line shell variable into
+# each jq invocation.  That made the jq source dependent on shell quoting and
+# required an escaped jq id variable in one read-back filter; on some remote
+# shells the resulting program was parsed differently (or failed before the
+# API call).
+# Repeating this short predicate deliberately keeps the program text literal,
+# so a shell can never expand jq variables or inject whitespace into it.
 
 xui_payload() {
-  jq -c "$xui_managed_filter
+  jq -c '
+    def tna_managed_client:
+      (((.comment // "") | test("^(tna|pna)-device:")) or
+       ((.email // "") | test("^(tna|pna)-device:")));
     {enable,remark,listen,port,protocol,expiryTime,total,settings,streamSettings,sniffing,
      tag,allocate,subSortIndex,trafficReset,trafficResetDay,shareAddrStrategy,shareAddr}
-    | .settings.clients |= map(select(tna_managed_client | not))" "$1"
+    | .settings.clients |= map(select(tna_managed_client | not))
+  ' "$1"
 }
 
 xui_original_payload() {
@@ -232,13 +240,21 @@ collect_xui_changes() {
   while IFS= read -r id; do
     [[ "$id" =~ ^[0-9]+$ ]] || die XUI_INBOUND_ID_INVALID
     object="$(jq -c --argjson id "$id" '.obj[] | select(.id == $id)' <<<"$list")"
-    managed_count="$(jq "$xui_managed_filter [.settings.clients[]? | select(tna_managed_client)] | length" <<<"$object")"
+    managed_count="$(jq '
+      def tna_managed_client:
+        (((.comment // "") | test("^(tna|pna)-device:")) or
+         ((.email // "") | test("^(tna|pna)-device:")));
+      [.settings.clients[]? | select(tna_managed_client)] | length
+    ' <<<"$object")"
     [ "$managed_count" -gt 0 ] || continue
     printf '%s\n' "$object" > "$WORK/xui-original/$id.json"
     xui_payload "$WORK/xui-original/$id.json" > "$WORK/xui-payload/$id.json"
-    jq -c "$xui_managed_filter
-      {inboundId:.id,remark:(.remark // ""),managedClients:[.settings.clients[]? | select(tna_managed_client)]}" \
-      <<<"$object" >> "$WORK/archive/evidence/removed-xui-clients.jsonl"
+    jq -c '
+      def tna_managed_client:
+        (((.comment // "") | test("^(tna|pna)-device:")) or
+         ((.email // "") | test("^(tna|pna)-device:")));
+      {inboundId:.id,remark:(.remark // ""),managedClients:[.settings.clients[]? | select(tna_managed_client)]}
+    ' <<<"$object" >> "$WORK/archive/evidence/removed-xui-clients.jsonl"
     XUI_MANAGED_CLIENTS=$((XUI_MANAGED_CLIENTS + managed_count))
     CHANGE_COUNT=$((CHANGE_COUNT + 1))
   done < <(jq -r '.obj[]?.id' <<<"$list")
@@ -317,12 +333,20 @@ rollback_xui() {
 
 verify_unmanaged_clients_unchanged() {
   local id="$1" expected current
-  expected="$(jq -S -c "$xui_managed_filter [.settings.clients[]? | select(tna_managed_client | not)]" "$WORK/xui-original/$id.json")"
+  expected="$(jq -S -c '
+    def tna_managed_client:
+      (((.comment // "") | test("^(tna|pna)-device:")) or
+       ((.email // "") | test("^(tna|pna)-device:")));
+    [.settings.clients[]? | select(tna_managed_client | not)]
+  ' "$WORK/xui-original/$id.json")"
   current="$(xui_api_get '/panel/api/inbounds/list')" || return 1
   jq -e '.success == true and (.obj | type == "array")' <<<"$current" >/dev/null || return 1
-  jq -S -c --argjson id "$id" "$xui_managed_filter
-    [.obj[] | select(.id == \$id) | .settings.clients[]? | select(tna_managed_client | not)]" \
-    <<<"$current" | grep -Fxq "$expected"
+  jq -S -c --argjson id "$id" '
+    def tna_managed_client:
+      (((.comment // "") | test("^(tna|pna)-device:")) or
+       ((.email // "") | test("^(tna|pna)-device:")));
+    [.obj[] | select(.id == $id) | .settings.clients[]? | select(tna_managed_client | not)]
+  ' <<<"$current" | grep -Fxq "$expected"
 }
 
 apply_xui_changes() {
@@ -423,7 +447,12 @@ verify_retirement() {
   if [ "$XUI_PRESENT" -eq 1 ]; then
     list="$(xui_api_get '/panel/api/inbounds/list')" || die XUI_FINAL_READBACK_FAILED
     jq -e '.success == true and (.obj | type == "array")' <<<"$list" >/dev/null || die XUI_FINAL_READBACK_INVALID
-    managed="$(jq "$xui_managed_filter [.obj[]?.settings.clients[]? | select(tna_managed_client)] | length" <<<"$list")"
+    managed="$(jq '
+      def tna_managed_client:
+        (((.comment // "") | test("^(tna|pna)-device:")) or
+         ((.email // "") | test("^(tna|pna)-device:")));
+      [.obj[]?.settings.clients[]? | select(tna_managed_client)] | length
+    ' <<<"$list")"
     [ "$managed" -eq 0 ] || die XUI_MANAGED_CLIENT_STILL_PRESENT
   fi
   if [ "$DRIVE_OWNED" -eq 1 ]; then
