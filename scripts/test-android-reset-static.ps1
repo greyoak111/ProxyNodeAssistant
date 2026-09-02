@@ -110,6 +110,15 @@ if ($toolkitOnlyBranchIndex -lt 0 -or $fullPlanIndex -lt 0 -or $toolkitOnlyBranc
 $appUi = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppUi.kt"
 Assert-Match $appUi 'BUILD 1\.0\.0-R105 / ANDROID' "Android UI build label is not revision R105"
 
+$appViewModel = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppViewModel.kt"
+# The dashboard may remain mounted while a workflow or another process writes
+# recent targets/keys.  Remote forms must refresh both repositories at the
+# point the dialog opens, rather than relying on the ViewModel-construction
+# snapshot (which previously made users navigate/refresh to see credentials).
+Assert-Match $appViewModel 'val freshTargets = container\.targets\.list\(\)' "Android remote form does not refresh recent targets before opening"
+Assert-Match $appViewModel 'val freshKeys = container\.managedKeys\.list\(\)' "Android remote form does not refresh managed keys before opening"
+Assert-Match $appViewModel 'selectedAction = action,[\s\S]*showConnection = true,[\s\S]*targets = freshTargets,[\s\S]*keys = freshKeys' "Android remote form does not publish refreshed target/key data"
+
 # Opening a connection dialog restores only the latest non-secret endpoint.
 # A corresponding bound key may be selected, but a missing key leaves auth
 # unselected so the user must explicitly choose a method.  Password state must

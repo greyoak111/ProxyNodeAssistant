@@ -75,7 +75,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "T" -> navigate(AppPage.PROVIDER)
             "K" -> navigate(AppPage.KEYS)
             "H" -> navigate(AppPage.HISTORY)
-            else -> _ui.value = _ui.value.copy(selectedAction = action, showConnection = true)
+            else -> {
+                // Re-read the repositories immediately before opening a remote
+                // connection form.  The dashboard can stay mounted while a
+                // previous workflow (or another process) writes a recent
+                // target/key, so the state captured at ViewModel creation is
+                // not authoritative.  Without this refresh the form appears
+                // empty/stale until the user navigates away and back.
+                val freshTargets = container.targets.list()
+                val freshKeys = container.managedKeys.list()
+                _ui.value = _ui.value.copy(
+                    selectedAction = action,
+                    showConnection = true,
+                    targets = freshTargets,
+                    keys = freshKeys,
+                )
+            }
         }
     }
 
