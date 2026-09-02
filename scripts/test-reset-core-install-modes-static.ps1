@@ -104,4 +104,29 @@ if ($unsafeEmailOutput) {
 Require-Literal 'echo "  proxy-node"' 'the final maintenance command must prefer the reset product command'
 Require-Literal 'legacy compatibility command: text-node' 'the old maintenance command may remain only as an explicit compatibility hint'
 
+# The remote maintenance menu is another user-facing credential entry point,
+# not just the desktop/Android front end.  Keep its P/X actions in parity with
+# the clients: random/custom/cancel, masked confirmation, and a root-only
+# one-run file rather than a plaintext command argument or environment value.
+$menuPath = Join-Path $repo 'runbook/proxy-node-assistant-v1.0.0/linux/13-maintenance-menu.sh'
+if (-not (Test-Path -LiteralPath $menuPath -PathType Leaf)) {
+    throw "missing maintenance menu: $menuPath"
+}
+$menuSource = (Get-Content -Raw -LiteralPath $menuPath) -replace "`r`n", "`n"
+function Require-MenuLiteral([string]$needle, [string]$message) {
+    if (-not $menuSource.Contains($needle)) {
+        throw "$message (missing: $needle)"
+    }
+}
+Require-MenuLiteral 'P) 生成/轮换 VPS 登录密码（随机/自定义/取消）并显示' 'maintenance VPS credential action must advertise all policies'
+Require-MenuLiteral 'X) 生成/轮换 3x-ui 用户名密码（随机/自定义/取消）并显示' 'maintenance panel credential action must advertise all policies'
+Require-MenuLiteral 'read -r -s -p' 'maintenance custom secrets must be entered with masking'
+Require-MenuLiteral 'create_credential_input' 'maintenance custom secrets must use the one-run input-file path'
+Require-MenuLiteral 'trap cleanup_credential_input EXIT' 'maintenance custom input must have an EXIT cleanup trap'
+Require-MenuLiteral 'PNA_VPS_PASSWORD_MODE=custom PNA_CREDENTIAL_INPUT=' 'maintenance VPS custom mode must pass only the input-file path'
+Require-MenuLiteral 'PNA_PANEL_CREDENTIAL_MODE=custom PNA_CREDENTIAL_INPUT=' 'maintenance panel custom mode must pass only the input-file path'
+if ($menuSource -match '(?m)PNA_(?:VPS_PASSWORD|PANEL_PASSWORD|PANEL_USERNAME)_B64=') {
+    throw 'maintenance menu must never pass a credential base64 value through an environment variable'
+}
+
 Write-Host 'RESET_CORE_INSTALL_MODES_STATIC_OK'
