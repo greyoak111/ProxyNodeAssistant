@@ -289,7 +289,34 @@ func migrateLegacyLocalState() (localMigrationRecord, error) {
 	if data, readErr := os.ReadFile(journal); readErr == nil {
 		var completed localMigrationRecord
 		if json.Unmarshal(data, &completed) == nil && completed.Schema == localMigrationSchema && completed.CompletedAt != "" {
-			return completed, nil
+			// The first migration may have completed before a legacy node key was
+			// created/imported (for example, when a user binds the 160 node after
+			// first launching v1).  Do a cheap copy-first scan of both key trees
+			// on every startup instead of treating the journal as a permanent
+			// snapshot.  Existing files are never overwritten and the legacy tree
+			// remains recoverable.
+			newKeys, legacyKeys, newRevoked, legacyRevoked, keyErr := managedKeyRootsForMigration()
+			if keyErr != nil {
+				return completed, keyErr
+			}
+			incremental := completed
+			incremental.Copied = nil
+			incremental.Warnings = nil
+			if keyErr := copyLegacyTree(legacyKeys, newKeys, &incremental.Copied); keyErr != nil {
+				return completed, keyErr
+			}
+			if keyErr := copyLegacyTree(legacyRevoked, newRevoked, &incremental.Copied); keyErr != nil {
+				return completed, keyErr
+			}
+			if len(incremental.Copied) == 0 {
+				return completed, nil
+			}
+			incremental.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			incremental.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			if writeErr := writeJSONAtomic(journal, incremental, 0600); writeErr != nil {
+				return incremental, writeErr
+			}
+			return incremental, nil
 		}
 	}
 	if err := os.MkdirAll(currentRoot, 0700); err != nil {
