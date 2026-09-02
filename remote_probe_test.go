@@ -46,3 +46,46 @@ func TestRemoteToolkitProbeChecksCurrentAndLegacyRoots(t *testing.T) {
 		t.Fatal("reset-line toolkit probe must not make retired device/drive features completeness requirements")
 	}
 }
+
+func TestCredentialReadinessAndHandoffCommandsKeepProtectedStoresInScope(t *testing.T) {
+	readiness := remoteCredentialReadinessCommand()
+	for _, required := range []string{
+		"__PNA_CREDENTIAL_READINESS_BEGIN__",
+		"__PNA_CREDENTIAL_READINESS_END__",
+		"/root/.config/proxy-runbook",
+		"/root/.config/text-node-assistant",
+		"/root/.config/proxy-node-assistant",
+		"CURRENT-LOGIN-CREDENTIALS.env",
+		"FORM_VPS_ACCOUNT",
+		"FORM_VPS_PASSWORD",
+		"FORM_PANEL_ACCOUNT",
+		"FORM_PANEL_PASSWORD",
+	} {
+		if !strings.Contains(readiness, required) {
+			t.Fatalf("credential readiness probe lost %q", required)
+		}
+	}
+	// The preflight may report only presence bits.  It must never stream a
+	// file, variable, or canonical secret field to stdout.
+	for _, forbidden := range []string{
+		"cat \"$file\"",
+		"printf '%s\\n' \"$value\"",
+		"VPS_LOGIN_PASSWORD=%s",
+		"PANEL_PASSWORD=%s",
+	} {
+		if strings.Contains(readiness, forbidden) {
+			t.Fatalf("credential readiness probe may expose secret material via %q", forbidden)
+		}
+	}
+
+	handoff := remoteHandoffCommand()
+	for _, required := range []string{
+		"/root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env",
+		"/root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env",
+		"/root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env",
+	} {
+		if !strings.Contains(handoff, required) {
+			t.Fatalf("handoff exporter lost protected store %q", required)
+		}
+	}
+}

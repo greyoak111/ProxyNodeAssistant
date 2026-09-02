@@ -20,6 +20,13 @@ const (
 	diagEnd      = "__PNA_DIAG_V1_END__"
 	toolkitBegin = "__PNA_TOOLKIT_PROBE_BEGIN__"
 	toolkitEnd   = "__PNA_TOOLKIT_PROBE_END__"
+	// Credential readiness is a deliberately secret-free preflight.  It tells
+	// the install form whether a complete retained VPS/panel login bundle is
+	// available, without transporting any account or password value to the
+	// client.  The actual preserve path still verifies the credentials remotely
+	// before committing an upgrade.
+	credentialReadinessBegin = "__PNA_CREDENTIAL_READINESS_BEGIN__"
+	credentialReadinessEnd   = "__PNA_CREDENTIAL_READINESS_END__"
 
 	// v0.9.5 used the TNA marker namespace.  Keep these aliases while the
 	// reset line emits PNA markers so an existing toolkit can still be queried
@@ -41,6 +48,7 @@ var closedPattern = regexp.MustCompile(`(?i)^Connection to .+ closed\.$`)
 var diagCodePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var toolkitVersionPattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,3}$`)
 var toolkitBuildPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+var credentialReadinessSourcePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,32}$`)
 
 type ToolkitProbe struct {
 	Present       bool
@@ -48,6 +56,25 @@ type ToolkitProbe struct {
 	BuildID       string
 	BuildRevision int
 	Complete      bool
+}
+
+// CredentialReadiness describes only whether the protected remote handoff
+// contains each required login field.  It intentionally carries no secret
+// material.  A complete result permits the install form to treat an empty
+// credential-policy answer as "preserve and verify"; the installer remains
+// authoritative and can still reject a stale/unverifiable password.
+type CredentialReadiness struct {
+	VPSUserPresent       bool
+	VPSPasswordPresent   bool
+	PanelUserPresent     bool
+	PanelPasswordPresent bool
+	Complete             bool
+	Source               string
+}
+
+func (r CredentialReadiness) complete() bool {
+	return r.Complete && r.VPSUserPresent && r.VPSPasswordPresent &&
+		r.PanelUserPresent && r.PanelPasswordPresent
 }
 
 type ToolkitRelation string
@@ -152,6 +179,81 @@ func parseKV(value string) map[string]string {
 		}
 	}
 	return result
+}
+
+// parseCredentialReadiness validates the secret-free readiness block emitted
+// by remoteCredentialReadinessCommand.  Every marker is required and must be
+// exactly 0/1; malformed or truncated output is treated as unknown by the
+// caller instead of becoming an implicit preserve decision.
+func parseCredentialReadiness(stdout string) (CredentialReadiness, error) {
+	payload, err := extractMarkedBlock(stdout, credentialReadinessBegin, credentialReadinessEnd)
+	if err != nil {
+		return CredentialReadiness{}, fmt.Errorf("credential readiness rejected: %w", err)
+	}
+	values := parseKV(payload)
+	// The readiness channel is deliberately presence-only.  Reject a response
+	// that tries to smuggle an account/password (or a future credential alias)
+	// through the marked block instead of silently ignoring it.  This keeps the
+	// Go parser's contract aligned with the Android parser and makes an
+	// accidental `cat`/full-handoff regression fail closed.
+	for key := range values {
+		if (strings.Contains(key, "PASSWORD") || strings.Contains(key, "USERNAME") || strings.Contains(key, "ACCOUNT")) && !strings.HasSuffix(key, "_PRESENT") {
+			return CredentialReadiness{}, fmt.Errorf("credential readiness unexpectedly contains credential data: %s", key)
+		}
+	}
+	readBool := func(key string) (bool, error) {
+		value, ok := values[key]
+		if !ok {
+			return false, fmt.Errorf("credential readiness marker %s is missing", key)
+		}
+		switch value {
+		case "0":
+			return false, nil
+		case "1":
+			return true, nil
+		default:
+			return false, fmt.Errorf("credential readiness marker %s is invalid", key)
+		}
+	}
+	vpsUser, err := readBool("VPS_LOGIN_USER_PRESENT")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	vpsPassword, err := readBool("VPS_LOGIN_PASSWORD_PRESENT")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	panelUser, err := readBool("PANEL_USERNAME_PRESENT")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	panelPassword, err := readBool("PANEL_PASSWORD_PRESENT")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	complete, err := readBool("COMPLETE")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	source := strings.TrimSpace(values["SOURCE"])
+	if source == "" {
+		source = "unknown"
+	}
+	if !credentialReadinessSourcePattern.MatchString(source) {
+		return CredentialReadiness{}, errors.New("credential readiness source is invalid")
+	}
+	result := CredentialReadiness{
+		VPSUserPresent:       vpsUser,
+		VPSPasswordPresent:   vpsPassword,
+		PanelUserPresent:     panelUser,
+		PanelPasswordPresent: panelPassword,
+		Complete:             complete,
+		Source:               source,
+	}
+	if complete != (vpsUser && vpsPassword && panelUser && panelPassword) {
+		return CredentialReadiness{}, errors.New("credential readiness complete marker disagrees with field markers")
+	}
+	return result, nil
 }
 
 func validateHandoff(stdout string) (string, error) {

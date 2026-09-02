@@ -1977,6 +1977,103 @@ func (a *App) remoteToolkitProbe(c Connection) (ToolkitProbe, error) {
 	return parseToolkitProbe(result.Stdout)
 }
 
+// remoteCredentialReadinessCommand performs a read-only, secret-free scan of
+// the protected login handoff. It emits presence bits only; passwords never
+// cross the SSH stdout channel during this preflight. The full installer later
+// reads the root-only store and verifies the preserve choice, so a stale
+// handoff can never silently be accepted.
+func remoteCredentialReadinessCommand() string {
+	command := "printf '%s\\n' " + shQuote(credentialReadinessBegin) + `
+# The probe must work before the v1 package is uploaded.  A v0.9.0 toolkit
+# has a lib-handoff.sh, but it does not have credential_value_from_file or
+# handoff_all_candidate_files; sourcing it and calling those newer helpers
+# would silently report every existing credential as absent.  Keep this
+# scanner self-contained and read-only so old and new toolkits share the same
+# detection contract.
+credential_value_present() {
+  local file="$1" wanted="$2"
+  awk -v wanted="$wanted" '
+    function matches(candidate) {
+      if (wanted == "VPS_LOGIN_USER")
+        return candidate == "VPS_LOGIN_USER" || candidate == "VPS_ACCOUNT" || candidate == "FORM_VPS_ACCOUNT"
+      if (wanted == "VPS_LOGIN_PASSWORD")
+        return candidate == "VPS_LOGIN_PASSWORD" || candidate == "VPS_PASSWORD" || candidate == "FORM_VPS_PASSWORD"
+      if (wanted == "PANEL_USERNAME")
+        return candidate == "PANEL_USERNAME" || candidate == "PANEL_ACCOUNT" || candidate == "XUI_USERNAME" || candidate == "FORM_PANEL_ACCOUNT"
+      if (wanted == "PANEL_PASSWORD")
+        return candidate == "PANEL_PASSWORD" || candidate == "XUI_PASSWORD" || candidate == "FORM_PANEL_PASSWORD"
+      return candidate == wanted
+    }
+    {
+      separator=index($0, "=")
+      if (separator <= 0) next
+      name=substr($0, 1, separator-1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      if (!matches(name)) next
+      value=substr($0, separator+1)
+      upper=toupper(value)
+      if (value != "" && upper !~ /^(UNKNOWN|NOT_RETAINED|SSH_KEY_ONLY)/) found=1
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$file" >/dev/null 2>&1
+}
+
+credential_candidate_files() {
+  local dir
+  # These are the only handoff roots used by the reset line and the v0.9.x
+  # compatibility line.  Keep the protected stores first, then current files,
+  # then newest archives.  Paths are consumed internally and never printed in
+  # the readiness payload.
+  for dir in /root/.config/proxy-runbook /root/.config/text-node-assistant /root/.config/proxy-node-assistant; do
+    printf '%s\n' "$dir/CURRENT-LOGIN-CREDENTIALS.env" "$dir/HANDOFF-SECRETS.txt"
+    if [ -d "$dir/handoff-archive" ]; then
+      find "$dir/handoff-archive" -maxdepth 1 -type f -name 'HANDOFF-*.txt' \
+        -printf '%T@ %p\n' 2>/dev/null | sort -nr | while IFS= read -r entry; do
+          printf '%s\n' "${entry#* }"
+        done
+    fi
+  done
+}
+
+value_present() {
+  local key="$1" file
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    [ -r "$file" ] || continue
+    if credential_value_present "$file" "$key"; then
+      return 0
+    fi
+  done < <(credential_candidate_files)
+  return 1
+}
+vps_user=0; vps_password=0; panel_user=0; panel_password=0
+value_present VPS_LOGIN_USER && vps_user=1 || true
+value_present VPS_LOGIN_PASSWORD && vps_password=1 || true
+value_present PANEL_USERNAME && panel_user=1 || true
+value_present PANEL_PASSWORD && panel_password=1 || true
+complete=0
+if [ "$vps_user" = 1 ] && [ "$vps_password" = 1 ] && [ "$panel_user" = 1 ] && [ "$panel_password" = 1 ]; then complete=1; fi
+source_name=unavailable
+if [ "$complete" = 1 ] || [ "$vps_user" = 1 ] || [ "$vps_password" = 1 ] || [ "$panel_user" = 1 ] || [ "$panel_password" = 1 ]; then
+  source_name=handoff
+fi
+printf 'VPS_LOGIN_USER_PRESENT=%s\nVPS_LOGIN_PASSWORD_PRESENT=%s\nPANEL_USERNAME_PRESENT=%s\nPANEL_PASSWORD_PRESENT=%s\nCOMPLETE=%s\nSOURCE=%s\n' "$vps_user" "$vps_password" "$panel_user" "$panel_password" "$complete" "$source_name"
+` + "printf '%s\\n' " + shQuote(credentialReadinessEnd) + "\n"
+	return command
+}
+
+// remoteCredentialReadiness is intentionally best-effort. A missing or
+// legacy handoff leaves the install form usable with an explicit policy
+// choice; only a validated complete block enables the convenient
+// Enter=preserve default.
+func (a *App) remoteCredentialReadiness(c Connection) (CredentialReadiness, error) {
+	result := a.rootCapture(c, remoteCredentialReadinessCommand())
+	if !result.OK() {
+		return CredentialReadiness{}, fmt.Errorf("credential readiness probe failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
+	}
+	return parseCredentialReadiness(result.Stdout)
+}
+
 func (a *App) toolkitInstalled(c Connection) bool {
 	probe, err := a.remoteToolkitProbe(c)
 	if err != nil {
@@ -2210,14 +2307,21 @@ printf 'PROXY_RUNBOOK_UNINSTALL_END\n'
 	return script.String()
 }
 
-func (a *App) fetchHandoff(c Connection) (string, error) {
+// remoteHandoffCommand returns the read-only exporter used by the protected
+// handoff panel and by the final install verification.  Keep it separate from
+// the SSH call so the compatibility roots and protected-store coverage can be
+// tested without a live VPS.
+func remoteHandoffCommand() string {
 	// A v0.9.x node may still keep its truth handoff under the legacy
 	// text-node-assistant directory.  Emit archived runs first (oldest to
-	// newest by mtime), then the live files.  parseKV's last-value-wins
-	// behavior lets a newer run override stale fields while preserving protocol
-	// fields absent from that run.  The find expressions are intentionally
-	// read-only and only target the two root-owned handoff directories; no
-	// arbitrary paths or secret values enter argv.
+	// newest by mtime), then the live files and finally the protected login
+	// stores.  A failed run can clear HANDOFF-SECRETS.txt before restoring the
+	// store, so omitting CURRENT-LOGIN-CREDENTIALS.env makes the next form look
+	// incomplete even though all four credentials are still safely retained.
+	// parseKV's last-value-wins behavior lets a newer run override stale fields
+	// while preserving protocol fields absent from that run.  The find
+	// expressions are intentionally read-only and only target root-owned
+	// handoff directories; no arbitrary paths or secret values enter argv.
 	command := "printf '%s\\n' " + shQuote(handoffBegin) + "; " +
 		// Stored handoffs can contain a complete marker block copied from an
 		// older run.  Do not let those nested markers terminate the outer
@@ -2227,9 +2331,17 @@ func (a *App) fetchHandoff(c Connection) (string, error) {
 		"emit_archive() { find \"$1\" -maxdepth 1 -type f -name 'HANDOFF-*.txt' -printf '%T@ %p\\n' 2>/dev/null | sort -n | while IFS= read -r entry; do f=\"${entry#* }\"; [ -f \"$f\" ] && emit_file \"$f\"; done; }; " +
 		"emit_archive /root/.config/text-node-assistant/handoff-archive; " +
 		"[ -r /root/.config/text-node-assistant/HANDOFF-SECRETS.txt ] && emit_file /root/.config/text-node-assistant/HANDOFF-SECRETS.txt || true; " +
+		"[ -r /root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true; " +
 		"emit_archive /root/.config/proxy-runbook/handoff-archive; " +
 		"[ -r /root/.config/proxy-runbook/HANDOFF-SECRETS.txt ] && emit_file /root/.config/proxy-runbook/HANDOFF-SECRETS.txt || true; " +
+		"[ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env || true; " +
+		"[ -r /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env ] && emit_file /root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env || true; " +
 		"printf '%s\\n' " + shQuote(handoffEnd)
+	return command
+}
+
+func (a *App) fetchHandoff(c Connection) (string, error) {
+	command := remoteHandoffCommand()
 	result := a.rootCapture(c, command)
 	if !result.OK() {
 		return "", fmt.Errorf("handoff fetch failed (exit %d): %s", result.ExitCode, processFailureDetail(result))

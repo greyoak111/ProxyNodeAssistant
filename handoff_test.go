@@ -239,6 +239,49 @@ func TestValidateHandoffAcceptsLegacyCredentialAliasOnlyPayload(t *testing.T) {
 	}
 }
 
+func TestCredentialReadinessParserIsPresenceOnly(t *testing.T) {
+	complete := strings.Join([]string{
+		"noise",
+		credentialReadinessBegin,
+		"VPS_LOGIN_USER_PRESENT=1",
+		"VPS_LOGIN_PASSWORD_PRESENT=1",
+		"PANEL_USERNAME_PRESENT=1",
+		"PANEL_PASSWORD_PRESENT=1",
+		"COMPLETE=1",
+		"SOURCE=handoff-archive",
+		credentialReadinessEnd,
+	}, "\n")
+	readiness, err := parseCredentialReadiness(complete)
+	if err != nil || !readiness.complete() || readiness.Source != "handoff-archive" {
+		t.Fatalf("valid complete readiness rejected: %#v %v", readiness, err)
+	}
+
+	incomplete := strings.Join([]string{
+		credentialReadinessBegin,
+		"VPS_LOGIN_USER_PRESENT=1",
+		"VPS_LOGIN_PASSWORD_PRESENT=0",
+		"PANEL_USERNAME_PRESENT=1",
+		"PANEL_PASSWORD_PRESENT=1",
+		"COMPLETE=0",
+		credentialReadinessEnd,
+	}, "\n")
+	readiness, err = parseCredentialReadiness(incomplete)
+	if err != nil || readiness.complete() || readiness.VPSPasswordPresent {
+		t.Fatalf("valid incomplete readiness was not preserved as incomplete: %#v %v", readiness, err)
+	}
+
+	for _, malformed := range []string{
+		strings.Replace(complete, "COMPLETE=1", "COMPLETE=2", 1),
+		strings.Replace(complete, "PANEL_PASSWORD_PRESENT=1", "PANEL_PASSWORD=secret", 1),
+		strings.Replace(complete, "SOURCE=handoff-archive", "SOURCE=bad value", 1),
+		strings.Replace(complete, "COMPLETE=1", "COMPLETE=0", 1),
+	} {
+		if _, err := parseCredentialReadiness(malformed); err == nil {
+			t.Fatalf("malformed readiness was accepted: %q", malformed)
+		}
+	}
+}
+
 func TestExtractMarkedBlockDoesNotStopAtNestedSameMarkers(t *testing.T) {
 	input := strings.Join([]string{
 		"noise",
