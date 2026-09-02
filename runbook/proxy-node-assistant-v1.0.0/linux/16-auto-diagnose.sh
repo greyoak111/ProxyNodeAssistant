@@ -179,8 +179,12 @@ if [ -n "${COVER_DOMAIN:-}" ]; then
   # healthy 2097 adapter report a false SUBSCRIPTION_PROXY_MISSING warning.
   # nginx -T writes the rendered configuration to stderr on supported nginx
   # builds.  Discarding stderr makes a valid proxy look absent, so merge both
-  # streams before matching the localhost upstream.
-  if nginx -T 2>&1 | grep -Eq 'proxy_pass[[:space:]]+http://127\.0\.0\.1:(2096|2097);' >/dev/null; then
+  # streams before matching the localhost upstream.  Do not pipe nginx -T
+  # directly into grep: with pipefail enabled nginx can receive SIGPIPE after
+  # grep has found a match (exit 141), which would turn a healthy proxy into a
+  # false warning.  Capture the complete dump first, then search it.
+  NGINX_CONFIG_DUMP="$(nginx -T 2>&1 || true)"
+  if grep -Eq 'proxy_pass[[:space:]]+http://127\.0\.0\.1:(2096|2097);' <<<"$NGINX_CONFIG_DUMP"; then
     pass SUBSCRIPTION_PROXY "HTTPS 伪装站已安全反代订阅路径" "The HTTPS cover site safely proxies the subscription path"
   else
     add_issue SUBSCRIPTION_PROXY_MISSING WARN "HTTPS 订阅反代缺失；面板复制的订阅地址可能不可访问" \
