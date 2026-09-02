@@ -135,7 +135,9 @@ Assert-Match $appUi '已自动载入最近目标的地址' "Connection dialog do
 Assert-Match $appUi 'var password by remember \{ mutableStateOf\(""\) \}' "Connection dialog password became saveable"
 
 $desktopGui = Read-RepoFile "gui/ProxyNodeAssistant.Gui.cs"
-Assert-Match $desktopGui 'string legacy = IOPath\.Combine\(root, "TextNodeAssistant", "recent-targets\.tsv"\)' "Desktop history fallback does not use the legacy TextNodeAssistant path"
+Assert-Match $desktopGui 'private static List<string> RecentTargetsReadPaths\(\)' "Desktop history path resolver is missing"
+Assert-Match $desktopGui 'IOPath\.Combine\(root, "TextNodeAssistant", "recent-targets\.tsv"\)' "Desktop history fallback does not use the legacy TextNodeAssistant path"
+Assert-Match $desktopGui 'string legacy = IOPath\.Combine\(root, "TextNodeAssistant", "settings\.json"\)' "Desktop settings fallback does not use the legacy TextNodeAssistant path"
 Assert-Match $desktopGui 'if \(remoteForm\) RefreshRecentTargets\(true\)' "Desktop operation form does not auto-load the latest endpoint"
 Assert-Match $desktopGui 'private static bool HasManagedKey\(RecentTarget target\)' "Desktop operation form does not gate managed-key default on a local key pair"
 Assert-Match $desktopGui 'connectionAuthMode\.SelectedIndex = HasManagedKey\(target\) \? 2 : 0' "Desktop target selection does not require an explicit auth method when no key exists"

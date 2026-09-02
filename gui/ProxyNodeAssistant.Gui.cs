@@ -1632,7 +1632,7 @@ namespace ProxyNodeAssistant.Gui
         {
             string root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             string current = IOPath.Combine(root, "ProxyNodeAssistant", "settings.json");
-            string legacy = IOPath.Combine(root, "ProxyNodeAssistant", "settings.json");
+            string legacy = IOPath.Combine(root, "TextNodeAssistant", "settings.json");
             if (!File.Exists(current) && File.Exists(legacy))
             {
                 Directory.CreateDirectory(IOPath.GetDirectoryName(current));

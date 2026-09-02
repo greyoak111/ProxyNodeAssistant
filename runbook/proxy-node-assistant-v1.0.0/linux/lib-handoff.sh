@@ -6,6 +6,12 @@
 # useful for isolated tests; TNA_HANDOFF_DIR remains the v0.9.x override.
 HANDOFF_DIR="${PNA_HANDOFF_DIR:-${TNA_HANDOFF_DIR:-/root/.config/proxy-runbook}}"
 LEGACY_HANDOFF_DIR="${PNA_LEGACY_HANDOFF_DIR:-/root/.config/text-node-assistant}"
+# Some v1.0.0 clients wrote the protected handoff below the product-named
+# root before the reset line standardized on proxy-runbook.  Keep that root a
+# read-only migration source too; otherwise the client can report a complete
+# handoff while the installer starts with an empty store and asks for the
+# credentials again.
+RENAMED_HANDOFF_DIR="${PNA_RENAMED_HANDOFF_DIR:-/root/.config/proxy-node-assistant}"
 HANDOFF_FILE="${HANDOFF_DIR}/HANDOFF-SECRETS.txt"
 HANDOFF_ARCHIVE="${HANDOFF_DIR}/handoff-archive"
 HANDOFF_LOGIN_STORE="${HANDOFF_DIR}/CURRENT-LOGIN-CREDENTIALS.env"
@@ -17,15 +23,24 @@ handoff_init() {
 }
 
 handoff_legacy_files() {
-  # Do not emit duplicate paths when a test deliberately points both roots at
-  # the same directory.
-  [ "$LEGACY_HANDOFF_DIR" = "$HANDOFF_DIR" ] || printf '%s\n' \
-    "$LEGACY_HANDOFF_DIR/HANDOFF-SECRETS.txt"
-  [ "$LEGACY_HANDOFF_DIR" = "$HANDOFF_DIR" ] || [ ! -d "$LEGACY_HANDOFF_DIR/handoff-archive" ] || \
-    find "$LEGACY_HANDOFF_DIR/handoff-archive" -maxdepth 1 -type f -name 'HANDOFF-*.txt' \
-      -printf '%T@ %p\n' 2>/dev/null | sort -nr | while IFS= read -r entry; do
-        printf '%s\n' "${entry#* }"
-      done
+  emit_compat_root() {
+    local dir="$1"
+    printf '%s\n' "$dir/CURRENT-LOGIN-CREDENTIALS.env" "$dir/HANDOFF-SECRETS.txt"
+    [ ! -d "$dir/handoff-archive" ] || \
+      find "$dir/handoff-archive" -maxdepth 1 -type f -name 'HANDOFF-*.txt' \
+        -printf '%T@ %p\n' 2>/dev/null | sort -nr | while IFS= read -r entry; do
+          printf '%s\n' "${entry#* }"
+        done
+  }
+
+  # Do not emit duplicate paths when a test deliberately points compatibility
+  # roots at the active directory or at one another.
+  if [ "$LEGACY_HANDOFF_DIR" != "$HANDOFF_DIR" ]; then
+    emit_compat_root "$LEGACY_HANDOFF_DIR"
+  fi
+  if [ "$RENAMED_HANDOFF_DIR" != "$HANDOFF_DIR" ] && [ "$RENAMED_HANDOFF_DIR" != "$LEGACY_HANDOFF_DIR" ]; then
+    emit_compat_root "$RENAMED_HANDOFF_DIR"
+  fi
 }
 
 handoff_all_candidate_files() {
@@ -62,19 +77,20 @@ credential_value_from_file() {
   # rotation).  Match the parser's last-value-wins semantics, while ignoring
   # known non-credentials so a valid archived value can still be migrated.
   value="$(awk -v wanted="$key" '
+    BEGIN { wanted=toupper(wanted) }
     function key_matches(candidate) {
       # v0.9.x used several spellings for the same protected fields.  Keep
       # aliases scoped to their canonical key so a similarly named protocol
       # field can never be mistaken for a credential.  The input is scanned
       # in file order and the last usable occurrence wins across all aliases.
       if (wanted == "VPS_LOGIN_USER")
-        return candidate == "VPS_LOGIN_USER" || candidate == "VPS_ACCOUNT"
+        return candidate == "VPS_LOGIN_USER" || candidate == "VPS_ACCOUNT" || candidate == "FORM_VPS_ACCOUNT"
       if (wanted == "VPS_LOGIN_PASSWORD")
-        return candidate == "VPS_LOGIN_PASSWORD" || candidate == "VPS_PASSWORD"
+        return candidate == "VPS_LOGIN_PASSWORD" || candidate == "VPS_PASSWORD" || candidate == "FORM_VPS_PASSWORD"
       if (wanted == "PANEL_USERNAME")
-        return candidate == "PANEL_USERNAME" || candidate == "PANEL_ACCOUNT" || candidate == "XUI_USERNAME"
+        return candidate == "PANEL_USERNAME" || candidate == "PANEL_ACCOUNT" || candidate == "XUI_USERNAME" || candidate == "FORM_PANEL_ACCOUNT"
       if (wanted == "PANEL_PASSWORD")
-        return candidate == "PANEL_PASSWORD" || candidate == "XUI_PASSWORD"
+        return candidate == "PANEL_PASSWORD" || candidate == "XUI_PASSWORD" || candidate == "FORM_PANEL_PASSWORD"
       return candidate == wanted
     }
     {
@@ -82,20 +98,61 @@ credential_value_from_file() {
       if (separator <= 0) next
       name=substr($0, 1, separator-1)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      name=toupper(name)
       if (!key_matches(name)) next
       candidate=substr($0, separator+1)
-      upper=toupper(candidate)
-      if (candidate != "" && upper !~ /^(UNKNOWN|NOT_RETAINED|SSH_KEY_ONLY)/) value=candidate
+      # Validate a trimmed probe but return the original candidate.  Leading
+      # or trailing spaces can be intentional password characters; an
+      # all-whitespace value, however, must not make readiness appear complete.
+      probe=candidate
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", probe)
+      upper=toupper(probe)
+      if (probe != "" && upper !~ /^(UNKNOWN|NOT_RETAINED|SSH_KEY_ONLY)/) value=candidate
     }
     END {print value}
   ' "$file" 2>/dev/null || true)"
-  case "$value" in
+  value_probe="$value"
+  # Reject placeholders case-insensitively while returning the original
+  # value (custom passwords may intentionally contain edge spaces).
+  value_probe="$(printf '%s' "$value_probe" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  case "${value_probe^^}" in
     ''|UNKNOWN*|NOT_RETAINED*|SSH_KEY_ONLY) return 1 ;;
   esac
   # Bash variables cannot contain NUL bytes; CR/LF are the meaningful shell
   # injection cases to reject here.
   case "$value" in *$'\r'*|*$'\n'*) return 1 ;; esac
+  # Account names are identifiers and cannot contain copy/paste padding.  A
+  # password, in contrast, may intentionally begin/end with spaces and must
+  # remain byte-for-byte intact for authentication.
+  case "${key^^}" in
+    VPS_LOGIN_USER|VPS_ACCOUNT|FORM_VPS_ACCOUNT|PANEL_USERNAME|PANEL_ACCOUNT|XUI_USERNAME|FORM_PANEL_ACCOUNT)
+      value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')" ;;
+  esac
   printf '%s\n' "$value"
+}
+
+# Read one retained login field without forcing callers to know which
+# compatibility root or archive currently owns it.  The protected store is
+# authoritative; the current handoff and then archived/legacy candidates are
+# fallback sources for a first-run migration.  This is deliberately a
+# value-returning helper used only inside root-only code paths--the client-side
+# readiness probe never invokes it and therefore never transports a secret.
+credential_value_from_retained_sources() {
+  local key="$1" file value
+  value="$(credential_value_from_file "$HANDOFF_LOGIN_STORE" "$key" 2>/dev/null || true)"
+  if [ -n "$value" ]; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    value="$(credential_value_from_file "$file" "$key" 2>/dev/null || true)"
+    if [ -n "$value" ]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done < <(handoff_all_candidate_files)
+  return 1
 }
 
 credential_store_set() {
@@ -110,7 +167,15 @@ credential_store_set() {
   handoff_init
   tmp="$(mktemp "${HANDOFF_DIR}/.login-credentials.XXXXXX")" || return 1
   if [ -r "$HANDOFF_LOGIN_STORE" ]; then
-    awk -v wanted="$key" 'index($0, wanted "=") != 1 {print}' "$HANDOFF_LOGIN_STORE" > "$tmp" || true
+    awk -v wanted="$key" '
+      BEGIN { wanted=toupper(wanted) }
+      {
+        separator=index($0, "=")
+        name=separator > 0 ? substr($0, 1, separator-1) : $0
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+        if (toupper(name) != wanted) print
+      }
+    ' "$HANDOFF_LOGIN_STORE" > "$tmp" || true
   fi
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
   chmod 600 "$tmp"
@@ -122,14 +187,22 @@ credential_store_delete_pair() {
   handoff_init
   [ -r "$HANDOFF_LOGIN_STORE" ] || return 0
   tmp="$(mktemp "${HANDOFF_DIR}/.login-credentials.XXXXXX")" || return 1
-  awk -v prefix="$prefix" 'index($0, prefix "_") != 1 {print}' "$HANDOFF_LOGIN_STORE" > "$tmp" || true
+  awk -v prefix="$prefix" '
+    BEGIN { prefix=toupper(prefix) }
+    {
+      separator=index($0, "=")
+      name=separator > 0 ? substr($0, 1, separator-1) : $0
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      if (index(toupper(name), prefix "_") != 1) print
+    }
+  ' "$HANDOFF_LOGIN_STORE" > "$tmp" || true
   chmod 600 "$tmp"
   mv -f -- "$tmp" "$HANDOFF_LOGIN_STORE"
 }
 
 credential_store_seed_pair() {
   local key_user="$1" key_password="$2" file user password candidate
-  local store_user="" store_password="" legacy_store
+  local store_user="" store_password="" legacy_store renamed_store
 
   # A complete protected store is authoritative.  It is written only after a
   # credential has been generated or verified, so never replace it merely
@@ -146,6 +219,19 @@ credential_store_seed_pair() {
   if [ "$LEGACY_HANDOFF_DIR" != "$HANDOFF_DIR" ] && [ -r "$legacy_store" ]; then
     user="$(credential_value_from_file "$legacy_store" "$key_user" 2>/dev/null || true)"
     password="$(credential_value_from_file "$legacy_store" "$key_password" 2>/dev/null || true)"
+    if [ -n "$user" ] && [ -n "$password" ]; then
+      [ -n "$store_user" ] || store_user="$user"
+      [ -n "$store_password" ] || store_password="$password"
+    fi
+  fi
+
+  # The reset-line product root is another protected-store location used by
+  # early v1 clients.  Prefer a complete pair from it before mixing split
+  # values from unrelated archived runs.
+  renamed_store="$RENAMED_HANDOFF_DIR/CURRENT-LOGIN-CREDENTIALS.env"
+  if [ "$RENAMED_HANDOFF_DIR" != "$HANDOFF_DIR" ] && [ "$RENAMED_HANDOFF_DIR" != "$LEGACY_HANDOFF_DIR" ] && [ -r "$renamed_store" ]; then
+    user="$(credential_value_from_file "$renamed_store" "$key_user" 2>/dev/null || true)"
+    password="$(credential_value_from_file "$renamed_store" "$key_password" 2>/dev/null || true)"
     if [ -n "$user" ] && [ -n "$password" ]; then
       [ -n "$store_user" ] || store_user="$user"
       [ -n "$store_password" ] || store_password="$password"
@@ -243,7 +329,15 @@ handoff_set() {
   case "$value" in *$'\r'*|*$'\n'*) return 2 ;; esac
   handoff_init
   tmp="$(mktemp "${HANDOFF_DIR}/.handoff.XXXXXX")" || return 1
-  awk -v wanted="$key" 'index($0, wanted "=") != 1 {print}' "$HANDOFF_FILE" > "$tmp" || true
+  awk -v wanted="$key" '
+    BEGIN { wanted=toupper(wanted) }
+    {
+      separator=index($0, "=")
+      name=separator > 0 ? substr($0, 1, separator-1) : $0
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      if (toupper(name) != wanted) print
+    }
+  ' "$HANDOFF_FILE" > "$tmp" || true
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
   install -m 600 "$tmp" "$HANDOFF_FILE"
   rm -f -- "$tmp"
@@ -254,7 +348,15 @@ handoff_delete() {
   [[ "$key" =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || return 2
   handoff_init
   tmp="$(mktemp "${HANDOFF_DIR}/.handoff.XXXXXX")" || return 1
-  awk -v wanted="$key" 'index($0, wanted "=") != 1 {print}' "$HANDOFF_FILE" > "$tmp" || true
+  awk -v wanted="$key" '
+    BEGIN { wanted=toupper(wanted) }
+    {
+      separator=index($0, "=")
+      name=separator > 0 ? substr($0, 1, separator-1) : $0
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      if (toupper(name) != wanted) print
+    }
+  ' "$HANDOFF_FILE" > "$tmp" || true
   install -m 600 "$tmp" "$HANDOFF_FILE"
   rm -f -- "$tmp"
 }

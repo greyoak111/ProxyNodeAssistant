@@ -419,6 +419,48 @@ func TestLoginCredentialFormAcceptsLegacyXUIAliases(t *testing.T) {
 	}
 }
 
+func TestLoginCredentialFormAcceptsPresentationFormAliases(t *testing.T) {
+	input := strings.Join([]string{
+		"FORM_VPS_ACCOUNT=form-root",
+		"FORM_VPS_PASSWORD=form-vps-password",
+		"FORM_PANEL_ACCOUNT=form-panel",
+		"FORM_PANEL_PASSWORD=form-panel-password",
+	}, "\n")
+	fields, err := loginCredentialFormFields(input)
+	if err != nil {
+		t.Fatalf("presentation FORM_* credential aliases were rejected: %v", err)
+	}
+	if fields["FORM_VPS_ACCOUNT"] != "form-root" || fields["FORM_VPS_PASSWORD"] != "form-vps-password" ||
+		fields["FORM_PANEL_ACCOUNT"] != "form-panel" || fields["FORM_PANEL_PASSWORD"] != "form-panel-password" {
+		t.Fatalf("unexpected presentation alias fields: %#v", fields)
+	}
+}
+
+func TestHandoffCredentialValueNormalizesFieldNamesButPreservesValues(t *testing.T) {
+	input := "  vPs_login_user = case-root\nPaNeL_PaSsWoRd =  edge-secret  \n"
+	if got := handoffCredentialValue(input, "VPS_LOGIN_USER"); got != "case-root" {
+		t.Fatalf("case/padding variant user was not recognized with account normalization: %q", got)
+	}
+	if got := handoffCredentialValue(input, "PANEL_PASSWORD"); got != "  edge-secret  " {
+		t.Fatalf("case/padding variant password was not recognized byte-for-byte: %q", got)
+	}
+}
+
+func TestValidateHandoffAcceptsPresentationFormAliases(t *testing.T) {
+	input := strings.Join([]string{
+		handoffBegin,
+		"HANDOFF_RUN_STARTED=presentation-aliases",
+		"FORM_VPS_ACCOUNT=form-root",
+		"FORM_VPS_PASSWORD=form-vps-password",
+		"FORM_PANEL_ACCOUNT=form-panel",
+		"FORM_PANEL_PASSWORD=form-panel-password",
+		handoffEnd,
+	}, "\n")
+	if _, err := validateHandoff(input); err != nil {
+		t.Fatalf("validateHandoff rejected a FORM_* only credential block: %v", err)
+	}
+}
+
 func TestHandoffProtocolFallbackIgnoresMalformedCurrentValues(t *testing.T) {
 	// The exporter concatenates archived runs before the current run.  A
 	// failed rotation may leave the current file with placeholders or invalid

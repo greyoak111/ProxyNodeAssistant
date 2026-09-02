@@ -550,7 +550,11 @@ object ProtocolParsers {
     }
 
     private fun credentialValue(legacy: String, preserveWhitespace: Boolean, vararg keys: String): String {
-        val wanted = keys.toSet()
+        // Field names are protocol identifiers, not user data.  Normalize
+        // case and incidental padding so a copied legacy handoff cannot
+        // disappear from the form merely because it used `key = value` or
+        // lower-case names.
+        val wanted = keys.map { it.trim().uppercase(Locale.ROOT) }.toSet()
         var found = ""
         // Keep the value bytes exactly as emitted after the first `=`.  In
         // particular, a user-selected password may intentionally start or
@@ -561,7 +565,7 @@ object ProtocolParsers {
         legacy.replace("\r\n", "\n").split('\n').forEach { line ->
             val separator = line.indexOf('=')
             if (separator <= 0) return@forEach
-            val key = line.substring(0, separator).trim()
+            val key = line.substring(0, separator).trim().uppercase(Locale.ROOT)
             if (key !in wanted) return@forEach
             val candidate = line.substring(separator + 1)
             if (usableCredential(candidate)) found = if (preserveWhitespace) candidate else candidate.trim()

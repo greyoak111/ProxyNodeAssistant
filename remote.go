@@ -25,8 +25,8 @@ const (
 	legacyTextRemoteRoot    = "/opt/text-node-assistant-current"
 	legacyRunbookRemoteRoot = "/opt/proxy-runbook-current"
 	toolkitVersion          = "1.0.0"
-	toolkitBuildID          = "20260901-v100-ss2022-r104"
-	toolkitBuildRevision    = 104
+	toolkitBuildID          = "20260901-v100-ss2022-r105"
+	toolkitBuildRevision    = 105
 	toolkitInstallDir       = "/opt/proxy-node-assistant-v1.0.0"
 	toolkitArchive          = "proxy-node-assistant-toolkit-v1.0.0.tar.gz"
 	sessionTempPrefix       = "ProxyNodeAssistant-v1.0.0-session-"
@@ -1993,6 +1993,7 @@ func remoteCredentialReadinessCommand() string {
 credential_value_present() {
   local file="$1" wanted="$2"
   awk -v wanted="$wanted" '
+    BEGIN { wanted=toupper(wanted) }
     function matches(candidate) {
       if (wanted == "VPS_LOGIN_USER")
         return candidate == "VPS_LOGIN_USER" || candidate == "VPS_ACCOUNT" || candidate == "FORM_VPS_ACCOUNT"
@@ -2009,6 +2010,7 @@ credential_value_present() {
       if (separator <= 0) next
       name=substr($0, 1, separator-1)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      name=toupper(name)
       if (!matches(name)) next
       value=substr($0, separator+1)
       # Check a trimmed probe so an all-whitespace field cannot make the

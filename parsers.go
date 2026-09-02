@@ -173,7 +173,11 @@ func parseKV(value string) map[string]string {
 		if !ok {
 			continue
 		}
-		key = strings.TrimSpace(key)
+		// Keys are protocol identifiers.  Normalize case so handoffs copied
+		// from older/manual forms do not disappear merely because a producer
+		// emitted `panel_password` instead of `PANEL_PASSWORD`; values remain
+		// trimmed according to the existing line-oriented protocol contract.
+		key = strings.ToUpper(strings.TrimSpace(key))
 		if regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(key) {
 			result[key] = strings.TrimSpace(val)
 		}
@@ -269,6 +273,11 @@ func validateHandoff(stdout string) (string, error) {
 		"PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_ACCOUNT", "PANEL_API_TOKEN",
 		"XUI_USERNAME", "XUI_PASSWORD",
 		"VPS_LOGIN_USER", "VPS_LOGIN_PASSWORD", "VPS_ACCOUNT", "VPS_PASSWORD",
+		// FORM_* is the presentation vocabulary emitted by older desktop and
+		// Android handoff paths.  It is normalized to the canonical fields by
+		// the form builder, but must still count as useful when it is the only
+		// surviving credential block after an interrupted export.
+		"FORM_VPS_ACCOUNT", "FORM_VPS_PASSWORD", "FORM_PANEL_ACCOUNT", "FORM_PANEL_PASSWORD",
 		"UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY",
 		"VLESS_LINK", "COVER_DOMAIN", "PUBLIC_IP_AT_HANDOFF",
 		"SS2022_PASSWORD", "SS2022_LINK", "SS2022_SERVER_ADDRESS",

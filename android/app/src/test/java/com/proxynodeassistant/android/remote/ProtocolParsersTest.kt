@@ -407,6 +407,21 @@ class ProtocolParsersTest {
         assertEquals("  panel-secret-with-spaces  ", form.getValue("FORM_PANEL_PASSWORD"))
     }
 
+    @Test fun loginCredentialFormNormalizesPaddedMixedCaseFieldNames() {
+        val payload = listOf(
+            "HANDOFF_RUN_STARTED=case-padding",
+            "  vPs_Login_User =  case-root  ",
+            "fOrM_vPs_PaSsWoRd=case-vps-password",
+            "xUi_UsErNaMe = case-panel",
+            "FoRm_PaNeL_PaSsWoRd=case-panel-password",
+        ).joinToString("\n")
+        val form = ProtocolParsers.loginCredentialForm(payload)
+        assertEquals("case-root", form.getValue("FORM_VPS_ACCOUNT"))
+        assertEquals("case-vps-password", form.getValue("FORM_VPS_PASSWORD"))
+        assertEquals("case-panel", form.getValue("FORM_PANEL_ACCOUNT"))
+        assertEquals("case-panel-password", form.getValue("FORM_PANEL_PASSWORD"))
+    }
+
     @Test fun cdnXhttpLinkRequiresTheExactTlsProfile() {
         val link = "vless://8f6290c1-91f0-4509-a181-7cfe275ab7dc@www.example.com:8443?type=xhttp&encryption=none&path=%2F614d2bd1cf22d6072ec3b0f93c8d6c81%2F&host=www.example.com&mode=packet-up&security=tls&sni=www.example.com&fp=chrome#PNA-CDN-XHTTP-STAGE"
         val parsed = ProtocolParsers.cdnXHttpLink(link)

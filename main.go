@@ -47,6 +47,10 @@ type App struct {
 	tunnels          []*exec.Cmd
 	inputClosed      bool
 	installPrefs     InstallPreferences
+	// Set only during the read-only preflight of a full install/upgrade.  It
+	// contains presence bits, never account or password values, and is reset at
+	// the start of each run so one VPS cannot influence a later operation.
+	credentialReadiness CredentialReadiness
 }
 
 func settingsPath() (string, error) {

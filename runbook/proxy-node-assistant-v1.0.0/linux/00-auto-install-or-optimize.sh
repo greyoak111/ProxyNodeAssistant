@@ -544,8 +544,14 @@ bash "$ROOT/linux/03d-export-panel-handoff.sh" "$NODE_MODE"
 # The old v0.9.x implementation checked only for a plaintext line, which left
 # stale or hashed values in the exported form.  Validate retained values and
 # require an explicit rotation when they cannot be proven.
-PANEL_STORED_USER="$(credential_value_from_file "$HANDOFF_FILE" PANEL_USERNAME 2>/dev/null || true)"
-PANEL_STORED_PASSWORD="$(credential_value_from_file "$HANDOFF_FILE" PANEL_PASSWORD 2>/dev/null || true)"
+# Re-run the protected-store migration immediately before validation.  This is
+# cheap and read-only for an already-complete store, while fixing the old
+# failure mode where 03d exported a legacy/archived value but the validator
+# looked only at the freshly-created current file and demanded a refresh.
+credential_store_seed_from_handoffs
+handoff_restore_stored_login_credentials
+PANEL_STORED_USER="$(credential_value_from_retained_sources PANEL_USERNAME 2>/dev/null || true)"
+PANEL_STORED_PASSWORD="$(credential_value_from_retained_sources PANEL_PASSWORD 2>/dev/null || true)"
 if [ -n "$PANEL_STORED_USER" ] && [ -n "$PANEL_STORED_PASSWORD" ] && xui_password_login_works "$PANEL_STORED_USER" "$PANEL_STORED_PASSWORD"; then
   credential_store_set PANEL_USERNAME "$PANEL_STORED_USER"
   credential_store_set PANEL_PASSWORD "$PANEL_STORED_PASSWORD"

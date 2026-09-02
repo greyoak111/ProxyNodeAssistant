@@ -76,7 +76,20 @@ func usableHandoffCredential(value string) bool {
 func handoffCredentialValue(raw string, keys ...string) string {
 	wanted := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
-		wanted[strings.TrimSpace(key)] = struct{}{}
+		// Handoff files are written by several generations of the toolkit. A
+		// copied/edited file can contain padded or lower-case field names; field
+		// names are identifiers, not secrets, so normalize only the name. Passwords
+		// are returned byte-for-byte (intentional edge spaces are valid), while login
+		// and panel account names are normalized below because whitespace cannot be a
+		// valid account identity and is commonly introduced by `KEY = value` edits.
+		wanted[strings.ToUpper(strings.TrimSpace(key))] = struct{}{}
+	}
+	preserveWhitespace := false
+	for key := range wanted {
+		if strings.Contains(key, "PASSWORD") {
+			preserveWhitespace = true
+			break
+		}
 	}
 	value := ""
 	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
@@ -87,14 +100,18 @@ func handoffCredentialValue(raw string, keys ...string) string {
 		if !ok {
 			continue
 		}
-		if _, ok := wanted[strings.TrimSpace(name)]; !ok {
+		if _, ok := wanted[strings.ToUpper(strings.TrimSpace(name))]; !ok {
 			continue
 		}
 		if strings.ContainsAny(candidate, "\x00\r\n") {
 			continue
 		}
 		if usableHandoffCredential(strings.TrimSpace(candidate)) {
-			value = candidate
+			if preserveWhitespace {
+				value = candidate
+			} else {
+				value = strings.TrimSpace(candidate)
+			}
 		}
 	}
 	return value
@@ -252,10 +269,14 @@ func mergeHandoffProtocolFallbacks(raw string, values map[string]string) {
 
 func loginCredentialFormFields(legacy string) (map[string]string, error) {
 	required := map[string]string{
-		"FORM_VPS_ACCOUNT":    handoffCredentialValue(legacy, "VPS_LOGIN_USER", "VPS_ACCOUNT"),
-		"FORM_VPS_PASSWORD":   handoffCredentialValue(legacy, "VPS_LOGIN_PASSWORD", "VPS_PASSWORD"),
-		"FORM_PANEL_ACCOUNT":  handoffCredentialValue(legacy, "PANEL_USERNAME", "PANEL_ACCOUNT", "XUI_USERNAME"),
-		"FORM_PANEL_PASSWORD": handoffCredentialValue(legacy, "PANEL_PASSWORD", "XUI_PASSWORD"),
+		// FORM_* is the presentation vocabulary used by the desktop/Android
+		// clients.  It is normally converted to canonical source keys before
+		// reaching the VPS, but accepting it here makes a copied v1 handoff (or
+		// an interrupted migration) round-trip without a manual refresh.
+		"FORM_VPS_ACCOUNT":    handoffCredentialValue(legacy, "VPS_LOGIN_USER", "VPS_ACCOUNT", "FORM_VPS_ACCOUNT"),
+		"FORM_VPS_PASSWORD":   handoffCredentialValue(legacy, "VPS_LOGIN_PASSWORD", "VPS_PASSWORD", "FORM_VPS_PASSWORD"),
+		"FORM_PANEL_ACCOUNT":  handoffCredentialValue(legacy, "PANEL_USERNAME", "PANEL_ACCOUNT", "XUI_USERNAME", "FORM_PANEL_ACCOUNT"),
+		"FORM_PANEL_PASSWORD": handoffCredentialValue(legacy, "PANEL_PASSWORD", "XUI_PASSWORD", "FORM_PANEL_PASSWORD"),
 	}
 	missing := make([]string, 0, len(required))
 	for _, key := range loginFormKeys {

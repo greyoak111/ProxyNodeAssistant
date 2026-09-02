@@ -79,6 +79,37 @@ test "$(printf '%s\n' "$legacy_alias_payload" | credential_value_from_file /dev/
 test "$(printf '%s\n' "$legacy_alias_payload" | credential_value_from_file /dev/stdin PANEL_USERNAME)" = xui-panel
 test "$(printf '%s\n' "$legacy_alias_payload" | credential_value_from_file /dev/stdin PANEL_PASSWORD)" = xui-panel-password
 
+# The GUI/Android presentation layer may be the only surviving source after a
+# handoff was copied back into a protected store.  The shell migration reader
+# must accept those FORM_* aliases too, while still returning only the value
+# requested by the caller.
+form_alias_payload="$(printf '%s\n' \
+  'FORM_VPS_ACCOUNT=form-root' \
+  'FORM_VPS_PASSWORD=form-vps-password' \
+  'FORM_PANEL_ACCOUNT=form-panel' \
+  'FORM_PANEL_PASSWORD=form-panel-password')"
+test "$(printf '%s\n' "$form_alias_payload" | credential_value_from_file /dev/stdin VPS_LOGIN_USER)" = form-root
+test "$(printf '%s\n' "$form_alias_payload" | credential_value_from_file /dev/stdin VPS_LOGIN_PASSWORD)" = form-vps-password
+test "$(printf '%s\n' "$form_alias_payload" | credential_value_from_file /dev/stdin PANEL_USERNAME)" = form-panel
+test "$(printf '%s\n' "$form_alias_payload" | credential_value_from_file /dev/stdin PANEL_PASSWORD)" = form-panel-password
+
+# Field names are identifiers, not case-sensitive user data.  A handoff
+# copied through a shell/editor must still be recognized without a manual
+# refresh. Account padding is normalized; password edge spaces remain intact.
+case_variant_payload="  vPs_login_user = case-root\nPaNeL_PaSsWoRd=case-panel-password"
+test "$(printf '%b\n' "$case_variant_payload" | credential_value_from_file /dev/stdin VPS_LOGIN_USER)" = case-root
+test "$(printf '%b\n' "$case_variant_payload" | credential_value_from_file /dev/stdin PANEL_PASSWORD)" = case-panel-password
+
+# Whitespace-only values are not credentials. They used to pass the shell
+# reader's non-empty check and could make readiness report a full form even
+# though the Go parser rejected the same handoff.
+for key in VPS_LOGIN_USER VPS_LOGIN_PASSWORD PANEL_USERNAME PANEL_PASSWORD; do
+  if printf '%s\n' "$key=        " | credential_value_from_file /dev/stdin "$key" >/dev/null 2>&1; then
+    echo "whitespace-only $key was accepted as a credential" >&2
+    exit 1
+  fi
+done
+
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) echo COMPLETE_LOGIN_HANDOFF_TEST_OK; exit 0 ;;
 esac
@@ -118,6 +149,27 @@ fi
 handoff_restore_stored_login_credentials
 handoff_login_form_complete
 
+# Early v1 clients used the product-named root for the protected store. A
+# reset-line run must migrate that complete pair into proxy-runbook without
+# requiring the operator to refresh or re-enter the form.
+export PNA_HANDOFF_DIR="$TMP/renamed/new"
+export PNA_LEGACY_HANDOFF_DIR="$TMP/renamed/legacy"
+export PNA_RENAMED_HANDOFF_DIR="$TMP/renamed/product"
+mkdir -p "$PNA_RENAMED_HANDOFF_DIR"
+printf '%s\n' \
+  'VPS_LOGIN_USER=renamed-root' \
+  'VPS_LOGIN_PASSWORD=renamed-vps-password' \
+  'PANEL_USERNAME=renamed-panel' \
+  'PANEL_PASSWORD=renamed-panel-password' > "$PNA_RENAMED_HANDOFF_DIR/CURRENT-LOGIN-CREDENTIALS.env"
+# shellcheck source=/dev/null
+. "$LIB"
+handoff_init
+credential_store_seed_from_handoffs
+test "$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_USER)" = renamed-root
+test "$(credential_value_from_file "$HANDOFF_LOGIN_STORE" VPS_LOGIN_PASSWORD)" = renamed-vps-password
+test "$(credential_value_from_file "$HANDOFF_LOGIN_STORE" PANEL_USERNAME)" = renamed-panel
+test "$(credential_value_from_file "$HANDOFF_LOGIN_STORE" PANEL_PASSWORD)" = renamed-panel-password
+
 if credential_store_set PANEL_PASSWORD UNKNOWN_NOT_RECOVERABLE >/dev/null 2>&1; then
   echo 'placeholder password entered the current-login store' >&2
   exit 1
@@ -129,6 +181,7 @@ fi
 # missing halves without requiring a manual refresh or exposing either value.
 export PNA_HANDOFF_DIR="$TMP/split/new"
 export PNA_LEGACY_HANDOFF_DIR="$TMP/split/legacy"
+export PNA_RENAMED_HANDOFF_DIR="$TMP/split/product"
 mkdir -p "$PNA_HANDOFF_DIR/handoff-archive" "$PNA_LEGACY_HANDOFF_DIR"
 # shellcheck source=/dev/null
 . "$LIB"

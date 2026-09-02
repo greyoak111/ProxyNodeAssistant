@@ -59,7 +59,8 @@ echo
 echo "===== PROXYNODEASSISTANT PANEL CREDENTIAL HANDOFF v1.0.0 ====="
 grep -E '^PANEL_' "$HANDOFF_FILE" || true
 echo "===== END PROXYNODEASSISTANT PANEL CREDENTIAL HANDOFF v1.0.0 ====="
-if ! grep -q '^PANEL_PASSWORD=' "$HANDOFF_FILE"; then
+if ! credential_value_from_retained_sources PANEL_USERNAME >/dev/null 2>&1 ||
+   ! credential_value_from_retained_sources PANEL_PASSWORD >/dev/null 2>&1; then
   echo "PANEL_CREDENTIAL_FORM_INCOMPLETE=1"
   echo "The current hashed panel password cannot be truthfully reconstructed; a complete handoff requires explicit rotation."
 fi

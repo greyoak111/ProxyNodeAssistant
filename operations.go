@@ -154,6 +154,10 @@ func (a *App) waitForDNS(domain, publicIP string) bool {
 }
 
 func (a *App) deployOptimize() error {
+	// Do not carry a previous node's credential-readiness result into a new
+	// operation. The field contains presence bits only, but stale state could
+	// still make an empty policy answer choose preserve for the wrong target.
+	a.credentialReadiness = CredentialReadiness{}
 	c, err := a.readyConn()
 	if err != nil {
 		return fmt.Errorf(a.msg("SSH 初始化失败：%w", "SSH setup failed: %w"), err)
@@ -244,6 +248,28 @@ func (a *App) deployOptimize() error {
 		a.println(fmt.Sprintf(a.msg("检测到现有 SS2022 TCP 端口 %d；预览默认保持它，只有明确输入新端口才迁移。", "Existing SS2022 TCP port %d detected; the preview will preserve it by default and migrate only on an explicit new-port choice."), existingSSPort))
 	} else {
 		a.println(a.msg("未检测到现有 SS2022 监听；新部署预览默认使用正式端口 32443。", "No existing SS2022 listener was detected; a fresh deployment preview defaults to the formal port 32443."))
+	}
+	if existingNode {
+		readiness, readinessErr := a.remoteCredentialReadiness(c)
+		if readinessErr != nil {
+			a.println(a.msg(
+				"凭据只读识别未完成；本次仍可施工，但 VPS/面板凭据策略必须明确选择，不会猜测或刷新密码。",
+				"The read-only credential check was inconclusive; the run can continue, but VPS/panel credential policies must be chosen explicitly. No password will be guessed or refreshed.",
+			))
+		} else {
+			a.credentialReadiness = readiness
+			if readiness.complete() {
+				a.println(a.msg(
+					"已识别远端完整 VPS/面板凭据交接字段；凭据策略直接回车=保留并验证，不会改密码。",
+					"A complete remote VPS/panel credential handoff was detected; press Enter at each credential policy prompt to preserve and verify it. No password will be changed.",
+				))
+			} else {
+				a.println(a.msg(
+					"远端凭据交接不完整（仅显示存在性，不显示密码）；请在凭据策略处明确选择保留、随机或自定义。",
+					"The remote credential handoff is incomplete (presence only; no password is shown); explicitly choose preserve, random, or custom at the credential prompts.",
+				))
+			}
+		}
 	}
 	plan, err := a.collectInstallPlan(existingNode, existingSSPort)
 	if err != nil {
