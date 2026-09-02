@@ -178,6 +178,34 @@ func (a *App) secretPrompt(label string) string {
 	return strings.TrimSpace(value)
 }
 
+// secretPromptExact removes only the line ending added by the prompt
+// protocol.  Custom login passwords are opaque values: leading/trailing
+// spaces are significant and must not be silently normalized before they are
+// sent to the VPS.
+func (a *App) secretPromptExact(label string) string {
+	if a.inputClosed {
+		return ""
+	}
+	var restore func()
+	if os.Getenv("PNA_GUI_MODE") == "1" {
+		fmt.Println(guiSecretPromptFrame(label))
+	} else {
+		fmt.Print(label + ": ")
+		restore = disableConsoleEcho()
+	}
+	value, err := a.reader.ReadString('\n')
+	if restore != nil {
+		restore()
+		fmt.Println()
+	}
+	if err != nil && value == "" {
+		a.inputClosed = true
+	}
+	value = strings.TrimSuffix(value, "\n")
+	value = strings.TrimSuffix(value, "\r")
+	return value
+}
+
 func (a *App) required(label string) (string, error) {
 	for {
 		value := a.prompt(label)
@@ -238,8 +266,8 @@ func (a *App) printMenu() {
 		a.println("[2] 无感打开 3x-ui 面板（127.0.0.1 SSH 隧道）")
 		a.println("[3] 自动体检与排障")
 		a.println("[4] 安全自动修复（先备份）")
-		a.println("[5] 随机化 VPS 登录密码（显示真密码 + 剪贴板）")
-		a.println("[6] 随机化 3x-ui 账号密码（显示真凭据 + 剪贴板）")
+		a.println("[5] VPS 登录密码：随机生成或自定义（显示真密码 + 剪贴板）")
+		a.println("[6] 3x-ui 账号密码：随机生成或自定义（显示真凭据 + 剪贴板）")
 		a.println("[7] 显示并复制当前凭据交接单")
 		a.println("[8] 切换 15 套伪装站（随机/编号）+ 优化 Nginx")
 		a.println("[9] 完整灾备（含程序/远端节点配置，体积较大）")
@@ -269,8 +297,8 @@ func (a *App) printMenu() {
 		a.println("[2] Open 3x-ui through a 127.0.0.1 SSH tunnel")
 		a.println("[3] Automatic diagnosis")
 		a.println("[4] Safe automatic repair (backup first)")
-		a.println("[5] Rotate VPS login password (real password + clipboard)")
-		a.println("[6] Rotate 3x-ui credentials (real values + clipboard)")
+		a.println("[5] VPS login password: generate random or set custom (real password + clipboard)")
+		a.println("[6] 3x-ui credentials: generate random or set custom (real values + clipboard)")
 		a.println("[7] Show and copy the current credential handoff")
 		a.println("[8] Switch 15 cover templates (random/ID) + optimize Nginx")
 		a.println("[9] Full disaster backup (includes program/remote-node configuration; larger)")

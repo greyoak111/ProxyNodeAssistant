@@ -18,8 +18,8 @@
 - 已有生产 443 不直接重写：如果 REALITY target 不符合本地 self-steal 目标，只创建 24443 影子节点，真测通过后才允许迁移。
 - 每次有状态修改前先做 root-only 备份。
 - Windows 为每个 `host + SSH user` 自动生成独立 Ed25519 client key；公钥安装到 VPS，私钥保留在本机，并在首次生成/交接时全文显示。
-- VPS 登录密码可由脚本随机轮换并全文显示；已有节点不会每次运行都偷偷轮换。
-- 新装 3x-ui 的随机用户名、密码、WebBasePath、API Token 必须全文交接；已有面板密码不可恢复时，只能显式选择“生成新的并显示”，不能伪造。
+- VPS 登录密码可显式选择随机生成或自定义并全文交接；已有节点不会每次运行都偷偷轮换，取消不会修改节点。
+- 新装 3x-ui 的用户名、密码、WebBasePath、API Token 必须全文交接；已有面板可显式选择随机生成、自定义或取消，不能伪造不可恢复的旧密码。
 - REALITY UUID / PrivateKey / PublicKey / shortId / client link 自动生成后全文交接。
 
 ## 明确不做

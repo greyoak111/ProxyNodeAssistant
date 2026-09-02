@@ -37,7 +37,7 @@ Let's Encrypt email
 - 只把 Public Key 写入 VPS。
 - Public-key 登录必须真实验证后才上传工具包。
 - 初始 VPS 密码只由 OpenSSH 自己读取；runbook 不读取/保存。
-- Fresh 节点默认可将 provider-supplied login password 随机轮换，真实新密码全文显示。
+- Fresh 节点可选择将 provider-supplied login password 随机轮换或改为自定义值，真实新密码全文显示。
 - Existing 节点不会每次运行自动轮换密码；用户显式选择后才做。
 - VPS SSH host Private Key 永不导出，只显示 public-key fingerprint。
 
@@ -62,7 +62,7 @@ Fresh unattended install：
 /root/.config/proxy-runbook/HANDOFF-SECRETS.txt
 ```
 
-Existing panel 密码不可恢复时不伪造；可以显式选择“随机轮换并显示”。
+Existing panel 密码不可恢复时不伪造；可以显式选择“随机轮换”“自定义账号/密码”或取消，并在成功后显示真实值。
 
 ## REALITY
 
