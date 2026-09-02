@@ -2259,7 +2259,10 @@ namespace ProxyNodeAssistant.Gui
             }
             catch (Exception error)
             {
-                MessageBox.Show("ProxyNodeAssistant GUI could not start:\n\n" + error, "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Error);
+                // Keep startup failures actionable for end users.  A full
+                // exception.ToString() here used to bury the useful
+                // architecture guidance in a stack trace.
+                MessageBox.Show("ProxyNodeAssistant GUI could not start:\n\n" + error.Message, "ProxyNodeAssistant", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }
