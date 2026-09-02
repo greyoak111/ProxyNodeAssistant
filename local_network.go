@@ -353,6 +353,15 @@ func ss2022ScriptCommand(args ...string) string {
 	return command
 }
 
+// ss2022StatusAndListCommand is used by the one-shot source workflow (menu
+// [19]).  Keep the root resolver on both invocations: an in-place upgrade can
+// leave only one of the canonical/legacy compatibility roots available, and
+// hard-coding remoteRoot here used to make the allowlist screen appear to work
+// while silently querying a different (or missing) toolkit path.
+func ss2022StatusAndListCommand() string {
+	return ss2022ScriptCommand("status") + "; " + ss2022ScriptCommand("list")
+}
+
 // parseSS2022Allowlist accepts the marker block emitted by the remote helper
 // and deliberately permits an empty block: an empty list is a valid, but
 // locked-down, state because the firewall drops every source in that case.
@@ -419,18 +428,17 @@ func (a *App) prepareSS2022AllowlistConnection() (Connection, error) {
 // and returns the parsed addresses so the delete flow can offer list-number
 // selection as well as free-form IPv4 input.
 func (a *App) showSS2022Allowlist(c Connection) ([]string, error) {
-	status := a.rootCapture(c, ss2022ScriptCommand("status"))
-	if strings.TrimSpace(status.Stdout) != "" {
-		a.println(strings.TrimSpace(status.Stdout))
+	// Snapshot makes the status/list read one fail-closed remote operation.  A
+	// separate status call followed by list could race with an allow/remove
+	// operation and display a list that no longer matched the enforced state.
+	snapshot := a.rootCapture(c, ss2022ScriptCommand("snapshot"))
+	if strings.TrimSpace(snapshot.Stdout) != "" {
+		a.println(strings.TrimSpace(snapshot.Stdout))
 	}
-	if !status.OK() {
-		a.println(a.msg("[WARN] SS2022 服务状态检查未通过，但仍继续读取白名单：", "[WARN] SS2022 service status is not healthy; continuing to read the allowlist: ") + processFailureDetail(status))
+	if !snapshot.OK() {
+		return nil, fmt.Errorf("SS2022 allowlist snapshot failed (exit %d): %s", snapshot.ExitCode, processFailureDetail(snapshot))
 	}
-	list := a.rootCapture(c, ss2022ScriptCommand("list"))
-	if !list.OK() {
-		return nil, fmt.Errorf("SS2022 allowlist list failed (exit %d): %s", list.ExitCode, processFailureDetail(list))
-	}
-	entries, err := parseSS2022Allowlist(list.Stdout)
+	entries, err := parseSS2022Allowlist(snapshot.Stdout)
 	if err != nil {
 		return nil, err
 	}
@@ -597,15 +605,19 @@ func (a *App) manageSS2022Allowlist() error {
 		a.println(a.msg("[WARN] 两个结果不一致：可能存在 TUN、透明代理、多出口或运营商切换。白名单必须采用 VPS 实际看到的 SSH 来源。", "[WARN] The results differ, indicating a TUN, transparent proxy, multiple egresses, or carrier switching. The allowlist must use the source actually observed by the VPS."))
 	}
 
-	status := a.rootCapture(c, "bash "+remoteRoot+"/linux/23-ss2022-tcp.sh status; bash "+remoteRoot+"/linux/23-ss2022-tcp.sh list")
+	status := a.rootCapture(c, ss2022StatusAndListCommand())
 	if !status.OK() {
 		return fmt.Errorf("SS2022 status failed (exit %d): %s", status.ExitCode, processFailureDetail(status))
 	}
 	a.println(status.Stdout)
+	a.println(a.msg(
+		"[INFO] 本项只负责“识别本机 IP + 一键添加当前来源”。要查看完整白名单，或自由添加/删除指定 IPv4，请返回菜单选择 [24] SS2022 白名单管理（与本项并列）。",
+		"[INFO] This action only detects the local IP and offers a one-shot add. To view the full list or freely add/remove an exact IPv4, return to the menu and choose [24] SS2022 allowlist manager (the parallel action).",
+	))
 	if !a.yes(fmt.Sprintf(a.msg("把当前精确公网 IPv4 %s 加入这台 VPS 的 SS2022 TCP 白名单？", "Add exact current public IPv4 %s to this VPS's SS2022 TCP allowlist?"), observed), false) {
 		return nil
 	}
-	result := a.rootCapture(c, "bash "+remoteRoot+"/linux/23-ss2022-tcp.sh allow "+shQuote(observed)+"; bash "+remoteRoot+"/linux/23-ss2022-tcp.sh status")
+	result := a.rootCapture(c, ss2022ScriptCommand("allow", observed)+"; "+ss2022ScriptCommand("status"))
 	if !result.OK() {
 		return fmt.Errorf("SS2022 allowlist update failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}

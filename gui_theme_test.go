@@ -90,7 +90,7 @@ func TestGUISS2022AllowlistHasSeparateLocalAndCRUDActions(t *testing.T) {
 	text := string(source)
 	for _, required := range []string{
 		`Op("19", "security", "识别本机 IP 并添加 SS2022 白名单"`,
-		`Op("24", "security", "管理 SS2022 白名单"`,
+		`Op("24", "security", "管理 SS2022 白名单（与 OP:19 并列）"`,
 		`Detect local IP and add to SS2022 allowlist`,
 		`Manage SS2022 allowlist`,
 		`freely add/remove`,

@@ -356,6 +356,23 @@ class WorkflowRunner(
     )
 
     /**
+     * Resolve the active SS2022 helper at execution time.  In-place upgrades
+     * can briefly expose only one of the canonical or legacy compatibility
+     * symlinks; embedding REMOTE_ROOT directly in every action made the
+     * allowlist manager fail even though the toolkit was present elsewhere.
+     */
+    private fun ss2022Command(vararg args: String): String = buildString {
+        append("root=").append(SshHandle.shellQuote(REMOTE_ROOT)).append("; ")
+        append("[ -x \"").append('$').append("root/linux/23-ss2022-tcp.sh\" ] || root=")
+            .append(SshHandle.shellQuote(LEGACY_TEXT_REMOTE_ROOT)).append("; ")
+        append("[ -x \"").append('$').append("root/linux/23-ss2022-tcp.sh\" ] || root=")
+            .append(SshHandle.shellQuote(LEGACY_REMOTE_ROOT)).append("; ")
+        append("[ -x \"").append('$').append("root/linux/23-ss2022-tcp.sh\" ] || { printf 'PNA_SS2022_ERROR=SCRIPT_MISSING\\n' >&2; exit 62; }; ")
+        append("bash \"").append('$').append("root/linux/23-ss2022-tcp.sh\"")
+        args.forEach { append(' ').append(SshHandle.shellQuote(it)) }
+    }
+
+    /**
      * Read the managed SS2022 allowlist without treating the remote output as
      * shell text.  The script's list protocol emits one SOURCE= line per
      * exact address; normalize every value again before displaying or using it
@@ -367,7 +384,7 @@ class WorkflowRunner(
         // malformed source, or duplicate entry instead of presenting a
         // misleading empty list to the operator.
         val snapshot = handle.exec(
-            "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh snapshot",
+            ss2022Command("snapshot"),
             root = true,
             log = { },
         )
@@ -450,7 +467,7 @@ class WorkflowRunner(
                         log("SS2022_ALLOWLIST=UNCHANGED")
                         continue
                     }
-                    val result = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh allow ${SshHandle.shellQuote(source)}")
+                    val result = checked(handle, ss2022Command("allow", source))
                     check("PNA_SS2022_ALLOW_ADDED=$source" in result.stdout) { "SS2022 allowlist add marker missing" }
                     log("SS2022_ALLOWLIST=ADDED source=$source")
                     snapshot = readSS2022Allowlist(handle)
@@ -476,7 +493,7 @@ class WorkflowRunner(
                         log("SS2022_ALLOWLIST=UNCHANGED")
                         continue
                     }
-                    val result = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh remove ${SshHandle.shellQuote(source)}")
+                    val result = checked(handle, ss2022Command("remove", source))
                     check("PNA_SS2022_ALLOW_REMOVED=$source" in result.stdout) { "SS2022 allowlist remove marker missing" }
                     log("SS2022_ALLOWLIST=REMOVED source=$source")
                     snapshot = readSS2022Allowlist(handle)
@@ -535,17 +552,21 @@ class WorkflowRunner(
 
         // Keep the status exit code authoritative; appending `; list` would mask a
         // missing/inactive service because the list command exits successfully.
-        val status = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh status", root = true, log = ::log)
+        val status = handle.exec(ss2022Command("status"), root = true, log = ::log)
         check(status.ok) { "SS2022 status failed (exit ${status.exitCode})" }
         val statusValues = ProtocolParsers.kv(status.stdout)
         check(statusValues["PRESENT"] == "1" && statusValues["ACTIVE"] == "1" && statusValues["LISTENER"] == "1" && statusValues["FIREWALL"] == "1") {
             "SS2022 service is not ready (PRESENT=${statusValues["PRESENT"] ?: "?"}, ACTIVE=${statusValues["ACTIVE"] ?: "?"}, LISTENER=${statusValues["LISTENER"] ?: "?"}, FIREWALL=${statusValues["FIREWALL"] ?: "?"})"
         }
-        val list = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh list", root = true, log = ::log)
+        val list = handle.exec(ss2022Command("list"), root = true, log = ::log)
         check(list.ok) { "SS2022 allowlist listing failed (exit ${list.exitCode})" }
         val statusOutput = status.stdout + "\n" + list.stdout
         val statusSummary = statusOutput.lines().filter { it.contains("PNA_SS2022_") || it.startsWith("PORT=") || it.startsWith("ALLOWLIST_COUNT=") || it.startsWith("SOURCE=") }.joinToString(" ")
         if (statusSummary.isNotBlank()) log("SS2022_STATUS $statusSummary")
+		log(tr(
+		    "[INFO] 本项只负责识别本机 IP 并一键添加当前来源；完整列表与自由增删请返回控制面选择并列的 OP:24。",
+		    "[INFO] This action only detects the local IP and offers a one-shot add; return to the control plane and choose parallel OP:24 for the full list and freely add/remove.",
+		))
 
         val answer = prompts.ask(
             tr("添加 SS2022 白名单", "Add SS2022 allowlist entry"),
@@ -563,10 +584,10 @@ class WorkflowRunner(
             return
         }
 
-        val update = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh allow ${SshHandle.shellQuote(observed)}")
+        val update = checked(handle, ss2022Command("allow", observed))
         check("PNA_SS2022_ALLOW_ADDED=$observed" in update.stdout) { "SS2022 allowlist update marker missing" }
-        val verifiedStatus = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh status", emit = false)
-        val verifiedList = checked(handle, "bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh list", emit = false)
+        val verifiedStatus = checked(handle, ss2022Command("status"), emit = false)
+        val verifiedList = checked(handle, ss2022Command("list"), emit = false)
         log("SS2022_ALLOWLIST=UPDATED source=$observed")
         val verifiedOutput = verifiedStatus.stdout + "\n" + verifiedList.stdout
         verifiedOutput.lines().filter { it.startsWith("PRESENT=") || it.startsWith("ACTIVE=") || it.startsWith("LISTENER=") || it.startsWith("FIREWALL=") || it.startsWith("PORT=") || it.startsWith("ALLOWLIST_COUNT=") || it.startsWith("SOURCE=") }.forEach { log("  $it") }

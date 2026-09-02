@@ -652,6 +652,15 @@ func main() {
 		}
 		return
 	}
+	// Migrate the legacy v0.9.x local state before any real operation starts.
+	// The migration is copy-first and never removes the old tree; doing it here
+	// ensures the managed-key picker (and every direct GUI action) can see a
+	// previously bound node without requiring the user to refresh or re-bind it.
+	if record, err := migrateLegacyLocalState(); err != nil {
+		fmt.Fprintln(os.Stderr, "[WARN] local legacy migration skipped: "+err.Error())
+	} else if len(record.Copied) > 0 || len(record.Warnings) > 0 {
+		fmt.Fprintf(os.Stderr, "LOCAL_LEGACY_MIGRATION copied=%d warnings=%d\n", len(record.Copied), len(record.Warnings))
+	}
 	if action := requestedGUIAction(os.Args[1:]); action != "" {
 		app.runDirectAction(action, false)
 		return

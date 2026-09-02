@@ -100,12 +100,35 @@ func TestSS2022ScriptCommandQuotesArgumentsAndSupportsLegacyRoots(t *testing.T) 
 	}
 }
 
+func TestSS2022StatusAndListCommandResolvesEveryToolkitRoot(t *testing.T) {
+	command := ss2022StatusAndListCommand()
+	for _, required := range []string{
+		"bash \"$root/linux/23-ss2022-tcp.sh\" 'status'",
+		"bash \"$root/linux/23-ss2022-tcp.sh\" 'list'",
+		"root='/opt/proxy-node-assistant-current'",
+		"root='/opt/text-node-assistant-current'",
+		"root='/opt/proxy-runbook-current'",
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("status/list command missing %q: %s", required, command)
+		}
+	}
+	if strings.Contains(command, "bash /opt/proxy-node-assistant-current/linux/23-ss2022-tcp.sh") {
+		t.Fatalf("status/list command bypasses the compatibility root resolver: %s", command)
+	}
+}
+
 func TestSS2022AllowlistMenuHasSeparateCRUDEntry(t *testing.T) {
 	source, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
+	allowlistSource, err := os.ReadFile("local_network.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowlistText := string(allowlistSource)
 	for _, required := range []string{
 		`[19] SS2022 来源白名单：识别本机 IP / 对照 VPS / 添加当前来源`,
 		`[24] SS2022 白名单管理：查看 / 添加指定 IPv4 / 删除`,
@@ -115,5 +138,15 @@ func TestSS2022AllowlistMenuHasSeparateCRUDEntry(t *testing.T) {
 		if !strings.Contains(text, required) {
 			t.Fatalf("CLI SS2022 allowlist menu is missing %q", required)
 		}
+	}
+	const hint = `[INFO] 本项只负责“识别本机 IP + 一键添加当前来源”。要查看完整白名单，或自由添加/删除指定 IPv4，请返回菜单选择 [24] SS2022 白名单管理（与本项并列）。`
+	if !strings.Contains(allowlistText, hint) {
+		t.Fatalf("one-shot allowlist action does not point to the parallel CRUD action: %s", hint)
+	}
+	if !strings.Contains(allowlistText, `ss2022ScriptCommand("allow", observed)+"; "+ss2022ScriptCommand("status")`) {
+		t.Fatal("one-shot allowlist mutation does not use the compatibility root resolver")
+	}
+	if strings.Contains(allowlistText, `"bash "+remoteRoot+"/linux/23-ss2022-tcp.sh allow`) {
+		t.Fatal("one-shot allowlist mutation still hard-codes the canonical toolkit root")
 	}
 }
