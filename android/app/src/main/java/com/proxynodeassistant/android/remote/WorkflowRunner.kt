@@ -639,14 +639,16 @@ class WorkflowRunner(
         val transactionId = beginInstallTransaction(handle)
         var transactionActive = true
         try {
-            val oneRunName = "proxy-node-assistant-auto-input-${randomToken()}.env"
-            val oneRunPath = "/tmp/$oneRunName"
-            handle.upload(installAutoInput(plan).toByteArray(), oneRunName, "/tmp", "0600")
+            // Write the auto-input through the already authenticated root
+            // session so a non-root SSH account cannot leave a user-owned
+            // credential file that the runbook would reject.  The payload is
+            // base64 on stdin, never part of the command line or log stream.
+            val oneRunPath = writeOneRunInput(handle, installAutoInput(plan), "auto-input")
             try {
                 val command = installEnvironment(handle, plan, oneRunPath) + " bash $REMOTE_ROOT/linux/00-auto-install-or-optimize.sh"
                 checked(handle, command, interactive = true)
             } finally {
-                runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(oneRunPath)}", root = true) }
+                removeOneRunInput(handle, oneRunPath)
             }
             reconcileRoute(handle, plan, publicIp)
             showHandoff(handle)
@@ -977,9 +979,109 @@ class WorkflowRunner(
             raw.toIntOrNull()?.let(Ss2022PortPolicy::valid) == true
         }.toInt()
 
+        // Credentials are an explicit part of the install/upgrade plan.  The
+        // mode is shown in the review, while custom secrets stay in memory
+        // until they are written to the root-only one-run input file.
+        val credentials = collectCredentialPlan(existingNode)
         val prune = confirmYes(tr("成功后清理冗余备份，仅保留一份已验证的当前配置备份？", "After success, prune redundant backups and retain one verified current-config backup?"), false, allowNo = true)
         val openPanel = confirmYes(tr("成功后通过本机 SSH 隧道打开 3x-ui 面板？", "After success, open the 3x-ui panel through a localhost SSH tunnel?"), true, allowNo = true)
-        return AndroidInstallPlan(route, coverChoice, performance, warp, gray, orange, prune, openPanel, ss2022Port)
+        return AndroidInstallPlan(
+            routeMode = route,
+            coverChoice = coverChoice,
+            performanceMode = performance,
+            warpMode = warp,
+            gray = gray,
+            orange = orange,
+            pruneAfterSuccess = prune,
+            openPanelOnSuccess = openPanel,
+            ss2022Port = ss2022Port,
+            credentials = credentials,
+        )
+    }
+
+    private suspend fun collectCredentialPlan(existingNode: Boolean): AndroidCredentialPlan {
+        val vpsMode = chooseInstallCredentialMode(
+            label = tr("VPS 登录密码策略", "VPS login password policy"),
+            existingNode = existingNode,
+            subject = tr("VPS 登录密码", "VPS login password"),
+        )
+        val vpsPassword = if (vpsMode == InstallCredentialMode.CUSTOM) {
+            matchingSecret(
+                tr("自定义 VPS 登录密码", "Custom VPS login password"),
+                tr("输入 8—256 个字符；空格有意义，不写日志或设置。", "Enter 8-256 characters; spaces are meaningful and the value is never logged or persisted."),
+            )
+        } else ""
+
+        val panelMode = chooseInstallCredentialMode(
+            label = tr("3x-ui 面板凭据策略", "3x-ui panel credential policy"),
+            existingNode = existingNode,
+            subject = tr("3x-ui 面板账号和密码", "3x-ui panel username and password"),
+        )
+        val panelAccount: String
+        val panelPassword: String
+        if (panelMode == InstallCredentialMode.CUSTOM) {
+            panelAccount = required(
+                tr("自定义 3x-ui 面板账号", "Custom 3x-ui panel username"),
+                tr("仅允许字母、数字、下划线、点和连字符；首字符必须是字母或下划线。", "Letters, digits, underscore, dot, and hyphen only; start with a letter or underscore."),
+            ) { AndroidCredentialPlan.validPanelAccount(it) }
+            panelPassword = matchingSecret(
+                tr("自定义 3x-ui 面板密码", "Custom 3x-ui panel password"),
+                tr("输入 8—256 个字符；空格有意义，不写日志或设置。", "Enter 8-256 characters; spaces are meaningful and the value is never logged or persisted."),
+            )
+        } else {
+            panelAccount = ""
+            panelPassword = ""
+        }
+        return AndroidCredentialPlan(vpsMode, vpsPassword, panelMode, panelAccount, panelPassword)
+    }
+
+    private suspend fun chooseInstallCredentialMode(
+        label: String,
+        existingNode: Boolean,
+        subject: String,
+    ): InstallCredentialMode {
+        val options = buildList {
+            if (existingNode) add("PRESERVE | ${tr("保留当前已验证凭据", "keep the currently verified credentials")}")
+            add("RANDOM | ${tr("生成并应用新的高强度随机值", "generate and apply a new high-entropy value")}")
+            add("CUSTOM | ${tr("手动输入并二次确认", "enter and confirm manually")}")
+        }
+        val answer = prompts.ask(
+            label,
+            tr(
+                "为 $subject 选择本次策略。自定义秘密只通过一次性 root-only 文件交给远端，绝不进入日志、命令行或本地设置。",
+                "Choose the policy for $subject. Custom secrets travel only in a one-run root-only file and never enter logs, command lines, or local settings.",
+            ),
+            PromptKind.CHOICE,
+            options = options,
+        )
+        val token = answer.trim().substringBefore('|').substringBefore('｜').trim().lowercase(Locale.ROOT)
+        return when {
+            token == "preserve" || token == "p" || token == "0" || (token == "1" && existingNode) -> InstallCredentialMode.PRESERVE
+            token == "random" || token == "r" || (token == "1" && !existingNode) || (token == "2" && existingNode) -> InstallCredentialMode.RANDOM
+            token == "custom" || token == "c" || (token == "2" && !existingNode) || (token == "3" && existingNode) -> InstallCredentialMode.CUSTOM
+            else -> error(tr("凭据策略选择无效", "Invalid credential policy selection"))
+        }
+    }
+
+    /** Ask for a secret without trimming meaningful spaces, then confirm it. */
+    private suspend fun matchingSecret(title: String, message: String): String {
+        while (true) {
+            val first = requiredSecret(title, message)
+            val second = requiredSecret(
+                tr("再次输入以确认", "Enter again to confirm"),
+                tr("两次输入必须完全一致；空格和大小写均保留。", "The two entries must match exactly; spaces and case are preserved."),
+            )
+            if (first == second) return first
+            log("INPUT_REJECTED: $title (confirmation mismatch)")
+        }
+    }
+
+    private suspend fun requiredSecret(title: String, message: String): String {
+        while (true) {
+            val answer = Validation.singleLineSecret(prompts.ask(title, message, PromptKind.SECRET, placeholder = tr("至少 8 个字符", "at least 8 characters")))
+            if (AndroidCredentialPlan.validSecret(answer)) return answer
+            log("INPUT_REJECTED: $title (8..256 characters, no CR/LF)")
+        }
     }
 
     private fun installAutoInput(plan: AndroidInstallPlan): String = buildString {
@@ -988,6 +1090,45 @@ class WorkflowRunner(
         appendLine("ORANGE_DOMAIN_B64=${b64(plan.orange.domain)}")
         appendLine("ORANGE_EMAIL_B64=${b64(plan.orange.email)}")
         appendLine("LANG=${if (language == Language.ZH) "zh" else "en"}")
+        appendLine("VPS_PASSWORD_MODE=${plan.credentials.vpsMode.wireValue}")
+        appendLine("PANEL_CREDENTIAL_MODE=${plan.credentials.panelMode.wireValue}")
+        if (plan.credentials.vpsMode == InstallCredentialMode.CUSTOM) {
+            appendLine("VPS_PASSWORD_B64=${b64(plan.credentials.vpsPassword)}")
+        }
+        if (plan.credentials.panelMode == InstallCredentialMode.CUSTOM) {
+            appendLine("PANEL_USERNAME_B64=${b64(plan.credentials.panelAccount)}")
+            appendLine("PANEL_PASSWORD_B64=${b64(plan.credentials.panelPassword)}")
+        }
+    }
+
+    /**
+     * Create a root-owned, 0600 one-run input file without exposing its
+     * contents in an SSH command, process listing, or ordinary workflow log.
+     * The runbook accepts these names during its bounded credential phase.
+     */
+    private suspend fun writeOneRunInput(handle: SshHandle, content: String, kind: String): String {
+        require(kind == "auto-input" || kind == "credential-input") { "unsupported one-run input kind" }
+        // Keep the name in the same namespace/shape enforced by the v1
+        // runbook: the random suffix is the complete basename (no extension).
+        val path = "/tmp/proxy-node-assistant-$kind-${randomToken()}"
+        val payload = Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP) + "\n"
+        val payloadBytes = payload.toByteArray(Charsets.US_ASCII)
+        val result = handle.exec(
+            // `head -c` consumes the exact payload and closes its pipe.  This
+            // gives base64 an EOF even though the SSH session remains open
+            // for the command's stdout/stderr pumps.
+            "set -Eeuo pipefail; umask 077; set -C; head -c ${payloadBytes.size} | base64 -d > ${SshHandle.shellQuote(path)}; set +C; chmod 600 ${SshHandle.shellQuote(path)}; test \"\$(stat -c '%u %a' ${SshHandle.shellQuote(path)} 2>/dev/null)\" = '0 600'",
+            root = true,
+            stdinBytes = payloadBytes,
+            log = { },
+        )
+        check(result.ok) { "one-run input creation failed (exit ${result.exitCode})" }
+        return path
+    }
+
+    private suspend fun removeOneRunInput(handle: SshHandle, path: String) {
+        if (!Regex("^/tmp/proxy-node-assistant-(auto-input|credential-input)-[0-9a-f]{24}$").matches(path)) return
+        runCatching { handle.exec("rm -f -- ${SshHandle.shellQuote(path)}", root = true, log = { }) }
     }
 
     private fun installEnvironment(handle: SshHandle, plan: AndroidInstallPlan, inputPath: String): String =
@@ -2128,15 +2269,110 @@ class WorkflowRunner(
 
     private suspend fun rotateVpsPassword(handle: SshHandle) {
         val user = required(tr("VPS 用户", "VPS user"), tr("需要轮换登录密码的账户", "Account whose login password will be rotated"), handle.target.user) { Validation.validUser(it) }
-        confirmYes(tr("为 $user 生成并立即应用高强度随机密码？", "Generate and immediately apply a high-entropy password for $user?"), false)
-        checked(handle, "source $REMOTE_ROOT/linux/lib-handoff.sh; handoff_begin_run; bash $REMOTE_ROOT/linux/01a-rotate-vps-password.sh ${SshHandle.shellQuote(user)}")
+        val mode = chooseCredentialMutationMode(
+            tr("VPS 登录密码策略", "VPS login password policy"),
+            tr("选择生成新的高强度随机密码，或手动输入一个自定义密码。自定义值只进入一次性 root-only 文件。", "Choose a new high-entropy random password or enter a custom one. Custom values travel only in a one-run root-only file."),
+        ) ?: return
+        val customPassword = if (mode == InstallCredentialMode.CUSTOM) {
+            matchingSecret(
+                tr("自定义 VPS 登录密码", "Custom VPS login password"),
+                tr("输入 8—256 个字符；空格有意义，不写日志或设置。", "Enter 8-256 characters; spaces are meaningful and the value is never logged or persisted."),
+            )
+        } else ""
+        val confirmMessage = if (mode == InstallCredentialMode.CUSTOM) {
+            tr("确认立即写入 $user 的自定义登录密码？SSH key 已存在，不会因此失联。", "Apply the custom login password for $user now? The existing SSH key prevents lockout.")
+        } else {
+            tr("为 $user 生成并立即应用高强度随机密码？SSH key 已存在，不会因此失联。", "Generate and immediately apply a high-entropy random password for $user? The existing SSH key prevents lockout.")
+        }
+        if (!confirmYes(confirmMessage, false)) return
+        var inputPath: String? = null
+        try {
+            if (mode == InstallCredentialMode.CUSTOM) {
+                inputPath = writeOneRunInput(handle, "VPS_PASSWORD_B64=${b64(customPassword)}\n", "credential-input")
+            }
+            val env = buildString {
+                append("PNA_VPS_PASSWORD_MODE=")
+                append(SshHandle.shellQuote(mode.wireValue))
+                val path = inputPath
+                if (path != null) {
+                    append(" PNA_CREDENTIAL_INPUT=")
+                    append(SshHandle.shellQuote(path))
+                }
+            }
+            checked(handle, "source $REMOTE_ROOT/linux/lib-handoff.sh; handoff_begin_run; $env bash $REMOTE_ROOT/linux/01a-rotate-vps-password.sh ${SshHandle.shellQuote(user)}")
+        } finally {
+            inputPath?.let { removeOneRunInput(handle, it) }
+        }
         showHandoff(handle)
     }
 
     private suspend fun rotatePanelCredentials(handle: SshHandle) {
-        confirmYes(tr("轮换 3x-ui 用户名和密码？现有会话会退出，2FA 可能被关闭。", "Rotate the 3x-ui username/password? Existing sessions will be logged out and 2FA may be disabled."), false)
-        checked(handle, "source $REMOTE_ROOT/linux/lib-handoff.sh; handoff_begin_run; bash $REMOTE_ROOT/linux/03c-rotate-panel-credentials.sh")
+        val mode = chooseCredentialMutationMode(
+            tr("3x-ui 面板凭据策略", "3x-ui panel credential policy"),
+            tr("选择生成新的随机账号/密码，或手动输入自定义值。自定义秘密只进入一次性 root-only 文件。", "Choose new random panel credentials or enter custom values. Custom secrets travel only in a one-run root-only file."),
+        ) ?: return
+        var customAccount = ""
+        var customPassword = ""
+        if (mode == InstallCredentialMode.CUSTOM) {
+            customAccount = required(
+                tr("自定义 3x-ui 面板账号", "Custom 3x-ui panel username"),
+                tr("仅允许字母、数字、下划线、点和连字符；首字符必须是字母或下划线。", "Letters, digits, underscore, dot, and hyphen only; start with a letter or underscore."),
+            ) { AndroidCredentialPlan.validPanelAccount(it) }
+            customPassword = matchingSecret(
+                tr("自定义 3x-ui 面板密码", "Custom 3x-ui panel password"),
+                tr("输入 8—256 个字符；空格有意义，不写日志或设置。", "Enter 8-256 characters; spaces are meaningful and the value is never logged or persisted."),
+            )
+        }
+        val confirmMessage = if (mode == InstallCredentialMode.CUSTOM) {
+            tr("确认立即写入自定义 3x-ui 账号和密码？现有会话会退出，2FA 可能被关闭。", "Apply the custom 3x-ui username and password now? Existing sessions will be logged out and 2FA may be disabled.")
+        } else {
+            tr("生成并应用新的随机 3x-ui 用户名和密码？现有会话会退出，2FA 可能被关闭。", "Generate and apply new random 3x-ui credentials? Existing sessions will be logged out and 2FA may be disabled.")
+        }
+        if (!confirmYes(confirmMessage, false)) return
+        var inputPath: String? = null
+        try {
+            if (mode == InstallCredentialMode.CUSTOM) {
+                inputPath = writeOneRunInput(
+                    handle,
+                    "PANEL_USERNAME_B64=${b64(customAccount)}\nPANEL_PASSWORD_B64=${b64(customPassword)}\n",
+                    "credential-input",
+                )
+            }
+            val env = buildString {
+                append("PNA_PANEL_CREDENTIAL_MODE=")
+                append(SshHandle.shellQuote(mode.wireValue))
+                val path = inputPath
+                if (path != null) {
+                    append(" PNA_CREDENTIAL_INPUT=")
+                    append(SshHandle.shellQuote(path))
+                }
+            }
+            checked(handle, "source $REMOTE_ROOT/linux/lib-handoff.sh; handoff_begin_run; $env bash $REMOTE_ROOT/linux/03c-rotate-panel-credentials.sh")
+        } finally {
+            inputPath?.let { removeOneRunInput(handle, it) }
+        }
         showHandoff(handle)
+    }
+
+    /** Menu [5]/[6] mutation policy: random, custom, or an explicit return. */
+    private suspend fun chooseCredentialMutationMode(title: String, message: String): InstallCredentialMode? {
+        val answer = prompts.ask(
+            title,
+            message,
+            PromptKind.CHOICE,
+            options = listOf(
+                "RANDOM | ${tr("生成新的高强度随机值", "generate a new high-entropy value")}",
+                "CUSTOM | ${tr("手动输入并二次确认", "enter and confirm manually")}",
+                "CANCEL | ${tr("返回，不修改远端", "return without changing the VPS")}",
+            ),
+        )
+        val token = answer.trim().substringBefore('|').substringBefore('｜').trim().lowercase(Locale.ROOT)
+        return when {
+            token == "random" || token == "r" || token == "1" -> InstallCredentialMode.RANDOM
+            token == "custom" || token == "c" || token == "2" -> InstallCredentialMode.CUSTOM
+            token == "cancel" || token == "q" || token == "0" -> null
+            else -> error(tr("凭据策略选择无效", "Invalid credential policy selection"))
+        }
     }
 
     private suspend fun optimizeCover(handle: SshHandle) {

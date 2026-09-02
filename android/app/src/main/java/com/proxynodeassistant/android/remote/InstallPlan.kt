@@ -38,6 +38,59 @@ internal enum class InstallWarpMode(val wireValue: String) {
     ENSURE_ON("ensure-on"),
 }
 
+/**
+ * How install/upgrade obtains the two remote login credential pairs.
+ *
+ * Values are deliberately limited to the strings consumed by the runbook.
+ * Secret fields in [AndroidCredentialPlan] are ephemeral and are never part
+ * of a review line, environment value, or persisted preference.
+ */
+internal enum class InstallCredentialMode(val wireValue: String) {
+    PRESERVE("preserve"),
+    RANDOM("random"),
+    CUSTOM("custom"),
+}
+
+internal data class AndroidCredentialPlan(
+    val vpsMode: InstallCredentialMode = InstallCredentialMode.RANDOM,
+    val vpsPassword: String = "",
+    val panelMode: InstallCredentialMode = InstallCredentialMode.RANDOM,
+    val panelAccount: String = "",
+    val panelPassword: String = "",
+) {
+    /** Validate policy without ever printing the secret values. */
+    fun validate(existingNode: Boolean) {
+        if (!existingNode) {
+            require(vpsMode != InstallCredentialMode.PRESERVE) { "fresh install cannot preserve VPS credentials" }
+            require(panelMode != InstallCredentialMode.PRESERVE) { "fresh install cannot preserve panel credentials" }
+        }
+        if (vpsMode == InstallCredentialMode.CUSTOM) {
+            require(validSecret(vpsPassword)) { "custom VPS password must be 8..256 characters without CR/LF" }
+        }
+        if (panelMode == InstallCredentialMode.CUSTOM) {
+            require(validPanelAccount(panelAccount)) { "custom panel account has invalid characters" }
+            require(validSecret(panelPassword)) { "custom panel password must be 8..256 characters without CR/LF" }
+        }
+    }
+
+    /** Safe mode/account summary for the final install review. */
+    fun reviewLines(): List<String> = buildList {
+        add("VPS_CREDENTIAL_MODE=${vpsMode.wireValue}")
+        add("PANEL_CREDENTIAL_MODE=${panelMode.wireValue}")
+        if (panelMode == InstallCredentialMode.CUSTOM) add("PANEL_ACCOUNT=$panelAccount")
+    }
+
+    companion object {
+        private val panelAccountPattern = Regex("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
+
+        fun validPanelAccount(value: String): Boolean = panelAccountPattern.matches(value)
+
+        /** Keep spaces meaningful; reject only empty/newline-containing values. */
+        fun validSecret(value: String): Boolean =
+            value.length in 8..256 && value.isNotEmpty() && !value.contains('\r') && !value.contains('\n')
+    }
+}
+
 internal data class InstallRouteIdentity(
     val domain: String = "",
     val email: String = "",
@@ -54,6 +107,8 @@ internal data class AndroidInstallPlan(
     val openPanelOnSuccess: Boolean,
     /** TCP-only Shadowsocks 2022 listener. Fresh installs use the formal port. */
     val ss2022Port: Int = Ss2022PortPolicy.FORMAL_PORT,
+    /** Ephemeral VPS/panel credential policy for this run. */
+    val credentials: AndroidCredentialPlan = AndroidCredentialPlan(),
 ) {
     fun validate(existingNode: Boolean) {
         require(existingNode || routeMode != InstallRouteMode.KEEP) { "keep requires an existing node" }
@@ -72,6 +127,7 @@ internal data class AndroidInstallPlan(
         require(routeMode != InstallRouteMode.DUAL || !gray.domain.equals(orange.domain, ignoreCase = true)) {
             "dual route requires different hostnames"
         }
+        credentials.validate(existingNode)
     }
 
     fun reviewLines(): List<String> = buildList {
@@ -86,6 +142,7 @@ internal data class AndroidInstallPlan(
         add("SS2022_PORT_POLICY=formal:${Ss2022PortPolicy.FORMAL_PORT}; existing-trial:${Ss2022PortPolicy.TRIAL_PORT}")
         add("SS2022_NETWORK=tcp-only")
         add("SS2022_ALLOWLIST=exact-public-ip; use action 19 for local-IP add or action 24 for manual management")
+        addAll(credentials.reviewLines())
         if (routeMode == InstallRouteMode.GRAY || routeMode == InstallRouteMode.DUAL) {
             add("GRAY_DOMAIN=${gray.domain}")
             add("GRAY_EMAIL=${maskEmail(gray.email)}")
@@ -110,6 +167,8 @@ internal data class AndroidInstallPlan(
         "TNA_CDN_ORIGIN_PORT" to "8443",
         "TNA_WARP_LOOPBACK_PORT" to "40000",
         "PNA_SS2022_PORT" to ss2022Port.toString(),
+        "TNA_VPS_PASSWORD_MODE" to credentials.vpsMode.wireValue,
+        "TNA_PANEL_CREDENTIAL_MODE" to credentials.panelMode.wireValue,
         "TNA_PLAN_CONFIRMED" to "1",
         "TNA_AUTO_INPUT" to inputPath,
     )

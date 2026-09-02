@@ -33,7 +33,7 @@ class InstallPlanTest {
             openPanelOnSuccess = true,
         )
         plan.validate(existingNode = false)
-        val env = plan.environmentValues("root", "zh", "/tmp/proxy-node-assistant-auto-input-0123456789abcdef01234567.env")
+        val env = plan.environmentValues("root", "zh", "/tmp/proxy-node-assistant-auto-input-0123456789abcdef01234567")
         assertEquals("gray", env["TNA_ROUTE_MODE"])
         assertEquals("443", env["TNA_REALITY_PRODUCTION_PORT"])
         assertEquals("24443", env["TNA_REALITY_SHADOW_PORT"])
@@ -41,6 +41,7 @@ class InstallPlanTest {
         assertEquals("40000", env["TNA_WARP_LOOPBACK_PORT"])
         assertEquals("32443", env["PNA_SS2022_PORT"])
         assertEquals("1", env["TNA_PLAN_CONFIRMED"])
+        assertFalse(env.containsKey("PNA_CREDENTIAL_INPUT"))
         assertFalse(env.containsKey("PROXY_RUNBOOK_ASSUME_DEFAULTS"))
         assertFalse(env.values.any { it == "/tmp/proxy-runbook-auto-input" })
     }
@@ -113,6 +114,72 @@ class InstallPlanTest {
             ss2022Port = 443,
         )
         assertThrows(IllegalArgumentException::class.java) { conflicting.validate(existingNode = false) }
+    }
+
+    @Test
+    fun credentialPlanRequiresExplicitModesAndValidatesCustomValues() {
+        val freshPreserve = AndroidCredentialPlan(
+            vpsMode = InstallCredentialMode.PRESERVE,
+            panelMode = InstallCredentialMode.PRESERVE,
+        )
+        assertThrows(IllegalArgumentException::class.java) { freshPreserve.validate(existingNode = false) }
+
+        val invalidSecret = AndroidCredentialPlan(
+            vpsMode = InstallCredentialMode.CUSTOM,
+            vpsPassword = "short",
+            panelMode = InstallCredentialMode.RANDOM,
+        )
+        assertThrows(IllegalArgumentException::class.java) { invalidSecret.validate(existingNode = true) }
+
+        val invalidPanel = AndroidCredentialPlan(
+            vpsMode = InstallCredentialMode.RANDOM,
+            panelMode = InstallCredentialMode.CUSTOM,
+            panelAccount = "bad account",
+            panelPassword = "long-enough-password",
+        )
+        assertThrows(IllegalArgumentException::class.java) { invalidPanel.validate(existingNode = true) }
+
+        val valid = AndroidCredentialPlan(
+            vpsMode = InstallCredentialMode.CUSTOM,
+            vpsPassword = "  keep spaces  ",
+            panelMode = InstallCredentialMode.CUSTOM,
+            panelAccount = "panel_admin-1",
+            panelPassword = "  another-secret  ",
+        )
+        valid.validate(existingNode = true)
+    }
+
+    @Test
+    fun credentialModesAppearInReviewButSecretsDoNot() {
+        val secret = "vps-secret-123"
+        val panelSecret = "panel-secret-456"
+        val plan = AndroidInstallPlan(
+            routeMode = InstallRouteMode.GRAY,
+            coverChoice = "1",
+            performanceMode = InstallPerformanceMode.AUTO,
+            warpMode = InstallWarpMode.ENSURE_ON,
+            gray = InstallRouteIdentity("cover.example.com", "owner@example.com"),
+            pruneAfterSuccess = false,
+            openPanelOnSuccess = false,
+            credentials = AndroidCredentialPlan(
+                vpsMode = InstallCredentialMode.CUSTOM,
+                vpsPassword = secret,
+                panelMode = InstallCredentialMode.CUSTOM,
+                panelAccount = "panel_admin",
+                panelPassword = panelSecret,
+            ),
+        )
+        plan.validate(existingNode = true)
+        val review = plan.reviewLines().joinToString("\n")
+        assertTrue("VPS_CREDENTIAL_MODE=custom" in review)
+        assertTrue("PANEL_CREDENTIAL_MODE=custom" in review)
+        assertTrue("PANEL_ACCOUNT=panel_admin" in review)
+        assertFalse(secret in review)
+        assertFalse(panelSecret in review)
+        val env = plan.environmentValues("root", "zh", "/tmp/input.env")
+        assertEquals("custom", env["TNA_VPS_PASSWORD_MODE"])
+        assertEquals("custom", env["TNA_PANEL_CREDENTIAL_MODE"])
+        assertFalse(env.values.any { it == secret || it == panelSecret })
     }
 
     @Test
