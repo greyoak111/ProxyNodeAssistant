@@ -97,9 +97,10 @@ object ProtocolParsers {
         val values = kv(payload)
         require(values["HANDOFF_RUN_STARTED"].orEmpty().isNotBlank()) { "handoff run marker is missing" }
         val useful = listOf(
-            "PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_API_TOKEN",
-            "VPS_ACCOUNT", "VPS_PASSWORD", "PANEL_ACCOUNT",
-            "VPS_LOGIN_PASSWORD", "UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY",
+            "PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_ACCOUNT", "PANEL_API_TOKEN",
+            "XUI_USERNAME", "XUI_PASSWORD",
+            "VPS_LOGIN_USER", "VPS_LOGIN_PASSWORD", "VPS_ACCOUNT", "VPS_PASSWORD",
+            "UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY",
             "VLESS_LINK", "DIRECT_REALITY_LINK", "REALITY_LINK",
             "CDN_XHTTP_LINK", "CDN_XHTTP_STAGE_LINK", "CDN_XHTTP_SUBSCRIPTION_URL",
             "SUBSCRIPTION_URL", "SS2022_LINK", "SS2022_PASSWORD", "SS2022_PORT",

@@ -227,6 +227,18 @@ func TestValidateHandoffAcceptsSubscriptionOnlyPayload(t *testing.T) {
 	}
 }
 
+func TestValidateHandoffAcceptsLegacyCredentialAliasOnlyPayload(t *testing.T) {
+	input := strings.Join([]string{
+		handoffBegin,
+		"HANDOFF_RUN_STARTED=legacy-alias-fixture",
+		"XUI_USERNAME=legacy-panel",
+		handoffEnd,
+	}, "\n")
+	if _, err := validateHandoff(input); err != nil {
+		t.Fatalf("legacy alias-only handoff was rejected: %v", err)
+	}
+}
+
 func TestExtractMarkedBlockDoesNotStopAtNestedSameMarkers(t *testing.T) {
 	input := strings.Join([]string{
 		"noise",

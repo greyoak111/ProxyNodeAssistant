@@ -64,6 +64,11 @@ class ProtocolParsersTest {
         assertTrue(ProtocolParsers.handoff(value).contains("VPS_LOGIN_USER=root"))
     }
 
+    @Test fun legacyCredentialAliasOnlyHandoffIsAcceptedAsUseful() {
+        val value = "${ProtocolParsers.HANDOFF_BEGIN}\nHANDOFF_RUN_STARTED=legacy-alias\nXUI_USERNAME=legacy-panel\n${ProtocolParsers.HANDOFF_END}"
+        assertTrue(ProtocolParsers.handoff(value).contains("XUI_USERNAME=legacy-panel"))
+    }
+
     @Test fun ss2022OnlyHandoffIsAcceptedAsUsefulRuntimeData() {
         val value = "${ProtocolParsers.HANDOFF_BEGIN}\nHANDOFF_RUN_STARTED=run-ss\nSS2022_LINK=ss://redacted@203.0.113.10:30443#ProxyNodeAssistant-SS2022-TCP\nSS2022_PORT=30443\n${ProtocolParsers.HANDOFF_END}"
         assertTrue(ProtocolParsers.handoff(value).contains("SS2022_PORT=30443"))
