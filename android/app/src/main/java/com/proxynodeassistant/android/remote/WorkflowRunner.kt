@@ -2767,8 +2767,8 @@ class WorkflowRunner(
 
     companion object {
         const val VERSION = "1.0.0"
-        const val BUILD_ID = "20260901-v100-ss2022-r104"
-        const val BUILD_REVISION = 104
+        const val BUILD_ID = "20260901-v100-ss2022-r105"
+        const val BUILD_REVISION = 105
         const val REMOTE_ROOT = "/opt/proxy-node-assistant-current"
         const val LEGACY_TEXT_REMOTE_ROOT = "/opt/text-node-assistant-current"
         const val LEGACY_REMOTE_ROOT = "/opt/proxy-runbook-current"

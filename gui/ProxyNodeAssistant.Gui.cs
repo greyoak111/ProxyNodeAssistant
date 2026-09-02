@@ -27,7 +27,7 @@ using IOPath = System.IO.Path;
 [assembly: AssemblyDescription("Privacy-first graphical VPS node assistant")]
 [assembly: AssemblyVersion("1.0.0.100")]
 [assembly: AssemblyFileVersion("1.0.0.100")]
-[assembly: AssemblyInformationalVersion("1.0.0-reset-r104")]
+[assembly: AssemblyInformationalVersion("1.0.0-reset-r105")]
 
 namespace ProxyNodeAssistant.Gui
 {
