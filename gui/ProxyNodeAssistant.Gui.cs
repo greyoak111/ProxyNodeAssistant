@@ -27,7 +27,7 @@ using IOPath = System.IO.Path;
 [assembly: AssemblyDescription("Privacy-first graphical VPS node assistant")]
 [assembly: AssemblyVersion("1.0.0.100")]
 [assembly: AssemblyFileVersion("1.0.0.100")]
-[assembly: AssemblyInformationalVersion("1.0.0-reset-r102")]
+[assembly: AssemblyInformationalVersion("1.0.0-reset-r103")]
 
 namespace ProxyNodeAssistant.Gui
 {
@@ -1850,8 +1850,8 @@ namespace ProxyNodeAssistant.Gui
                 Op("2", "access", "无感打开 3x-ui 面板", "Open the 3x-ui panel", "通过 127.0.0.1 SSH 隧道打开后台，不暴露公网面板端口。", "Open through a 127.0.0.1 SSH tunnel without exposing the panel publicly.", "#38BDF8"),
                 Op("3", "maintain", "自动体检与排障", "Automatic diagnosis", "结构化检查 SSH、x-ui、Nginx、WARP、订阅和端口状态。", "Structured checks for SSH, x-ui, Nginx, WARP, subscriptions, and ports.", "#34D399"),
                 Op("4", "maintain", "安全自动修复", "Safe automatic repair", "先备份，再根据体检结果修复可自动处理的问题。", "Back up first, then repair issues that are safe to automate.", "#34D399"),
-                Op("5", "security", "随机化 VPS 登录密码", "Rotate VPS login password", "生成并显示高强度真密码，可直接复制进密码管理器。", "Generate and display a strong real password for immediate secure storage.", "#FBBF24"),
-                Op("6", "security", "随机化 3x-ui 账号密码", "Rotate 3x-ui credentials", "更新面板账号密码并输出经过校验的凭据交接单。", "Update panel credentials and produce a validated credential handoff.", "#FBBF24"),
+                Op("5", "security", "VPS 登录密码：随机或自定义", "VPS login password: random or custom", "可生成随机密码，也可遮罩输入自定义密码；输出经过校验的凭据交接单。", "Generate a random password or enter a masked custom value; produce a validated credential handoff.", "#FBBF24"),
+                Op("6", "security", "3x-ui 账号密码：随机或自定义", "3x-ui credentials: random or custom", "可随机或自定义面板账号/密码；秘密只在本次 SSH 操作中使用。", "Randomize or set a custom panel account/password; secrets are used only for this SSH operation.", "#FBBF24"),
                 Op("7", "access", "显示当前凭据交接单", "Show current credential handoff", "读取真实面板元数据并复制到 Windows 剪贴板。", "Read validated panel metadata and copy the handoff to the clipboard.", "#38BDF8"),
                 Op("8", "maintain", "切换 15 套伪装站与优化 Nginx", "Switch 15 cover templates and optimize Nginx", "随机、按域名稳定选择或指定 1—15；包含原创离线像素跑酷。", "Choose random, stable-per-domain, or exact 1-15; includes an original offline pixel runner.", "#34D399"),
                 Op("9", "backup", "完整灾难恢复备份", "Full disaster-recovery backup", "包含程序与远端节点配置，适合迁移或严重故障恢复，体积较大。", "Includes the program and remote-node configuration for migration or recovery; larger archive.", "#A78BFA"),

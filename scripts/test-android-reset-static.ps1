@@ -26,8 +26,8 @@ Assert-Match $gradle 'versionName\s*=\s*"1\.0\.0"' "Android visible version is n
 
 $workflow = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/WorkflowRunner.kt"
 Assert-Match $workflow 'const val VERSION = "1\.0\.0"' "Android workflow visible version is not v1.0.0"
-Assert-Match $workflow 'const val BUILD_REVISION = 102' "Android workflow revision is not 102"
-Assert-Match $workflow 'const val BUILD_ID = "20260901-v100-ss2022-r102"' "Android workflow build id is not revision 102"
+Assert-Match $workflow 'const val BUILD_REVISION = 103' "Android workflow revision is not 103"
+Assert-Match $workflow 'const val BUILD_ID = "20260901-v100-ss2022-r103"' "Android workflow build id is not revision 103"
 Assert-Match $workflow 'Ss2022PortPolicy\.FORMAL_PORT' "Android workflow does not use the formal SS2022 port policy"
 Assert-Match $workflow 'Ss2022PortPolicy\.TRIAL_PORT' "Android workflow lost 30443 trial compatibility"
 Assert-Match $workflow 'const val REMOTE_ROOT = "/opt/proxy-node-assistant-current"' "Android workflow does not use the current ProxyNodeAssistant remote root"
@@ -55,26 +55,30 @@ Assert-Match $workflow 'REAL BROWSE OK' "Android orange/dual route no longer req
 Assert-Match $workflow 'TNA_TOPOLOGY_RECONCILED=1' "Android route reconciliation no longer verifies completion markers"
 Assert-NoMatch $workflow 'PROXY_RUNBOOK_ASSUME_DEFAULTS' "Android action 1 silently enables unsafe runbook defaults"
 Assert-NoMatch $workflow '/tmp/proxy-runbook-auto-input' "Android action 1 reintroduced the fixed legacy auto-input path"
-Assert-Match $workflow 'proxy-node-assistant-auto-input-\$\{randomToken\(\)\}\.env' "Android action 1 no longer uses a randomized one-run input file"
-	Assert-Match $workflow 'handle\.upload\(installAutoInput\(plan\)\.toByteArray\(\), oneRunName, "/tmp", "0600"\)' "Android action 1 no longer uploads the randomized input with mode 0600"
+Assert-Match $workflow 'proxy-node-assistant-\$kind-\$\{randomToken\(\)\}' "Android one-run credential/input files no longer use the bounded randomized namespace"
+Assert-Match $workflow 'writeOneRunInput\(handle, installAutoInput\(plan\), "auto-input"\)' "Android action 1 no longer creates the randomized input with root-only mode 0600"
+Assert-Match $workflow 'withContext\(NonCancellable\) \{ removeOneRunInput\(handle, path\) \}' "Android one-run input failures can leave a credential file behind"
+Assert-Match $workflow 'writeOneRunInput\([\s\S]*"credential-input"\)' "Android menu [5]/[6] no longer uses a dedicated credential-input file"
+Assert-Match $workflow 'PNA_CREDENTIAL_INPUT' "Android menu [5]/[6] no longer passes custom credentials through the one-run file"
+Assert-Match $workflow 'inputPath\?\.let \{ removeOneRunInput\(handle, it\) \}' "Android menu [5]/[6] lost its normal one-run cleanup"
 
-	# Action [19] is an allowlist mutation, so it must fail closed before showing
-	# the confirmation prompt. Keep status and list as separate calls: a successful
-	# list command must never mask a missing/inactive listener or firewall.
-	Assert-Match $workflow 'val status = handle\.exec\("bash \$REMOTE_ROOT/linux/23-ss2022-tcp\.sh status"' "Android action 19 lost the SS2022 status probe"
-	Assert-Match $workflow 'check\(status\.ok\)' "Android action 19 no longer treats a failed status command as fatal"
-	Assert-Match $workflow 'statusValues\["PRESENT"\] == "1" && statusValues\["ACTIVE"\] == "1" && statusValues\["LISTENER"\] == "1" && statusValues\["FIREWALL"\] == "1"' "Android action 19 no longer fails closed on missing SS2022 readiness gates"
-	Assert-Match $workflow 'val list = handle\.exec\("bash \$REMOTE_ROOT/linux/23-ss2022-tcp\.sh list"' "Android action 19 lost the separate SS2022 allowlist listing"
-	$statusIndex = $workflow.IndexOf('val status = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh status"')
-	$gateIndex = $workflow.IndexOf('statusValues["PRESENT"] == "1" && statusValues["ACTIVE"] == "1" && statusValues["LISTENER"] == "1" && statusValues["FIREWALL"] == "1"')
-	$listIndex = $workflow.IndexOf('val list = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh list"')
-	$promptIndex = $workflow.IndexOf('val answer = prompts.ask(', [Math]::Max($listIndex, 0))
-	if ($statusIndex -lt 0 -or $gateIndex -lt $statusIndex -or $listIndex -lt $gateIndex -or $promptIndex -lt $listIndex) {
-	    throw "Android action 19 may prompt before the SS2022 status/list fail-closed checks"
-	}
+# Action [19] is an allowlist mutation, so it must fail closed before showing
+# the confirmation prompt. Keep status and list as separate calls: a successful
+# list command must never mask a missing/inactive listener or firewall.
+Assert-Match $workflow 'val status = handle\.exec\("bash \$REMOTE_ROOT/linux/23-ss2022-tcp\.sh status"' "Android action 19 lost the SS2022 status probe"
+Assert-Match $workflow 'check\(status\.ok\)' "Android action 19 no longer treats a failed status command as fatal"
+Assert-Match $workflow 'statusValues\["PRESENT"\] == "1" && statusValues\["ACTIVE"\] == "1" && statusValues\["LISTENER"\] == "1" && statusValues\["FIREWALL"\] == "1"' "Android action 19 no longer fails closed on missing SS2022 readiness gates"
+Assert-Match $workflow 'val list = handle\.exec\("bash \$REMOTE_ROOT/linux/23-ss2022-tcp\.sh list"' "Android action 19 lost the separate SS2022 allowlist listing"
+$statusIndex = $workflow.IndexOf('val status = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh status"')
+$gateIndex = $workflow.IndexOf('statusValues["PRESENT"] == "1" && statusValues["ACTIVE"] == "1" && statusValues["LISTENER"] == "1" && statusValues["FIREWALL"] == "1"')
+$listIndex = $workflow.IndexOf('val list = handle.exec("bash $REMOTE_ROOT/linux/23-ss2022-tcp.sh list"')
+$promptIndex = $workflow.IndexOf('val answer = prompts.ask(', [Math]::Max($listIndex, 0))
+if ($statusIndex -lt 0 -or $gateIndex -lt $statusIndex -or $listIndex -lt $gateIndex -or $promptIndex -lt $listIndex) {
+    throw "Android action 19 may prompt before the SS2022 status/list fail-closed checks"
+}
 
 $appUi = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppUi.kt"
-Assert-Match $appUi 'BUILD 1\.0\.0-R102 / ANDROID' "Android UI build label is not revision R102"
+Assert-Match $appUi 'BUILD 1\.0\.0-R103 / ANDROID' "Android UI build label is not revision R103"
 
 # Opening a connection dialog must not silently select the first history row.
 # The list remains visible, while the user explicitly taps a card to copy its
@@ -120,8 +124,8 @@ if ($panelHelperIndex -lt 0 -or $handoffPanelIndex -lt 0 -or $openPanelIndex -lt
 $androidBuilder = Read-RepoFile "android/build-android.ps1"
 Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/00-bootstrap-toolkit\.sh' "Android build no longer verifies the fresh-VPS bootstrap entry"
 Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/28-topology-reconcile\.sh' "Android build no longer verifies the explicit route reconciler"
-Assert-Match $androidBuilder '20260901-v100-ss2022-r102' "Android build no longer verifies the exact toolkit build id"
-Assert-Match $androidBuilder '\$archiveBuildRevision -ne "102"' "Android build no longer verifies toolkit revision 102"
+Assert-Match $androidBuilder '20260901-v100-ss2022-r103' "Android build no longer verifies the exact toolkit build id"
+Assert-Match $androidBuilder '\$archiveBuildRevision -ne "103"' "Android build no longer verifies toolkit revision 103"
 
 $installPlan = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/InstallPlan.kt"
 foreach ($requiredPlanValue in @('TNA_ROUTE_MODE', 'TNA_PERFORMANCE_MODE', 'TNA_WARP_MODE', 'TNA_COVER_TEMPLATE', 'TNA_REALITY_PRODUCTION_PORT', 'TNA_REALITY_SHADOW_PORT', 'TNA_CDN_ORIGIN_PORT', 'TNA_WARP_LOOPBACK_PORT', 'TNA_PLAN_CONFIRMED', 'TNA_AUTO_INPUT')) {
@@ -188,8 +192,8 @@ foreach ($entry in @(
 $archiveVersion = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_VERSION' | Out-String).Trim()
 $archiveBuildId = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID' | Out-String).Trim()
 $archiveRevision = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION' | Out-String).Trim()
-if ($archiveVersion -ne '1.0.0' -or $archiveBuildId -ne '20260901-v100-ss2022-r102' -or $archiveRevision -ne '102') {
-    throw "Embedded toolkit metadata is not the exact v1.0.0 revision-102 build"
+if ($archiveVersion -ne '1.0.0' -or $archiveBuildId -ne '20260901-v100-ss2022-r103' -or $archiveRevision -ne '103') {
+    throw "Embedded toolkit metadata is not the exact v1.0.0 revision-103 build"
 }
 
 Write-Host "ANDROID_RESET_STATIC_OK"
