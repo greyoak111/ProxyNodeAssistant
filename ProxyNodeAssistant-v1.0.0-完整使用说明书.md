@@ -148,10 +148,15 @@ Host Key 是 VPS 的服务器身份，不是客户端私钥。首次连接需核
 |---|---|
 | 没有工具包 | 安装当前内嵌包 |
 | 版本/构建完全相同 | 禁止重复上传和 bootstrap |
-| 同版本但内部 revision 较旧 | 受控升级，不以“同为 v1.0.0”为由误跳过 |
+| 同版本但内部 revision 较旧 | 显示 `TOOLKIT_ONLY_UPDATE_REQUIRED`；确认大写 `APPLY` 后只更新工具包，不收集路线/凭据/面板设置 |
 | 可见版本较旧 | 先备份，再升级 |
 | 远端构建较新 | 拒绝降级，要求换更新客户端 |
 | 同版本但关键文件不完整 | `[1]` 在 `APPLY` 后原位修复；其他菜单只读报错；更高修订/不同构建 ID 仍拒绝覆盖 |
+
+同版本工具包刷新还会记录 `TOOLKIT_ONLY_UPDATE_CONFIRMED` 和
+`TOOLKIT_ONLY_UPDATE_COMPLETE`。该分支先恢复未提交事务，再上传并精确复核
+版本、build ID、revision 和完整性；不会运行 `00-auto-install-or-optimize.sh`，
+也不会触发 3x-ui 凭据验证。远端旧于 v1.0.0 的 0.9.x 版本仍按完整迁移流程处理。
 
 ### 7.3 线路选择
 

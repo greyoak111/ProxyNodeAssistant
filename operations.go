@@ -172,12 +172,18 @@ func (a *App) deployOptimize() error {
 	}
 	updateSameVersionBuild := false
 	repairSameVersionToolkit := false
+	toolkitOnlyUpdate := false
+	toolkitOnlyReason := ""
 	legacyV095Audit := probe.Present && probe.Version == toolkitVersion && probe.BuildRevision > 0 && probe.BuildRevision < toolkitBuildRevision
 	switch relation {
 	case ToolkitSameComplete:
 		switch compareToolkitBuild(probe, toolkitBuildID, toolkitBuildRevision) {
 		case -1:
 			updateSameVersionBuild = true
+			if sameVersionToolkitOnlyUpdateRequired(probe) {
+				toolkitOnlyUpdate = true
+				toolkitOnlyReason = "older same-version build"
+			}
 			a.println(a.msg("检测到同版本旧构建；菜单 [1] 将只更新工具包构建，不会重装现有节点。", "An older build of the same version was detected; menu [1] will update only the toolkit build, not reinstall the existing node."))
 		case 0:
 			a.println(a.msg("检测到远端版本和构建均与当前 EXE 一致；禁止重复安装，跳过上传和 bootstrap。", "The remote version and build match this EXE; repeat installation is blocked, so upload and bootstrap are skipped."))
@@ -192,6 +198,10 @@ func (a *App) deployOptimize() error {
 			), toolkitVersion)
 		}
 		repairSameVersionToolkit = true
+		if sameVersionToolkitOnlyUpdateRequired(probe) {
+			toolkitOnlyUpdate = true
+			toolkitOnlyReason = "incomplete same-version toolkit"
+		}
 		a.println(fmt.Sprintf(a.msg(
 			"检测到同版本 v%s 工具包不完整；菜单 [1] 在 APPLY 确认后将原位修复工具程序，不会重装节点或改动现有配置。",
 			"The v%s toolkit is incomplete; after APPLY confirmation, menu [1] will repair its program files in place without reinstalling the node or changing existing configuration.",
@@ -205,6 +215,16 @@ func (a *App) deployOptimize() error {
 		a.println(fmt.Sprintf(a.msg("检测到远端旧版本 v%s；菜单 [1] 将升级到 v%s，成功后清理旧版程序。", "Remote toolkit v%s is older; menu [1] will upgrade to v%s and remove old program copies after success."), probe.Version, toolkitVersion))
 	case ToolkitMissing:
 		a.println(a.msg("远端未安装工具包；菜单 [1] 将安装当前内嵌版本。", "No remote toolkit is installed; menu [1] will install the embedded version."))
+	}
+
+	// A same-version build refresh is deliberately a separate, bounded action.
+	// It must not fall through to collectInstallPlan: doing so asks for route,
+	// password, and panel choices and then runs the full installer even though
+	// the operator only requested a program-package update.  In particular,
+	// retained panel credentials may be unverifiable on a legacy toolkit; that
+	// unrelated check must never block a package-only repair.
+	if toolkitOnlyUpdate {
+		return a.updateToolkitOnly(c, toolkitOnlyReason)
 	}
 
 	existingNode, err := a.existingNodeInstalled(c)
@@ -353,6 +373,56 @@ func (a *App) deployOptimize() error {
 	if plan.Preferences.OpenPanelOnSuccess {
 		return a.openPanelWithConn(c)
 	}
+	return nil
+}
+
+// updateToolkitOnly replaces the managed ProxyNodeAssistant program package
+// after one explicit APPLY confirmation.  It intentionally does not inspect
+// or mutate routes, x-ui credentials, certificates, firewall state, or node
+// configuration.  A prior unfinished install transaction is recovered first
+// so replacing the toolkit cannot strand an active rollback marker.
+func (a *App) updateToolkitOnly(c Connection, reason string) error {
+	a.println()
+	// Keep a stable ASCII marker for GUI/log parsers, followed by the human
+	// explanation.  The marker deliberately carries no route or credential
+	// values.
+	a.println("TOOLKIT_ONLY_UPDATE_REQUIRED reason=" + reason)
+	a.println(a.msg(
+		"本次只更新远端内嵌工具包，不收集线路/凭据/面板设置，也不运行全量安装器。",
+		"This run updates only the remote embedded toolkit; it does not collect route/credential/panel settings or run the full installer.",
+	))
+	confirmation := a.prompt(a.msg(
+		"确认仅更新内嵌工具包请输入大写 APPLY；其他输入取消且不会上传",
+		"Type uppercase APPLY to update only the embedded toolkit; anything else cancels without an upload",
+	))
+	if a.inputClosed {
+		return errInputClosed
+	}
+	if confirmation != "APPLY" {
+		a.println(a.msg("已取消；没有上传工具包，也没有修改 VPS。", "Cancelled; no toolkit was uploaded and the VPS was not modified."))
+		return nil
+	}
+	a.println(a.msg("TOOLKIT_ONLY_UPDATE_CONFIRMED", "TOOLKIT_ONLY_UPDATE_CONFIRMED"))
+	if err := a.recoverInterruptedInstallTransaction(c); err != nil {
+		return fmt.Errorf(a.msg("更新前恢复未提交事务失败：%w", "Could not recover an unfinished transaction before the toolkit update: %w"), err)
+	}
+	if err := a.uploadToolkit(c); err != nil {
+		return fmt.Errorf(a.msg("仅工具包更新失败：%w", "Toolkit-only update failed: %w"), err)
+	}
+	verified, err := a.remoteToolkitProbe(c)
+	if err != nil {
+		return fmt.Errorf(a.msg("工具包更新后复核失败：%w", "Toolkit-only post-update probe failed: %w"), err)
+	}
+	if !verified.Present || !verified.Complete || verified.Version != toolkitVersion || compareToolkitBuild(verified, toolkitBuildID, toolkitBuildRevision) != 0 {
+		return fmt.Errorf(a.msg(
+			"工具包更新后版本/完整性复核不匹配（版本=%s build=%s revision=%d complete=%t）",
+			"Toolkit-only update returned, but the exact version/build/completeness probe did not match (version=%s build=%s revision=%d complete=%t)",
+		), verified.Version, verified.BuildID, verified.BuildRevision, verified.Complete)
+	}
+	a.println(a.msg(
+		"TOOLKIT_ONLY_UPDATE_COMPLETE：内嵌工具包已更新并复核通过；节点、线路、证书、凭据和面板均未改动。",
+		"TOOLKIT_ONLY_UPDATE_COMPLETE: embedded toolkit updated and verified; node, routes, certificates, credentials, and panel were not changed.",
+	))
 	return nil
 }
 

@@ -483,8 +483,8 @@ object ProtocolParsers {
             // that otherwise recoverable handoff.
             "FORM_VPS_ACCOUNT" to credentialValue(legacy, false, "VPS_LOGIN_USER", "VPS_ACCOUNT"),
             "FORM_VPS_PASSWORD" to credentialValue(legacy, true, "VPS_LOGIN_PASSWORD", "VPS_PASSWORD"),
-            "FORM_PANEL_ACCOUNT" to credentialValue(legacy, false, "PANEL_USERNAME", "PANEL_ACCOUNT"),
-            "FORM_PANEL_PASSWORD" to credentialValue(legacy, true, "PANEL_PASSWORD"),
+            "FORM_PANEL_ACCOUNT" to credentialValue(legacy, false, "PANEL_USERNAME", "PANEL_ACCOUNT", "XUI_USERNAME"),
+            "FORM_PANEL_PASSWORD" to credentialValue(legacy, true, "PANEL_PASSWORD", "XUI_PASSWORD"),
         )
         form.forEach { (key, raw) ->
             val value = raw.trim()

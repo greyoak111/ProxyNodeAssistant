@@ -85,11 +85,11 @@ class ProtocolParsersTest {
     }
 
     @Test fun toolkitProbeAndVersionComparisonAreStrict() {
-        val value = "${ProtocolParsers.TOOLKIT_BEGIN}\nTOOLKIT_PRESENT=1\nTOOLKIT_VERSION=v1.0.0\nTOOLKIT_BUILD_ID=20260901-v100-ss2022-r103\nTOOLKIT_BUILD_REVISION=103\nTOOLKIT_COMPLETE=1\n${ProtocolParsers.TOOLKIT_END}"
+        val value = "${ProtocolParsers.TOOLKIT_BEGIN}\nTOOLKIT_PRESENT=1\nTOOLKIT_VERSION=v1.0.0\nTOOLKIT_BUILD_ID=20260901-v100-ss2022-r104\nTOOLKIT_BUILD_REVISION=104\nTOOLKIT_COMPLETE=1\n${ProtocolParsers.TOOLKIT_END}"
         val probe = ProtocolParsers.toolkit(value)
         assertTrue(probe.installed)
         assertTrue(probe.complete)
-        assertEquals(103, probe.buildRevision)
+        assertEquals(104, probe.buildRevision)
         assertTrue(ProtocolParsers.compareVersions("0.10.0", "0.9.9") > 0)
         assertEquals(0, ProtocolParsers.compareVersions("v0.9", "0.9.0"))
     }
@@ -135,6 +135,51 @@ class ProtocolParsersTest {
             ),
         )
         assertFalse(WorkflowRunner.sameVersionIncompleteRepairAllowed(probe(version = "0.9.5")))
+    }
+
+    @Test fun sameVersionRefreshUsesToolkitOnlyPathAndNeverTreatsLegacyVersionAsIt() {
+        fun probe(
+            complete: Boolean = true,
+            version: String = WorkflowRunner.VERSION,
+            buildId: String = "older-build",
+            revision: Int = WorkflowRunner.BUILD_REVISION - 1,
+        ) = com.proxynodeassistant.android.model.ToolkitProbe(
+            installed = true,
+            complete = complete,
+            version = version,
+            buildId = buildId,
+            buildRevision = revision,
+        )
+
+        assertTrue(WorkflowRunner.sameVersionToolkitOnlyUpdateRequired(probe()))
+        assertTrue(
+            WorkflowRunner.sameVersionToolkitOnlyUpdateRequired(
+                probe(complete = false, buildId = "", revision = 0),
+            ),
+        )
+        assertFalse(
+            WorkflowRunner.sameVersionToolkitOnlyUpdateRequired(
+                probe(buildId = WorkflowRunner.BUILD_ID, revision = WorkflowRunner.BUILD_REVISION),
+            ),
+        )
+        assertFalse(
+            WorkflowRunner.sameVersionToolkitOnlyUpdateRequired(
+                probe(buildId = "future-build", revision = WorkflowRunner.BUILD_REVISION + 1),
+            ),
+        )
+        // A complete probe at the current revision without the exact build ID
+        // is ambiguous metadata.  It must not be mistaken for an older
+        // package-only refresh (the deploy guard rejects it fail-closed).
+        assertFalse(
+            WorkflowRunner.sameVersionToolkitOnlyUpdateRequired(
+                probe(buildId = "", revision = WorkflowRunner.BUILD_REVISION),
+            ),
+        )
+        assertFalse(
+            WorkflowRunner.sameVersionToolkitOnlyUpdateRequired(
+                probe(version = "0.9.5"),
+            ),
+        )
     }
 
     @Test fun completeHandoffIncludesAllLoginFieldsButNotFormAliases() {
@@ -221,6 +266,20 @@ class ProtocolParsersTest {
         assertEquals("archived-vps-password", form.getValue("FORM_VPS_PASSWORD"))
         assertEquals("operator", form.getValue("FORM_PANEL_ACCOUNT"))
         assertEquals("archived-panel-password", form.getValue("FORM_PANEL_PASSWORD"))
+    }
+
+    @Test fun loginCredentialFormAcceptsLegacyXuiAliases() {
+        val payload = """
+            HANDOFF_RUN_STARTED=legacy-aliases
+            VPS_ACCOUNT=legacy-root
+            VPS_PASSWORD=legacy-vps-password
+            XUI_USERNAME=legacy-panel
+            XUI_PASSWORD=legacy-panel-password
+        """.trimIndent()
+        val form = ProtocolParsers.loginCredentialForm(payload)
+        assertEquals("legacy-root", form.getValue("FORM_VPS_ACCOUNT"))
+        assertEquals("legacy-panel", form.getValue("FORM_PANEL_ACCOUNT"))
+        assertEquals("legacy-panel-password", form.getValue("FORM_PANEL_PASSWORD"))
     }
 
     @Test fun loginCredentialFormPreservesIntentionalSecretSpaces() {

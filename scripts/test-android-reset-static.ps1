@@ -26,8 +26,8 @@ Assert-Match $gradle 'versionName\s*=\s*"1\.0\.0"' "Android visible version is n
 
 $workflow = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/WorkflowRunner.kt"
 Assert-Match $workflow 'const val VERSION = "1\.0\.0"' "Android workflow visible version is not v1.0.0"
-Assert-Match $workflow 'const val BUILD_REVISION = 103' "Android workflow revision is not 103"
-Assert-Match $workflow 'const val BUILD_ID = "20260901-v100-ss2022-r103"' "Android workflow build id is not revision 103"
+Assert-Match $workflow 'const val BUILD_REVISION = 104' "Android workflow revision is not 104"
+Assert-Match $workflow 'const val BUILD_ID = "20260901-v100-ss2022-r104"' "Android workflow build id is not revision 104"
 Assert-Match $workflow 'Ss2022PortPolicy\.FORMAL_PORT' "Android workflow does not use the formal SS2022 port policy"
 Assert-Match $workflow 'Ss2022PortPolicy\.TRIAL_PORT' "Android workflow lost 30443 trial compatibility"
 Assert-Match $workflow 'const val REMOTE_ROOT = "/opt/proxy-node-assistant-current"' "Android workflow does not use the current ProxyNodeAssistant remote root"
@@ -35,7 +35,11 @@ Assert-Match $workflow 'const val LEGACY_REMOTE_ROOT = "/opt/proxy-runbook-curre
 Assert-Match $workflow 'const val TOOLKIT_ASSET = "proxy-node-assistant-toolkit-v1\.0\.0\.tgz"' "Android workflow does not reference the current embedded toolkit"
 Assert-Match $workflow '!probe\.installed\s*->\s*true' "A completely fresh VPS no longer marks the embedded-toolkit upload as required"
 Assert-Match $workflow 'if \(needsUpload\) \{[\s\S]*uploadToolkit\(handle\)' "The confirmed Android install plan no longer uploads the toolkit when required"
-Assert-Match $workflow 'TOOLKIT_SAME_VERSION_INCOMPLETE; repairing in place' "Android menu [1] no longer repairs an incomplete same-version toolkit"
+Assert-Match $workflow 'TOOLKIT_ONLY_UPDATE_REQUIRED reason=' "Android menu [1] no longer emits the bounded toolkit-only update marker"
+Assert-Match $workflow 'sameVersionToolkitOnlyUpdateRequired\(probe\)' "Android menu [1] no longer recognizes same-version toolkit-only refreshes"
+Assert-Match $workflow 'private suspend fun updateToolkitOnly\(' "Android menu [1] lost the bounded toolkit-only update helper"
+Assert-Match $workflow 'TOOLKIT_ONLY_UPDATE_COMPLETE' "Android toolkit-only refresh no longer emits a completion marker"
+Assert-Match $workflow 'probe\.buildRevision == BUILD_REVISION && probe\.buildId != BUILD_ID' "Android same-revision divergent/blank build IDs are not fail-closed"
 Assert-Match $workflow 'sameVersionIncompleteRepairAllowed\(probe\)' "Android same-version repair lost its monotonic build guard"
 Assert-Match $workflow 'run action 1 and confirm APPLY for an in-place repair' "Android read-only actions do not explain the menu [1] repair path"
 Assert-NoMatch $workflow '远端 v\$VERSION 工具包不完整，请先执行 \[13\]' "Android menu [1] still requires an unnecessary uninstall before repairing a partial toolkit"
@@ -80,9 +84,21 @@ $promptIndex = $workflow.IndexOf('val answer = prompts.ask(', [Math]::Max($listI
 if ($statusIndex -lt 0 -or $gateIndex -lt $statusIndex -or $listIndex -lt $gateIndex -or $promptIndex -lt $listIndex) {
     throw "Android action 19 may prompt before the SS2022 status/list fail-closed checks"
 }
+$toolkitOnlyPromptIndex = $workflow.IndexOf('private suspend fun updateToolkitOnly(')
+$toolkitOnlyRecoveryIndex = $workflow.IndexOf('recoverInterruptedInstallTransaction(handle)', [Math]::Max($toolkitOnlyPromptIndex, 0))
+$toolkitOnlyUploadIndex = $workflow.IndexOf('uploadToolkit(handle)', [Math]::Max($toolkitOnlyRecoveryIndex, 0))
+$toolkitOnlyVerifyIndex = $workflow.IndexOf('val verified = probe(handle)', [Math]::Max($toolkitOnlyUploadIndex, 0))
+if ($toolkitOnlyPromptIndex -lt 0 -or $toolkitOnlyRecoveryIndex -lt $toolkitOnlyPromptIndex -or $toolkitOnlyUploadIndex -lt $toolkitOnlyRecoveryIndex -or $toolkitOnlyVerifyIndex -lt $toolkitOnlyUploadIndex) {
+    throw "Android toolkit-only refresh must confirm APPLY before recovery/upload/verification"
+}
+$toolkitOnlyBranchIndex = $workflow.IndexOf('if (toolkitOnlyUpdate)')
+$fullPlanIndex = $workflow.IndexOf('val plan = collectInstallPlan(existingNode, existingSs2022Port)')
+if ($toolkitOnlyBranchIndex -lt 0 -or $fullPlanIndex -lt 0 -or $toolkitOnlyBranchIndex -ge $fullPlanIndex) {
+    throw "Android toolkit-only refresh must bypass the full route/credential plan"
+}
 
 $appUi = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/ui/AppUi.kt"
-Assert-Match $appUi 'BUILD 1\.0\.0-R103 / ANDROID' "Android UI build label is not revision R103"
+Assert-Match $appUi 'BUILD 1\.0\.0-R104 / ANDROID' "Android UI build label is not revision R104"
 
 # Opening a connection dialog must not silently select the first history row.
 # The list remains visible, while the user explicitly taps a card to copy its
@@ -128,8 +144,8 @@ if ($panelHelperIndex -lt 0 -or $handoffPanelIndex -lt 0 -or $openPanelIndex -lt
 $androidBuilder = Read-RepoFile "android/build-android.ps1"
 Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/00-bootstrap-toolkit\.sh' "Android build no longer verifies the fresh-VPS bootstrap entry"
 Assert-Match $androidBuilder 'proxy-node-assistant-v1\.0\.0/linux/28-topology-reconcile\.sh' "Android build no longer verifies the explicit route reconciler"
-Assert-Match $androidBuilder '20260901-v100-ss2022-r103' "Android build no longer verifies the exact toolkit build id"
-Assert-Match $androidBuilder '\$archiveBuildRevision -ne "103"' "Android build no longer verifies toolkit revision 103"
+Assert-Match $androidBuilder '20260901-v100-ss2022-r104' "Android build no longer verifies the exact toolkit build id"
+Assert-Match $androidBuilder '\$archiveBuildRevision -ne "104"' "Android build no longer verifies toolkit revision 104"
 
 $installPlan = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/InstallPlan.kt"
 foreach ($requiredPlanValue in @('TNA_ROUTE_MODE', 'TNA_PERFORMANCE_MODE', 'TNA_WARP_MODE', 'TNA_COVER_TEMPLATE', 'TNA_REALITY_PRODUCTION_PORT', 'TNA_REALITY_SHADOW_PORT', 'TNA_CDN_ORIGIN_PORT', 'TNA_WARP_LOOPBACK_PORT', 'TNA_PLAN_CONFIRMED', 'TNA_AUTO_INPUT')) {
@@ -196,8 +212,8 @@ foreach ($entry in @(
 $archiveVersion = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_VERSION' | Out-String).Trim()
 $archiveBuildId = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_ID' | Out-String).Trim()
 $archiveRevision = (& tar -xOf $toolkitArchive 'proxy-node-assistant-v1.0.0/TOOLKIT_BUILD_REVISION' | Out-String).Trim()
-if ($archiveVersion -ne '1.0.0' -or $archiveBuildId -ne '20260901-v100-ss2022-r103' -or $archiveRevision -ne '103') {
-    throw "Embedded toolkit metadata is not the exact v1.0.0 revision-103 build"
+if ($archiveVersion -ne '1.0.0' -or $archiveBuildId -ne '20260901-v100-ss2022-r104' -or $archiveRevision -ne '104') {
+    throw "Embedded toolkit metadata is not the exact v1.0.0 revision-104 build"
 }
 
 Write-Host "ANDROID_RESET_STATIC_OK"

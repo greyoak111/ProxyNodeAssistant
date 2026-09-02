@@ -576,24 +576,44 @@ class WorkflowRunner(
 
     private suspend fun deploy(handle: SshHandle): Boolean {
         val probe = probe(handle)
-        // Recover an interrupted convergence before collecting a new plan.  The
-        // transaction helper is present in v1 and in the compatible v0.9.x
-        // toolkit; a legacy endpoint without it is reported explicitly and is
-        // never silently treated as an active transaction.
-        recoverInterruptedInstallTransaction(handle)
         val comparison = if (probe.installed) ProtocolParsers.compareVersions(probe.version, VERSION) else -1
+        var toolkitOnlyUpdate = false
+        var toolkitOnlyReason = ""
         val needsUpload = when {
             !probe.installed -> true
             comparison > 0 -> error(tr("远端工具包 v${probe.version} 更新，请改用同版或更新的 Android 客户端", "Remote toolkit v${probe.version} is newer; use a matching or newer Android client"))
-            comparison == 0 && (probe.buildRevision > BUILD_REVISION || (probe.buildRevision == BUILD_REVISION && probe.buildId.isNotBlank() && probe.buildId != BUILD_ID)) -> error(tr("远端 v$VERSION 构建更新或不同，已拒绝降级", "Remote v$VERSION build is newer or different; downgrade refused"))
-            comparison == 0 && !probe.complete && sameVersionIncompleteRepairAllowed(probe) -> {
-                log("TOOLKIT_SAME_VERSION_INCOMPLETE; repairing in place")
+            // An equal revision with a blank or divergent build ID is
+            // ambiguous metadata, not a safe package refresh.  Refuse it
+            // before collecting the full install plan; only a clearly older
+            // revision (or an explicitly allowed incomplete upload) can use
+            // the bounded toolkit-only path below.
+            comparison == 0 && (probe.buildRevision > BUILD_REVISION || (probe.buildRevision == BUILD_REVISION && probe.buildId != BUILD_ID)) -> error(tr("远端 v$VERSION 构建更新、不同或元数据不完整，已拒绝覆盖；请使用匹配客户端", "Remote v$VERSION build is newer, different, or has incomplete metadata; overwrite refused. Use a matching client"))
+            comparison == 0 && sameVersionToolkitOnlyUpdateRequired(probe) -> {
+                toolkitOnlyUpdate = true
+                toolkitOnlyReason = if (probe.complete) "older same-version build" else "incomplete same-version toolkit"
+                log("TOOLKIT_ONLY_UPDATE_REQUIRED reason=$toolkitOnlyReason")
                 true
             }
             comparison == 0 && !probe.complete -> error(tr("远端 v$VERSION 工具包不完整且构建信息不兼容；请换用匹配的 Android 客户端", "Remote v$VERSION is incomplete with incompatible build metadata; use a matching Android client"))
             comparison == 0 && probe.buildRevision == BUILD_REVISION && probe.buildId == BUILD_ID -> false
             else -> true
         }
+
+        // A same-version refresh is a bounded package operation.  Do not ask
+        // for routes, credentials, panel settings, or DNS and do not invoke
+        // the full installer; a stale panel verifier in an older toolkit must
+        // not be able to block an otherwise safe embedded-package repair.
+        if (toolkitOnlyUpdate) {
+            updateToolkitOnly(handle, toolkitOnlyReason)
+            return false
+        }
+
+        // Recover an interrupted convergence before collecting a new plan.  The
+        // transaction helper is present in v1 and in the compatible v0.9.x
+        // toolkit; a legacy endpoint without it is reported explicitly and is
+        // never silently treated as an active transaction.
+        recoverInterruptedInstallTransaction(handle)
+
         val existingNode = detectExistingNode(handle)
         val existingSs2022Port = if (existingNode) detectExistingSs2022Port(handle) else null
         existingSs2022Port?.let { log("SS2022_EXISTING_PORT=$it (upgrade default preserves the existing listener)") }
@@ -1997,6 +2017,28 @@ class WorkflowRunner(
         log("TOOLKIT_INSTALL_VERIFIED")
     }
 
+    private suspend fun updateToolkitOnly(handle: SshHandle, reason: String) {
+        val apply = prompts.ask(
+            tr("仅更新内嵌工具包", "Update embedded toolkit only"),
+            tr(
+                "检测到$reason。此次只替换远端 ProxyNodeAssistant 工具包，不收集路线、凭据或面板设置，也不运行全量安装器。输入大写 APPLY 才继续。",
+                "Detected $reason. This run replaces only the remote ProxyNodeAssistant toolkit; it does not collect route, credential, or panel settings and does not run the full installer. Type uppercase APPLY to continue.",
+            ),
+            PromptKind.EXACT_CONFIRMATION,
+            placeholder = "APPLY",
+            danger = true,
+        ).trim()
+        if (apply != "APPLY") throw CancellationException("toolkit-only update not applied")
+        log("TOOLKIT_ONLY_UPDATE_CONFIRMED")
+        recoverInterruptedInstallTransaction(handle)
+        uploadToolkit(handle)
+        val verified = probe(handle)
+        check(verified.installed && verified.complete && verified.version == VERSION && verified.buildId == BUILD_ID && verified.buildRevision == BUILD_REVISION) {
+            "toolkit-only update returned, but the exact v$VERSION build probe is missing"
+        }
+        log("TOOLKIT_ONLY_UPDATE_COMPLETE")
+    }
+
     private suspend fun probe(handle: SshHandle): ToolkitProbe {
         val command = """
             printf '%s\n' '${ProtocolParsers.TOOLKIT_BEGIN}'
@@ -2565,8 +2607,8 @@ class WorkflowRunner(
 
     companion object {
         const val VERSION = "1.0.0"
-        const val BUILD_ID = "20260901-v100-ss2022-r103"
-        const val BUILD_REVISION = 103
+        const val BUILD_ID = "20260901-v100-ss2022-r104"
+        const val BUILD_REVISION = 104
         const val REMOTE_ROOT = "/opt/proxy-node-assistant-current"
         const val LEGACY_TEXT_REMOTE_ROOT = "/opt/text-node-assistant-current"
         const val LEGACY_REMOTE_ROOT = "/opt/proxy-runbook-current"
@@ -2587,6 +2629,18 @@ class WorkflowRunner(
             if (probe.buildRevision > BUILD_REVISION) return false
             if (probe.buildRevision == BUILD_REVISION && probe.buildId.isNotBlank() && probe.buildId != BUILD_ID) return false
             return true
+        }
+
+        /**
+         * Return true only for a clearly older or incomplete same-version
+         * toolkit.  Those states are eligible for a package-only refresh after
+         * APPLY; a different/newer build ID at the current revision remains
+         * protected by the caller's downgrade guard.
+         */
+        fun sameVersionToolkitOnlyUpdateRequired(probe: ToolkitProbe): Boolean {
+            if (!probe.installed || probe.version != VERSION) return false
+            if (!probe.complete) return sameVersionIncompleteRepairAllowed(probe)
+            return probe.buildRevision < BUILD_REVISION
         }
 
         val COVER_TEMPLATE_CATALOG = """

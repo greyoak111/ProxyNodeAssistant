@@ -329,6 +329,21 @@ func sameVersionIncompleteRepairAllowed(probe ToolkitProbe) bool {
 	return true
 }
 
+// sameVersionToolkitOnlyUpdateRequired identifies the narrow package-refresh
+// path used by menu [1].  A clearly older complete build or an allowed
+// interrupted same-version upload may be replaced after APPLY; older 0.9.x
+// versions and divergent/newer v1 builds must continue through the full
+// migration or downgrade guard instead.
+func sameVersionToolkitOnlyUpdateRequired(probe ToolkitProbe) bool {
+	if !probe.Present || probe.Version != toolkitVersion {
+		return false
+	}
+	if !probe.Complete {
+		return sameVersionIncompleteRepairAllowed(probe)
+	}
+	return compareToolkitBuild(probe, toolkitBuildID, toolkitBuildRevision) == -1
+}
+
 func compareToolkitVersions(left, right string) (int, error) {
 	parse := func(value string) ([]uint64, error) {
 		value = strings.TrimPrefix(strings.TrimSpace(value), "v")

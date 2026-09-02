@@ -329,6 +329,22 @@ func TestLoginCredentialFormAcceptsCanonicalAliases(t *testing.T) {
 	}
 }
 
+func TestLoginCredentialFormAcceptsLegacyXUIAliases(t *testing.T) {
+	input := strings.Join([]string{
+		"VPS_ACCOUNT=legacy-root",
+		"VPS_PASSWORD=legacy-vps-password",
+		"XUI_USERNAME=legacy-panel",
+		"XUI_PASSWORD=legacy-panel-password",
+	}, "\n")
+	fields, err := loginCredentialFormFields(input)
+	if err != nil {
+		t.Fatalf("legacy XUI credential aliases were rejected: %v", err)
+	}
+	if fields["FORM_VPS_ACCOUNT"] != "legacy-root" || fields["FORM_PANEL_ACCOUNT"] != "legacy-panel" {
+		t.Fatalf("unexpected legacy alias fields: %#v", fields)
+	}
+}
+
 func TestHandoffProtocolFallbackIgnoresMalformedCurrentValues(t *testing.T) {
 	// The exporter concatenates archived runs before the current run.  A
 	// failed rotation may leave the current file with placeholders or invalid

@@ -65,6 +65,20 @@ printf '%s\n' "$cdn_displayed" | grep -q 'x_padding_bytes=100-1000'
 printf '%s\n' "$cdn_displayed" | grep -q 'extra=%7B%22mode%22%3A%22packet-up%22%7D'
 test "$(printf '%s\n' "$cdn_displayed" | grep -c '^CDN_XHTTP_LINK=')" -eq 1
 
+# v0.9.x handoffs may still use VPS_ACCOUNT/VPS_PASSWORD and XUI_* names.
+# The shell reader must normalize those aliases without printing any value.
+legacy_alias_payload="$(printf '%s\n' \
+  'VPS_LOGIN_USER=UNKNOWN_NOT_RETAINED' \
+  'VPS_ACCOUNT=alias-root' \
+  'VPS_PASSWORD=alias-vps-password' \
+  'PANEL_ACCOUNT=alias-panel' \
+  'XUI_USERNAME=xui-panel' \
+  'XUI_PASSWORD=xui-panel-password')"
+test "$(printf '%s\n' "$legacy_alias_payload" | credential_value_from_file /dev/stdin VPS_LOGIN_USER)" = alias-root
+test "$(printf '%s\n' "$legacy_alias_payload" | credential_value_from_file /dev/stdin VPS_LOGIN_PASSWORD)" = alias-vps-password
+test "$(printf '%s\n' "$legacy_alias_payload" | credential_value_from_file /dev/stdin PANEL_USERNAME)" = xui-panel
+test "$(printf '%s\n' "$legacy_alias_payload" | credential_value_from_file /dev/stdin PANEL_PASSWORD)" = xui-panel-password
+
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) echo COMPLETE_LOGIN_HANDOFF_TEST_OK; exit 0 ;;
 esac

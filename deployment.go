@@ -254,8 +254,8 @@ func loginCredentialFormFields(legacy string) (map[string]string, error) {
 	required := map[string]string{
 		"FORM_VPS_ACCOUNT":    handoffCredentialValue(legacy, "VPS_LOGIN_USER", "VPS_ACCOUNT"),
 		"FORM_VPS_PASSWORD":   handoffCredentialValue(legacy, "VPS_LOGIN_PASSWORD", "VPS_PASSWORD"),
-		"FORM_PANEL_ACCOUNT":  handoffCredentialValue(legacy, "PANEL_USERNAME", "PANEL_ACCOUNT"),
-		"FORM_PANEL_PASSWORD": handoffCredentialValue(legacy, "PANEL_PASSWORD"),
+		"FORM_PANEL_ACCOUNT":  handoffCredentialValue(legacy, "PANEL_USERNAME", "PANEL_ACCOUNT", "XUI_USERNAME"),
+		"FORM_PANEL_PASSWORD": handoffCredentialValue(legacy, "PANEL_PASSWORD", "XUI_PASSWORD"),
 	}
 	missing := make([]string, 0, len(required))
 	for _, key := range loginFormKeys {

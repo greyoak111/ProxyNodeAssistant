@@ -84,6 +84,12 @@ printf '%s:%s\n' "$LOGIN_USER" "$PASSWORD" | chpasswd
 
 handoff_set "VPS_LOGIN_USER" "$LOGIN_USER"
 handoff_set "VPS_LOGIN_PASSWORD" "$PASSWORD"
+# Keep the root-only credential store in sync immediately.  The installer
+# seeds this store before archiving the current handoff, so a subsequent
+# preserve/upgrade run can recover the freshly rotated pair without asking for
+# another password.  credential_store_set never prints the secret.
+credential_store_set "VPS_LOGIN_USER" "$LOGIN_USER"
+credential_store_set "VPS_LOGIN_PASSWORD" "$PASSWORD"
 
 echo
 echo "================ REAL VPS LOGIN PASSWORD ================"

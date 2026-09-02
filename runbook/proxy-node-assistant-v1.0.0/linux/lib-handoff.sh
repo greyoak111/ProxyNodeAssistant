@@ -62,8 +62,28 @@ credential_value_from_file() {
   # rotation).  Match the parser's last-value-wins semantics, while ignoring
   # known non-credentials so a valid archived value can still be migrated.
   value="$(awk -v wanted="$key" '
-    index($0, wanted "=")==1 {
-      candidate=substr($0, length(wanted)+2)
+    function key_matches(candidate) {
+      # v0.9.x used several spellings for the same protected fields.  Keep
+      # aliases scoped to their canonical key so a similarly named protocol
+      # field can never be mistaken for a credential.  The input is scanned
+      # in file order and the last usable occurrence wins across all aliases.
+      if (wanted == "VPS_LOGIN_USER")
+        return candidate == "VPS_LOGIN_USER" || candidate == "VPS_ACCOUNT"
+      if (wanted == "VPS_LOGIN_PASSWORD")
+        return candidate == "VPS_LOGIN_PASSWORD" || candidate == "VPS_PASSWORD"
+      if (wanted == "PANEL_USERNAME")
+        return candidate == "PANEL_USERNAME" || candidate == "PANEL_ACCOUNT" || candidate == "XUI_USERNAME"
+      if (wanted == "PANEL_PASSWORD")
+        return candidate == "PANEL_PASSWORD" || candidate == "XUI_PASSWORD"
+      return candidate == wanted
+    }
+    {
+      separator=index($0, "=")
+      if (separator <= 0) next
+      name=substr($0, 1, separator-1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      if (!key_matches(name)) next
+      candidate=substr($0, separator+1)
       upper=toupper(candidate)
       if (candidate != "" && upper !~ /^(UNKNOWN|NOT_RETAINED|SSH_KEY_ONLY)/) value=candidate
     }

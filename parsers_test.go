@@ -994,8 +994,22 @@ func TestOnlyDeployActionUploadsToolkit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls := strings.Count(string(source), "a.uploadToolkit(c)"); calls != 1 {
-		t.Fatalf("toolkit upload must exist only in menu [1], found %d action call(s)", calls)
+	text := string(source)
+	// Both upload call sites belong to menu [1]: the normal reviewed install
+	// path and the bounded same-version package refresh.  Keep this guard
+	// function-aware so a future action cannot silently gain an upload side
+	// effect while still allowing the two intentional menu-[1] branches.
+	deployStart := strings.Index(text, "func (a *App) deployOptimize() error {")
+	uninstallStart := strings.Index(text, "func (a *App) uninstallRemoteToolkit() error {")
+	if deployStart < 0 || uninstallStart <= deployStart {
+		t.Fatal("could not locate menu [1] operation boundaries")
+	}
+	deployText := text[deployStart:uninstallStart]
+	if calls := strings.Count(deployText, "a.uploadToolkit(c)"); calls != 2 {
+		t.Fatalf("menu [1] must retain exactly two upload branches, found %d", calls)
+	}
+	if outside := strings.Count(text[:deployStart], "a.uploadToolkit(c)") + strings.Count(text[uninstallStart:], "a.uploadToolkit(c)"); outside != 0 {
+		t.Fatalf("toolkit upload leaked outside menu [1], found %d call(s)", outside)
 	}
 }
 
@@ -1114,6 +1128,52 @@ func TestSameVersionBuildRevisionUpdatesOnlyWhenOlder(t *testing.T) {
 	}
 }
 
+func TestSameVersionToolkitOnlyUpdateGuard(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe ToolkitProbe
+		want  bool
+	}{
+		{
+			name:  "complete older revision",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: "old-build", BuildRevision: toolkitBuildRevision - 1, Complete: true},
+			want:  true,
+		},
+		{
+			name:  "complete current build",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: toolkitBuildID, BuildRevision: toolkitBuildRevision, Complete: true},
+			want:  false,
+		},
+		{
+			name:  "complete newer revision",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildID: "future-build", BuildRevision: toolkitBuildRevision + 1, Complete: true},
+			want:  false,
+		},
+		{
+			name:  "incomplete allowed repair",
+			probe: ToolkitProbe{Present: true, Version: toolkitVersion, BuildRevision: toolkitBuildRevision, Complete: false},
+			want:  true,
+		},
+		{
+			name:  "legacy version stays on migration path",
+			probe: ToolkitProbe{Present: true, Version: "0.9.5", BuildRevision: toolkitBuildRevision - 1, Complete: true},
+			want:  false,
+		},
+		{
+			name:  "missing toolkit",
+			probe: ToolkitProbe{},
+			want:  false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sameVersionToolkitOnlyUpdateRequired(test.probe); got != test.want {
+				t.Fatalf("toolkit-only guard for %#v = %v, want %v", test.probe, got, test.want)
+			}
+		})
+	}
+}
+
 func TestSameVersionIncompleteRepairAllowsOnlyInterruptedOrOlderBuilds(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1190,6 +1250,62 @@ func TestDeployActionRepairsSameVersionIncompleteAfterApply(t *testing.T) {
 	upload := strings.Index(text, "if relation == ToolkitOlder || relation == ToolkitMissing || updateSameVersionBuild || repairSameVersionToolkit")
 	if confirm < 0 || upload < 0 || upload < confirm {
 		t.Fatal("same-version repair must upload only after the APPLY confirmation")
+	}
+}
+
+func TestDeployActionUsesBoundedToolkitOnlyPathForSameVersionRefresh(t *testing.T) {
+	source, err := os.ReadFile("operations.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, required := range []string{
+		"toolkitOnlyUpdate := false",
+		"toolkitOnlyUpdate = true",
+		"TOOLKIT_ONLY_UPDATE_REQUIRED",
+		"TOOLKIT_ONLY_UPDATE_CONFIRMED",
+		"TOOLKIT_ONLY_UPDATE_COMPLETE",
+		"return a.updateToolkitOnly(c, toolkitOnlyReason)",
+		"a.recoverInterruptedInstallTransaction(c)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("bounded same-version toolkit refresh is missing %q", required)
+		}
+	}
+	branch := strings.Index(text, "if toolkitOnlyUpdate {")
+	fullPlan := strings.Index(text, "plan, err := a.collectInstallPlan(existingNode, existingSSPort)")
+	if branch < 0 || fullPlan < 0 || branch >= fullPlan {
+		t.Fatal("same-version toolkit refresh must branch before collecting route or credential settings")
+	}
+	existingNode := strings.Index(text, "existingNode, err := a.existingNodeInstalled(c)")
+	if existingNode < 0 || existingNode <= branch {
+		t.Fatal("could not locate the full-path node inspection after the bounded branch")
+	}
+
+	// Inspect the helper itself rather than the entire remainder of deployOptimize;
+	// the full path necessarily performs node inspection after the bounded branch.
+	helperStart := strings.Index(text, "func (a *App) updateToolkitOnly(c Connection, reason string) error {")
+	helperEnd := strings.Index(text, "func (a *App) uninstallRemoteToolkit() error {")
+	if helperStart < 0 || helperEnd <= helperStart {
+		t.Fatal("could not locate bounded toolkit-only helper")
+	}
+	helper := text[helperStart:helperEnd]
+	for _, forbidden := range []string{
+		"collectInstallPlan(",
+		"existingNodeInstalled(",
+		"xui_password_login_works",
+		"00-auto-install-or-optimize.sh",
+	} {
+		if strings.Contains(helper, forbidden) {
+			t.Fatalf("toolkit-only helper must not invoke full-plan operation %q", forbidden)
+		}
+	}
+	prompt := strings.Index(helper, "confirmation := a.prompt(")
+	recover := strings.Index(helper, "a.recoverInterruptedInstallTransaction(c)")
+	upload := strings.Index(helper, "a.uploadToolkit(c)")
+	verify := strings.Index(helper, "a.remoteToolkitProbe(c)")
+	if prompt < 0 || recover < prompt || upload < recover || verify < upload {
+		t.Fatal("toolkit-only helper must confirm APPLY before recovery, upload, and verification")
 	}
 }
 
