@@ -122,6 +122,8 @@ ProxyNodeAssistant-v1.0.0-win32.exe
 ProxyNodeAssistant-v1.0.0-win-arm64.exe
 ```
 
+Intel/AMD 64 位电脑请选择 `win64`；只有 Windows on ARM 才选择 `win-arm64`。启动器会先检查内嵌引擎架构，误选时会提示应使用的文件，不会再让系统弹出含糊的“映像文件无效”。
+
 启动后程序会检查 OpenSSH。若系统没有，它只执行一次安装尝试和一次完整验证；失败后会告诉你缺哪个组件，不会不断重启安装。
 
 ### 3.2 Android

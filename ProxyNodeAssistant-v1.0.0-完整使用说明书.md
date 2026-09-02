@@ -32,6 +32,8 @@
 - Android 7.0 及以上的正式 universal APK；
 - Windows 使用 OpenSSH；Android 使用应用内 SSH/SCP。
 
+Windows GUI 必须与宿主架构对应：Intel/AMD 64 位运行 `ProxyNodeAssistant-v1.0.0-win64.exe`，32 位运行 `ProxyNodeAssistant-v1.0.0-win32.exe`，Windows on ARM 运行 `ProxyNodeAssistant-v1.0.0-win-arm64.exe`。程序会在启动前校验内嵌工作流引擎，误选时会直接提示正确文件。
+
 Windows 启动时会验证 `ssh`、`scp`、`ssh-keygen` 和 `ssh-keyscan` 是否来自同一套可用 OpenSSH。缺失时只尝试一次安装并复核；失败会明确停下，不会进入安装死循环。
 
 ### 3.2 VPS

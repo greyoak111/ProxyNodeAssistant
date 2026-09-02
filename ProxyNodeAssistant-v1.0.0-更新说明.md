@@ -131,6 +131,8 @@
 
 ## Windows 与 Android 差异
 
+Windows 三个 GUI 文件必须按宿主架构选择：Intel/AMD 64 位使用 `ProxyNodeAssistant-v1.0.0-win64.exe`，32 位系统使用 `ProxyNodeAssistant-v1.0.0-win32.exe`，Windows on ARM 使用 `ProxyNodeAssistant-v1.0.0-win-arm64.exe`。GUI 现在会在启动前检查内嵌工作流引擎；误选架构时会明确提示正确文件，不再触发系统的“映像文件无效”弹窗。
+
 | 项目 | Windows | Android |
 |---|---|---|
 | SSH/SCP | 经验证的 Windows OpenSSH | 应用内 SSH/SCP |
