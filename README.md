@@ -34,6 +34,18 @@ TextNodeAssistant（TNA）把私人网盘日常界面与完整 VPS 运维控制�
 
 > 仅用于你拥有或得到明确授权的服务器。请遵守服务商条款、所在地法律和网络服务规则。
 
+## macOS 原生 GUI 安装包（v1.0.0）
+
+macOS 版现在使用原生 SwiftUI 图形客户端和用户级 .pkg，不再提供半成品 Darwin CLI 作为最终用户入口。它按 Windows 正式 GUI 的真实结构实现总览、安装与升级、面板与访问、维护与修复、安全与凭据、备份与报告、本机工具七组工作区，共 26 个操作；远端操作的日志、动态提示和遮罩密码输入都在同一个 macOS 窗口内完成。
+
+从 [v1.0.0 Release](https://github.com/greyoak111/ProxyNodeAssistant/releases/tag/v1.0.0) 下载 ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg：
+
+- 同时支持 Apple Silicon arm64 和 Intel x86_64，最低 macOS 13；
+- 安装目标是当前用户的 ~/Applications/ProxyNodeAssistant.app，安装过程不需要管理员密码，也不会写入 /Applications、/usr/local/bin 或系统级收据；
+- 设置页提供“无管理员卸载”，会清理应用自身的配置、缓存、日志、保存状态和用户级安装收据；也可以直接把 ~/Applications/ProxyNodeAssistant.app 拖进废纸篓；
+- 包体 SHA-256 与安装、卸载验证步骤见 [MACOS.md](MACOS.md)。
+
+macOS 的详细安装、卸载、构建边界和安全说明见 [MACOS.md](MACOS.md)。
 ## 产品结构
 
 ```text
