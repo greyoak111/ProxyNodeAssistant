@@ -31,7 +31,16 @@ paths=(
   /etc/systemd/system/text-node-assistant-security-firewall.service
   /etc/text-node-assistant
   /root/.config/text-node-assistant
+  # ProxyNodeAssistant v1 keeps SS2022 state and the protected handoff in
+  # these product-namespaced locations.  They must be part of the same
+  # transaction snapshot as x-ui/nginx; otherwise a later-stage failure can
+  # report a rollback while leaving a new SS2022 listener, allowlist, or
+  # credential handoff behind.
+  /etc/proxy-runbook
+  /root/.config/proxy-runbook
   /usr/local/lib/text-node-assistant
+  /usr/local/libexec/proxy-node-assistant
+  /etc/systemd/system/proxy-node-assistant-ss2022.service
   /etc/logrotate.d/text-node-assistant-security
   /var/www/cover
 )
@@ -55,11 +64,15 @@ names=(
   security-unit
   tna-etc
   tna-root-config
+  proxy-runbook-etc
+  proxy-runbook-root-config
   tna-local-lib
+  proxy-node-assistant-libexec
+  proxy-node-assistant-ss2022-unit
   tna-logrotate
   cover-root
 )
-services=(x-ui nginx warp-svc fail2ban vnstat text-node-assistant-zram.service text-node-assistant-security-firewall.service)
+services=(x-ui nginx warp-svc fail2ban vnstat text-node-assistant-zram.service text-node-assistant-security-firewall.service proxy-node-assistant-ss2022.service)
 
 die() { printf 'TNA_INSTALL_TRANSACTION_ERROR=%s\n' "$1" >&2; exit "${2:-1}"; }
 value() { sed -n "s/^$1=//p" "$CURRENT" 2>/dev/null | sed -n '1p'; }

@@ -143,6 +143,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-unix.ps1 -Target dar
 
 Unix 凭据与交互边界：macOS 使用系统 Keychain 的 `security`，Linux 使用 Secret Service 的 `secret-tool`；若命令或后台不可用，菜单会返回带安装提示的明确错误，不会回退到明文文件。Linux 写入通过 `secret-tool` 的标准输入传递秘密；macOS `security` 的非交互写入接口只有 `-w` 参数，工具不会把它写入日志或文件，但该系统 CLI 本身可能在短暂进程参数中暴露值，单用户本机使用更合适。Unix 终端秘密提示通过 `/dev/tty` 配合 `stty -echo`/`stty echo`，读取结束或出错都会恢复回显。
 
+### 7.1 macOS 原生 GUI 用户包
+
+原生桌面包由 SwiftUI 界面、同一 revision 的 Darwin CLI 和 `forkpty` 终端桥组成。它必须保持对外版本 `1.0.0`，并在当前用户目录安装：
+
+```zsh
+chmod 755 macos-pkg/build-macos-gui-pkg.sh
+macos-pkg/build-macos-gui-pkg.sh
+installer -pkg ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg \
+  -target CurrentUserHomeDirectory
+open ~/Applications/ProxyNodeAssistant.app
+```
+
+构建脚本会编译 `arm64` 与 `x86_64`（可用时合并为 universal）GUI、CLI 和 PTY bridge，写入用户级 component package，并验证 bundle 版本、架构、代码签名和 AppleDouble sidecar 清理。安装不会创建系统级 `/Applications`、`/usr/local/bin` 或管理员收据；设置中的卸载路径也只作用于当前用户。
+
+`[7]` 凭据交接验收必须分别针对每一台测试 VPS 执行。验收步骤是：在 GUI 中完成真实 SSH key/密码流程，看到“已复制到系统剪贴板”后按保存提示确认；CLI 会用 `pbpaste` 回读并在内存中按字节核对，测试脚本只检查非空、字节数、`REQUIRED LOGIN CREDENTIALS`/`VPS_ACCOUNT`/`VPS_PASSWORD`/`PANEL_ACCOUNT`/`PANEL_PASSWORD` 等标记，不打印任何值；完成粘贴后选择清空，或运行本地 `[12]`。GUI 的清空提示由用户明确选择，未操作时只在有限安全超时后清理，不能让交接单在复制瞬间消失。
+
+Darwin 源归档只放在 `macos-pkg/sources/` 作为可复现构建输入；GitHub Release 对普通用户提供上述 `.pkg`，不再把半成品 Darwin CLI 压缩包当作 macOS 桌面入口。`.pkg` 是发行资产，不提交到源码仓库；发布时同时更新根目录的 `SHA256SUMS-macos-pkg-gui-user.txt` 和 release 说明。
+
 图标源文件：
 
 ```text

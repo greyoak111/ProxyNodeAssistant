@@ -32,6 +32,11 @@ ProxyNodeAssistant-Rescue/
 *.log
 *.tmp
 
+# macOS user-level packaging output (the signed pkg is a release asset,
+# while its source and reproducible build script stay versioned below).
+/ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg
+macos-pkg/build/
+
 # Editor and operating-system metadata
 .idea/
 .vscode/

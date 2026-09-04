@@ -25,8 +25,8 @@ const (
 	legacyTextRemoteRoot    = "/opt/text-node-assistant-current"
 	legacyRunbookRemoteRoot = "/opt/proxy-runbook-current"
 	toolkitVersion          = "1.0.0"
-	toolkitBuildID          = "20260901-v100-ss2022-r105"
-	toolkitBuildRevision    = 105
+	toolkitBuildID          = "20260901-v100-ss2022-r112"
+	toolkitBuildRevision    = 112
 	toolkitInstallDir       = "/opt/proxy-node-assistant-v1.0.0"
 	toolkitArchive          = "proxy-node-assistant-toolkit-v1.0.0.tar.gz"
 	sessionTempPrefix       = "ProxyNodeAssistant-v1.0.0-session-"
@@ -112,17 +112,108 @@ type TemporaryAuth struct {
 }
 
 type Connection struct {
-	Host       string
-	User       string
-	Port       int
-	KeyPath    string
-	AuthMode   AuthMode
-	Temporary  *TemporaryAuth
-	Ready      bool
-	NewlyBound bool
+	Host    string
+	User    string
+	Port    int
+	KeyPath string
+	// ControlPath is a per-action OpenSSH multiplexing socket. Keeping it on
+	// the connection lets a multi-step workflow reuse the authenticated SSH
+	// session instead of opening a fresh TCP connection for every probe.
+	ControlPath string
+	AuthMode    AuthMode
+	Temporary   *TemporaryAuth
+	Ready       bool
+	NewlyBound  bool
+}
+
+// panelForward describes one local listener requested through an existing
+// OpenSSH ControlMaster.  The master, rather than a short-lived ssh client,
+// owns the forwarding socket; retaining the exact -L specification lets the
+// close path cancel that request before the master itself is released.
+type panelForward struct {
+	connection Connection
+	spec       string
+	localPort  int
 }
 
 var errConnectionSelectionCancelled = errors.New("connection selection cancelled")
+
+// errManagedKeyVerification is used to distinguish a real remote
+// authentication rejection from a host-key, transport, or local OpenSSH
+// failure.  Only the former (and an explicitly invalid local key file) may
+// offer the operator a password rebind.  A transient banner timeout must
+// never move a perfectly good key directory into the recovery area.
+var errManagedKeyVerification = errors.New("managed key verification failed")
+
+type managedKeyVerificationError struct {
+	detail      string
+	recoverable bool
+	message     string
+}
+
+func (e *managedKeyVerificationError) Error() string {
+	if e.message != "" {
+		return e.message
+	}
+	message := "managed key verification failed"
+	if e.detail != "" {
+		message += ": " + e.detail
+	}
+	return message
+}
+
+func (e *managedKeyVerificationError) Unwrap() error { return errManagedKeyVerification }
+
+// OpenSSH's authentication diagnostic has a distinctive method list.  Match
+// that complete line instead of the bare words "Permission denied": a remote
+// forced command is allowed to print arbitrary stderr, including that phrase,
+// after public-key authentication has already succeeded.
+var managedKeyAuthDeniedPattern = regexp.MustCompile(`(?i)^permission denied[[:space:]]+\((publickey|password|keyboard-interactive|gssapi-keyex|gssapi-with-mic|hostbased|none)(,[[:space:]]*(publickey|password|keyboard-interactive|gssapi-keyex|gssapi-with-mic|hostbased|none))*\)\.?$`)
+
+// These are client-side key-loading diagnostics.  Keep the prefix and the
+// error context together; matching "invalid format" or "no such file" on its
+// own would let a remote command's output trigger stale-key archival.
+var managedKeyLoadFailurePattern = regexp.MustCompile(`(?i)^load key[[:space:]]+.+:[[:space:]]*(invalid format|error in libcrypto|incorrect passphrase supplied to decrypt private key|no such file or directory|is a directory)\.?$`)
+var managedKeyIdentityFailurePattern = regexp.MustCompile(`(?i)^(warning:[[:space:]]*)?identity file[[:space:]]+.+(not accessible:[[:space:]]*no such file or directory|type -1)\.?$`)
+
+func isRecoverableManagedKeyDetail(detail string) bool {
+	lower := strings.ToLower(detail)
+	// Host identity and transport failures must be retried in place; moving a
+	// key in response to them would destroy the very binding we are trying to
+	// preserve and could hide a MITM or a temporary network outage.  Check
+	// these first because OpenSSH often appends a generic "No such file or
+	// directory" or "Connection closed" phrase to a transport diagnostic.
+	for _, marker := range []string{
+		"host key verification failed",
+		"remote host identification has changed",
+		"timed out",
+		"timeout",
+		"connection reset",
+		"connection closed",
+		"connection refused",
+		"no route to host",
+		"network is unreachable",
+		"banner exchange",
+		"kex_exchange_identification",
+		"known_hosts",
+	} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	// Inspect complete diagnostic lines.  A verification command can receive
+	// stderr from the remote command after authentication, so generic fragments
+	// are intentionally not sufficient to classify the key as stale.
+	for _, rawLine := range strings.Split(strings.ReplaceAll(lower, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if managedKeyAuthDeniedPattern.MatchString(line) ||
+			managedKeyLoadFailurePattern.MatchString(line) ||
+			managedKeyIdentityFailurePattern.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
 
 var hostPartPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 var userPartPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*$`)
@@ -166,15 +257,29 @@ func defaultKeyPath(host, user string) (string, error) {
 }
 
 func knownHostsPath(c Connection) string {
-	return filepath.Join(filepath.Dir(c.KeyPath), "known_hosts")
+	dir := filepath.Dir(c.KeyPath)
+	// Unit tests and cross-platform callers may hand the Darwin build a
+	// Windows-style key path.  filepath.Dir on Darwin treats the backslash as
+	// an ordinary character and returns ".", which would silently pin every
+	// such connection to a shared ./known_hosts file.  Preserve the explicit
+	// Windows parent in that case; openSSHOptionPath normalizes it for argv.
+	if dir == "." && strings.Contains(c.KeyPath, "\\") {
+		if index := strings.LastIndexAny(c.KeyPath, `\\/`); index >= 0 {
+			dir = c.KeyPath[:index]
+		}
+	}
+	return filepath.Join(dir, "known_hosts")
 }
 
 func openSSHOptionPath(path string) string {
 	// OpenSSH parses -o values using ssh_config token rules even when Windows
 	// CreateProcess delivered one argv item. Normalize separators and escape
 	// characters that would otherwise split or comment the path.
-	value := filepath.ToSlash(path)
-	value = strings.ReplaceAll(value, "\\", "\\\\")
+	// filepath.ToSlash is a no-op for a Windows-looking path when the CLI is
+	// compiled on Darwin (the test/build host). Normalize both separators
+	// explicitly so cross-compiled Windows bundles pass a usable path to
+	// OpenSSH instead of a literal `C:\\...` string.
+	value := strings.ReplaceAll(filepath.ToSlash(path), "\\", "/")
 	value = strings.ReplaceAll(value, " ", "\\ ")
 	value = strings.ReplaceAll(value, "\t", "\\\t")
 	value = strings.ReplaceAll(value, "#", "\\#")
@@ -529,12 +634,36 @@ func (a *App) startupOpenSSHPreflight() error {
 func sshBase(c Connection, batch, tty bool, keyOverride string) []string {
 	args := []string{
 		"-o", "ConnectTimeout=12",
+		"-o", "ConnectionAttempts=1",
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=3",
 		"-o", "LogLevel=ERROR",
 		"-o", "UserKnownHostsFile=" + openSSHOptionPath(knownHostsPath(c)),
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UpdateHostKeys=no",
+		// Android's Trilead session falls back to keyboard-interactive when a
+		// VPS disables the plain password method (common with PAM/2FA setups).
+		// OpenSSH otherwise stops after `password` and reports a false auth
+		// failure even though the same credentials work on Android. Keep the
+		// fallback explicit so the GUI PTY can answer the non-echo prompt.
+		"-o", "KbdInteractiveAuthentication=yes",
+		"-o", "PreferredAuthentications=publickey,password,keyboard-interactive",
+		"-o", "NumberOfPasswordPrompts=1",
+	}
+	// On Unix OpenSSH, multiplex all short-lived steps of one action through a
+	// short-lived control socket. This is especially important after password→key
+	// binding: authentication, metadata probes, handoff reads and cleanup should
+	// not each create another TCP login (which can trip provider rate limits or
+	// fail2ban). The long-lived panel forwarding process reuses this same
+	// authenticated master through `ssh -O forward`; Win32-OpenSSH
+	// has historically lacked reliable ControlMaster support, so leave its
+	// existing independent-connection behavior unchanged there.
+	if runtime.GOOS != "windows" && strings.TrimSpace(c.ControlPath) != "" {
+		args = append(args,
+			"-o", "ControlMaster=auto",
+			"-o", "ControlPersist=60s",
+			"-o", "ControlPath="+c.ControlPath,
+		)
 	}
 	key := keyOverride
 	if key == "" {
@@ -558,11 +687,22 @@ func sshBase(c Connection, batch, tty bool, keyOverride string) []string {
 func scpBase(c Connection, keyPath string) []string {
 	args := []string{
 		"-o", "ConnectTimeout=12",
+		"-o", "ConnectionAttempts=1",
 		"-o", "LogLevel=ERROR",
 		"-o", "UserKnownHostsFile=" + openSSHOptionPath(knownHostsPath(c)),
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UpdateHostKeys=no",
+		"-o", "KbdInteractiveAuthentication=yes",
+		"-o", "PreferredAuthentications=publickey,password,keyboard-interactive",
+		"-o", "NumberOfPasswordPrompts=1",
 		"-o", "BatchMode=yes",
+	}
+	if runtime.GOOS != "windows" && strings.TrimSpace(c.ControlPath) != "" {
+		args = append(args,
+			"-o", "ControlMaster=auto",
+			"-o", "ControlPersist=60s",
+			"-o", "ControlPath="+c.ControlPath,
+		)
 	}
 	if keyPath != "" && fileExists(keyPath) {
 		args = append(args, "-i", keyPath, "-o", "IdentitiesOnly=yes")
@@ -673,6 +813,36 @@ func (a *App) registerTemporaryConnection(c *Connection) {
 	a.tempCleanupMu.Unlock()
 }
 
+// newSSHControlPath creates a private, per-action directory for OpenSSH's
+// multiplexing socket. The socket is removed by runRemoteAction's deferred
+// cleanup; a unique directory prevents two GUI actions from sharing a master.
+// Win32-OpenSSH is intentionally excluded because ControlMaster support is
+// not dependable there (macOS/Linux use the native OpenSSH implementation).
+func newSSHControlPath() string {
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	// OpenSSH encodes ControlPath as a Unix-domain socket address.  macOS's
+	// os.TempDir() commonly expands to a long per-process path under
+	// /var/folders/...; appending our descriptive directory and the random
+	// suffix can exceed the platform's ~104-byte sockaddr_un limit.  The
+	// resulting error is easy to mistake for an authentication hang because
+	// the first key probe has already succeeded.  Keep the directory itself
+	// short and private, while retaining a fallback for unusual Unix hosts
+	// where /tmp is unavailable.
+	bases := []string{"/tmp"}
+	if fallback := os.TempDir(); fallback != "" && fallback != "/tmp" {
+		bases = append(bases, fallback)
+	}
+	for _, base := range bases {
+		dir, err := os.MkdirTemp(base, "pna-ssh-")
+		if err == nil {
+			return filepath.Join(dir, "c")
+		}
+	}
+	return ""
+}
+
 func (a *App) getActionConnection() (*Connection, error) {
 	if a.actionConnection != nil {
 		return a.actionConnection, nil
@@ -688,6 +858,10 @@ func (a *App) getActionConnection() (*Connection, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Keep one authenticated OpenSSH master for every step of this action.
+	// This path is deliberately allocated after the user has selected the
+	// target and is never persisted with managed-key metadata.
+	c.ControlPath = newSSHControlPath()
 	a.actionConnection = &c
 	if mode == AuthTemporaryPassword {
 		a.registerTemporaryConnection(&c)
@@ -911,7 +1085,41 @@ func (a *App) ensureHostKey(c Connection) error {
 }
 
 func verifyKey(c Connection, keyPath string) ProcessResult {
-	args := sshBase(c, true, false, keyPath)
+	// Key verification must establish a fresh SSH authentication exchange.
+	// Reusing an action ControlMaster here can make a newly generated key look
+	// valid because the already-authenticated password/old-key master answers
+	// the request before OpenSSH considers the -i identity.  Disable
+	// multiplexing for promotion and rotation.  A first lookup of an existing
+	// managed key is the one safe exception: getActionConnection allocates a
+	// brand-new, empty per-action socket directory before this call, so keeping
+	// that fresh master lets the following panel preflight/tunnel reuse the
+	// verified SSH session instead of opening a second rate-limited TCP login.
+	verificationConnection := c
+	args := sshBase(verificationConnection, true, false, keyPath)
+	// Both a managed key lookup and the post-password verification of a
+	// one-time key may create a fresh master.  The caller has already closed
+	// any password-authenticated master before reaching this point, so an
+	// absent socket is the proof that this exchange really uses keyPath.
+	keepFreshKeyMaster := (c.AuthMode == AuthManagedKey || c.AuthMode == AuthTemporaryPassword) &&
+		strings.TrimSpace(c.ControlPath) != "" && !fileExists(c.ControlPath)
+	if !keepFreshKeyMaster {
+		verificationConnection.ControlPath = ""
+		args = sshBase(verificationConnection, true, false, keyPath)
+		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
+	} else {
+		// closeSSHControlMaster removes the private socket directory after a
+		// password-authenticated session is retired (and a stale socket may
+		// have been left by an interrupted action).  Recreate that directory
+		// before asking OpenSSH to create the fresh key-authenticated master.
+		// Without this, ssh reports "ControlPath ... No such file or
+		// directory" and the GUI remains stuck in the verification state.
+		if err := os.MkdirAll(filepath.Dir(c.ControlPath), 0700); err != nil {
+			return ProcessResult{ExitCode: -1, Err: fmt.Errorf("SSH key control-socket directory creation failed: %w", err)}
+		}
+		if err := os.Chmod(filepath.Dir(c.ControlPath), 0700); err != nil {
+			return ProcessResult{ExitCode: -1, Err: fmt.Errorf("SSH key control-socket directory permission setup failed: %w", err)}
+		}
+	}
 	args = append(args, target(c), "printf SSH_KEY_OK")
 	return runCaptured("ssh.exe", args, nil, true)
 }
@@ -950,7 +1158,24 @@ func (a *App) installPublicKey(c Connection, keyPath, authKeyPath string, onInst
 	// authKeyPath selects only the login identity. On first install it is empty,
 	// so the newly generated canonical key may be offered before password
 	// fallback without changing host-key verification state.
-	args := sshBase(c, !interactivePassword, false, authKeyPath)
+	installConnection := c
+	if interactivePassword && runtime.GOOS != "windows" {
+		// ssh_config uses the first value it sees for most options.  Clearing
+		// ControlPath before constructing sshBase is therefore safer than
+		// appending a later ControlMaster=no and hoping it overrides the earlier
+		// auto setting.  The explicit no/none pair below documents and enforces
+		// the same policy for OpenSSH builds that inspect the full argv.
+		installConnection.ControlPath = ""
+	}
+	args := sshBase(installConnection, !interactivePassword, false, authKeyPath)
+	if interactivePassword && runtime.GOOS != "windows" {
+		// Password installation must never create or reuse a ControlMaster.
+		// The next verifyKey call intentionally starts a fresh master with the
+		// newly-installed key; allowing this step to persist a password master
+		// would make that verification succeed through the wrong identity and
+		// leave panel forwarding bound to the password session.
+		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
+	}
 	args = append(args, target(c), remote)
 	var result ProcessResult
 	if interactivePassword {
@@ -969,6 +1194,21 @@ func (a *App) installPublicKey(c Connection, keyPath, authKeyPath string, onInst
 	if onInstalled != nil {
 		onInstalled()
 	}
+	// The interactive password install may have created a ControlMaster that
+	// is authenticated with the password.  Do not leave that master in place
+	// while verifying the newly-installed key: verifyKey must perform a real
+	// public-key exchange, and later action steps must use that verified key
+	// master rather than silently reusing the password session.  Preserve the
+	// short socket path so verifyKey can recreate a fresh master at the same
+	// location without opening a second speculative connection for every step.
+	if interactivePassword && runtime.GOOS != "windows" && strings.TrimSpace(c.ControlPath) != "" && fileExists(c.ControlPath) {
+		controlPath := c.ControlPath
+		closeConnection := c
+		if err := closeSSHControlMaster(&closeConnection); err != nil {
+			return fmt.Errorf("password SSH control-session close failed before key verification: %w", err)
+		}
+		c.ControlPath = controlPath
+	}
 	verified := verifyKey(c, keyPath)
 	if !verified.OK() || strings.TrimSpace(verified.Stdout) != "SSH_KEY_OK" {
 		return fmt.Errorf("SSH key verification failed (exit %d): %s", verified.ExitCode, processFailureDetail(verified))
@@ -976,15 +1216,36 @@ func (a *App) installPublicKey(c Connection, keyPath, authKeyPath string, onInst
 	return nil
 }
 
+// authorizedKeyRemovalCommand removes exactly the requested authorized_keys
+// line and verifies the postcondition before reporting success.  The
+// *_ALREADY_ABSENT marker makes cleanup idempotent after an operator has
+// already revoked a one-use key manually; callers still get a distinct marker
+// and can explain that no remote line remained to remove.
 func authorizedKeyRemovalCommand(publicKey, marker string) string {
 	if !regexp.MustCompile(`^[A-Z0-9_]+$`).MatchString(marker) {
 		panic("invalid authorized-key removal marker")
 	}
 	encoded := base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(publicKey)))
+	already := marker + "_ALREADY_ABSENT"
 	return "set -eu; f=\"$HOME/.ssh/authorized_keys\"; " +
-		"if [ -f \"$f\" ]; then old=$(printf %s " + shQuote(encoded) + " | base64 -d); " +
-		"tmp=$(mktemp); grep -vxF \"$old\" \"$f\" > \"$tmp\" || true; cat \"$tmp\" > \"$f\"; rm -f \"$tmp\"; chmod 600 \"$f\"; fi; " +
-		"printf '" + marker + "\\n'"
+		"old=$(printf %s " + shQuote(encoded) + " | base64 -d); " +
+		"if [ ! -f \"$f\" ]; then printf '" + already + "\\n'; exit 0; fi; " +
+		"before=$(grep -Fxc -- \"$old\" \"$f\" || true); " +
+		"if [ \"$before\" -eq 0 ]; then printf '" + already + "\\n'; exit 0; fi; " +
+		"tmp=$(mktemp); trap 'rm -f -- \"$tmp\"' EXIT; " +
+		"grep -vxF \"$old\" \"$f\" > \"$tmp\" || true; " +
+		"after=$(grep -Fxc -- \"$old\" \"$tmp\" || true); " +
+		"[ \"$after\" -eq 0 ] || { echo AUTHORIZED_KEY_REMOVE_VERIFY_FAILED >&2; exit 42; }; " +
+		"cat \"$tmp\" > \"$f\"; chmod 600 \"$f\"; printf '" + marker + "\\n'"
+}
+
+func outputHasExactMarker(output, marker string) bool {
+	for _, raw := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(raw) == marker {
+			return true
+		}
+	}
+	return false
 }
 
 func temporaryAuthorizedKeyRemovalCommand(publicKey string) string {
@@ -1053,34 +1314,43 @@ func (a *App) cleanupTemporaryConnection(c *Connection) error {
 	if temporary.Cleaned {
 		return nil
 	}
-	temporary.Cleaned = true
-	var remoteErr error
-	if temporary.Installed && temporary.PublicKey != "" && fileExists(c.KeyPath) {
+	// Do not delete the local private key until the remote authorized_keys
+	// postcondition has been confirmed.  The previous order marked the state
+	// cleaned and removed the only credential even when the VPS was briefly
+	// unreachable, leaving an unrecoverable remote one-use key behind.
+	if temporary.Installed {
+		if temporary.PublicKey == "" {
+			return errors.New("temporary public key is missing; remote revocation cannot be attempted")
+		}
+		if !fileExists(c.KeyPath) {
+			return errors.New("temporary private key is missing; remote revocation cannot be confirmed")
+		}
 		a.println(a.msg("正在撤销 VPS 上的本次一次性 SSH 公钥…", "Revoking this session's one-time SSH public key from the VPS..."))
 		result := a.sshCapture(*c, temporaryAuthorizedKeyRemovalCommand(temporary.PublicKey))
-		if !result.OK() || !strings.Contains(result.Stdout, "TEMPORARY_SSH_KEY_REMOVED") {
-			remoteErr = fmt.Errorf("temporary public-key revocation failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
-		} else {
+		removed := outputHasExactMarker(result.Stdout, "TEMPORARY_SSH_KEY_REMOVED")
+		alreadyAbsent := outputHasExactMarker(result.Stdout, "TEMPORARY_SSH_KEY_REMOVED_ALREADY_ABSENT")
+		if !result.OK() || (!removed && !alreadyAbsent) {
+			return fmt.Errorf("temporary public-key revocation failed (exit %d); local temporary key was retained for retry: %s", result.ExitCode, processFailureDetail(result))
+		}
+		if removed {
 			a.println(a.msg("一次性 SSH 公钥已从 VPS 撤销。", "The one-time SSH public key was revoked from the VPS."))
+		} else {
+			a.println(a.msg("VPS 上已没有本次一次性公钥；按已撤销处理。", "The one-time public key was already absent on the VPS; treating it as revoked."))
 		}
 	}
 	localErr := removeTemporaryKeyDir(temporary.Dir)
-	if localErr == nil {
-		a.println(a.msg("本机临时私钥和临时 known_hosts 已删除。", "The local temporary private key and temporary known_hosts were deleted."))
+	if localErr != nil {
+		return localErr
 	}
+	temporary.Cleaned = true
+	a.println(a.msg("本机临时私钥和临时 known_hosts 已删除。", "The local temporary private key and temporary known_hosts were deleted."))
 	if a.activeTemporary != nil && a.activeTemporary.Temporary != nil && a.activeTemporary.Temporary.Dir == temporary.Dir {
 		a.activeTemporary = nil
 	}
 	if a.conn != nil && a.conn.Temporary != nil && a.conn.Temporary.Dir == temporary.Dir {
 		a.conn = nil
 	}
-	if remoteErr != nil && localErr != nil {
-		return fmt.Errorf("%v; local cleanup also failed: %w", remoteErr, localErr)
-	}
-	if remoteErr != nil {
-		return remoteErr
-	}
-	return localErr
+	return nil
 }
 
 func (a *App) cleanupActiveTemporaryAuth() error {
@@ -1149,7 +1419,19 @@ func (a *App) promoteTemporaryConnection(c *Connection) error {
 		return fmt.Errorf("managed public-key promotion failed: %w", err)
 	}
 	created = append(created, managedPath+".pub")
-	managed := Connection{Host: c.Host, User: c.User, Port: c.Port, KeyPath: managedPath, AuthMode: AuthManagedKey}
+	// The temporary connection was authenticated with the VPS password.  Close
+	// that master before promoting the key so the verification below cannot be
+	// answered by the password session and the action cannot keep using a
+	// credential that was meant to be one-time.
+	controlPath := c.ControlPath
+	if strings.TrimSpace(controlPath) != "" && runtime.GOOS != "windows" {
+		closeConnection := *c
+		if err := closeSSHControlMaster(&closeConnection); err != nil {
+			rollback()
+			return fmt.Errorf("password SSH control-session close failed before managed-key verification: %w", err)
+		}
+	}
+	managed := Connection{Host: c.Host, User: c.User, Port: c.Port, KeyPath: managedPath, AuthMode: AuthManagedKey, ControlPath: controlPath}
 	sourceHosts := knownHostsPath(*c)
 	destinationHosts := knownHostsPath(managed)
 	if !fileExists(destinationHosts) {
@@ -1192,13 +1474,49 @@ func (a *App) authenticateActionConnection(c *Connection) error {
 		return nil
 	}
 	requestedMode := c.AuthMode
-	if requestedMode == AuthManagedKey && (fileExists(c.KeyPath) || fileExists(c.KeyPath+".pub")) {
-		if err := a.ensureKey(*c); err != nil {
-			return err
+	if requestedMode == AuthManagedKey {
+		privateExists := fileExists(c.KeyPath)
+		publicExists := fileExists(c.KeyPath + ".pub")
+		if privateExists && publicExists {
+			if err := a.ensureKey(*c); err == nil {
+				c.Ready = true
+				a.conn = c
+				return nil
+			} else {
+				// A stale local pair must not permanently block password recovery,
+				// but a network/host-key failure must also never be mistaken for a
+				// stale key.  Only the typed, explicitly recoverable verification
+				// error is allowed to enter the password-rebind branch.
+				var verificationErr *managedKeyVerificationError
+				if !errors.As(err, &verificationErr) || !verificationErr.recoverable {
+					return err
+				}
+				a.println(a.msg("当前长期 key 被远端拒绝或本地 key 文件无效：", "The current managed key was rejected by the remote account or cannot be loaded locally:") + " " + err.Error())
+				if !a.yes(a.msg("是否将失效 key 移入可恢复备份，并改用一次初始密码重新绑定？", "Move the failed key into a recoverable backup and rebind with one initial password?"), false) {
+					return err
+				}
+				backupPath, backupErr := moveManagedKeyDirectoryToBackup(c.KeyPath, time.Now())
+				if backupErr != nil {
+					return fmt.Errorf(a.msg("旧 key 保留原位；无法创建可恢复备份：%w", "The old key was left in place because a recoverable backup could not be created: %w"), backupErr)
+				}
+				if metadataErr := writeManagedKeyMetadata(backupPath, *c, "STALE_KEY_BACKUP"); metadataErr != nil {
+					a.println(a.msg("失效 key 已归档，但备份说明文件写入失败：", "The failed key was archived, but its backup metadata could not be updated:") + " " + metadataErr.Error())
+				}
+				a.println(a.msg("失效 key 已移入可恢复备份；原目录未覆盖，开始密码重绑定。", "The failed key was moved to a recoverable backup; the original directory was not overwritten, and password rebinding will start."))
+			}
+		} else if privateExists || publicExists {
+			// A half-written pair is treated the same way as a failed pair. This
+			// is the common residue after an interrupted rotation and otherwise
+			// makes the GUI claim that password binding is unavailable forever.
+			a.println(a.msg("当前长期 key 文件不完整。", "The current managed-key pair is incomplete."))
+			if !a.yes(a.msg("是否将残留目录移入可恢复备份，并改用一次初始密码重新绑定？", "Move the incomplete key directory into a recoverable backup and rebind with one initial password?"), false) {
+				return errors.New(a.msg("长期 key 文件不完整；本次未修改。", "The managed-key pair is incomplete; nothing was changed."))
+			}
+			if _, backupErr := moveManagedKeyDirectoryToBackup(c.KeyPath, time.Now()); backupErr != nil {
+				return fmt.Errorf(a.msg("残留 key 保留原位；无法创建可恢复备份：%w", "The incomplete key was left in place because a recoverable backup could not be created: %w"), backupErr)
+			}
+			a.println(a.msg("残留 key 已移入可恢复备份；开始密码重绑定。", "The incomplete key was moved to a recoverable backup; password rebinding will start."))
 		}
-		c.Ready = true
-		a.conn = c
-		return nil
 	}
 	if requestedMode == AuthManagedKey {
 		a.println(a.msg("这台 VPS + SSH 用户在本机尚无长期 key。先用一次初始密码建立临时会话；密码验证成功后再明确询问是否绑定。", "No managed key exists locally for this VPS + SSH user. A one-time password session will be established first; binding is offered only after verification."))
@@ -1206,6 +1524,7 @@ func (a *App) authenticateActionConnection(c *Connection) error {
 		if err != nil {
 			return err
 		}
+		temporary.ControlPath = c.ControlPath
 		*c = temporary
 		a.registerTemporaryConnection(c)
 	}
@@ -1243,18 +1562,135 @@ func (a *App) cleanupActionTemporaryAuth() error {
 	return a.cleanupTemporaryConnection(c)
 }
 
-// runRemoteAction is the lifecycle wrapper for every remote action.  Each
+// releaseHeldPanelConnection closes the authenticated action session that is
+// kept alive for a panel forwarding tunnel.  It must run after the forwarding
+// process has been stopped.  Temporary-password sessions are revoked through
+// the same control master before it is closed, so cleanup never needs to open
+// a speculative second TCP login.
+func (a *App) releaseHeldPanelConnection() error {
+	c := a.heldPanelConnection
+	if c == nil {
+		return nil
+	}
+	// Keep the ordering invariant local to this method as well as to its
+	// callers: a panel listener belongs to the control master and must be
+	// cancelled before temporary authorized-key revocation or -O exit.  This
+	// protects direct, deferred, and signal cleanup paths alike.
+	if a.panelTunnelCount() > 0 {
+		a.killTunnels()
+	}
+	// Keep the pointer and authenticated master alive until remote revocation
+	// succeeds.  If the VPS is briefly unreachable, clearing the pointer first
+	// would strand the one-time public key and force a later retry to open a new
+	// TCP login (or lose the only retry handle entirely).
+	if err := a.cleanupTemporaryConnection(c); err != nil {
+		return err
+	}
+	closeErr := closeSSHControlMaster(c)
+	a.heldPanelConnection = nil
+	if a.actionConnection == c {
+		a.actionConnection = nil
+	}
+	return closeErr
+}
+
+// closeSSHControlMaster asks OpenSSH to terminate the per-action multiplexing
+// master and removes its private socket directory. A missing/already-exited
+// master is harmless; directory cleanup is still attempted. The connection is
+// passed explicitly so temporary-key cleanup can run through the master first,
+// then close it without opening a new TCP session.
+func closeSSHControlMaster(c *Connection) error {
+	if c == nil || strings.TrimSpace(c.ControlPath) == "" {
+		return nil
+	}
+	path := c.ControlPath
+	// If no OpenSSH step ever created the socket, do not invoke `ssh -O exit`:
+	// on some OpenSSH builds that fallback can start a fresh network attempt,
+	// which is exactly the speculative connection this lifecycle is designed to
+	// avoid. The private directory is still removed below.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		removeErr := os.RemoveAll(filepath.Dir(path))
+		c.ControlPath = ""
+		if removeErr != nil {
+			return fmt.Errorf("SSH control socket cleanup failed: %w", removeErr)
+		}
+		return nil
+	}
+	var closeErr error
+	// Use the bounded control-socket protocol directly.  Calling runCaptured
+	// here would apply the normal transport retry policy and can make a stale
+	// cleanup wait/retry for the full remote-command timeout.  `-O exit` is a
+	// local Unix-socket transaction and must never open a replacement TCP login.
+	result := controlMasterRequest(*c, "exit", "")
+	if !result.OK() {
+		// OpenSSH exits non-zero when no master is present; do not turn that
+		// normal cleanup race into an operation failure.
+		detail := strings.ToLower(processFailureDetail(result))
+		if !strings.Contains(detail, "no such file") &&
+			!strings.Contains(detail, "master running") &&
+			!strings.Contains(detail, "control socket") {
+			closeErr = fmt.Errorf("SSH control master close failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
+		}
+	}
+	if err := os.RemoveAll(filepath.Dir(path)); err != nil && closeErr == nil {
+		closeErr = fmt.Errorf("SSH control socket cleanup failed: %w", err)
+	}
+	c.ControlPath = ""
+	return closeErr
+}
+
+// runRemoteAction is the lifecycle wrapper for every remote action. Each
 // action still selects ordinary SSH password/key authentication independently;
 // there is deliberately no local controller identity, admission gate, or
 // remote operation lease in the reset line.
 func (a *App) runRemoteAction(action func() error) (returnErr error) {
 	a.actionConnection = nil
 	defer func() {
+		// Keep a pointer to the action connection while temporary authorized-key
+		// cleanup runs. That removal must reuse the authenticated master; closing
+		// it first would force cleanup to open a fresh TCP login (and the temporary
+		// private key may already be gone). A held panel forward is owned by this
+		// same control master and is therefore released explicitly before the
+		// master is closed.
+		actionConn := a.actionConnection
+		// A successful panel action has a live forwarding process and a held
+		// control master.  Leave both in place until the GUI sends the explicit
+		// close line; otherwise the defer would close the master immediately and
+		// the tunnel would never become usable.  Any error path still releases
+		// everything here so a half-open tunnel cannot leak.
+		keepPanelConnection := returnErr == nil && a.panelTunnelCount() > 0 && a.heldPanelConnection != nil
+		if keepPanelConnection {
+			a.actionConnection = nil
+			return
+		}
+		// Any tunnel created on an error path must be cancelled before the
+		// authenticated master is released.  For ControlMaster-owned forwards
+		// this sends a local `-O cancel` request; for legacy child forwards it
+		// terminates the child process.  Without this step a failed panel open
+		// could leave the master listening indefinitely after the defer returns.
+		a.killTunnels()
+		if a.heldPanelConnection != nil {
+			if cleanupErr := a.releaseHeldPanelConnection(); cleanupErr != nil {
+				if returnErr == nil {
+					returnErr = cleanupErr
+				} else {
+					a.println(a.msg("面板隧道清理警告：", "Panel tunnel cleanup warning:") + " " + cleanupErr.Error())
+				}
+			}
+			actionConn = nil
+		}
 		if cleanupErr := a.cleanupActionTemporaryAuth(); cleanupErr != nil {
 			if returnErr == nil {
 				returnErr = fmt.Errorf(a.msg("本项操作结束，但临时登录清理不完整：%w", "The action ended, but temporary-login cleanup was incomplete: %w"), cleanupErr)
 			} else {
 				a.println(a.msg("临时登录清理警告：", "Temporary-login cleanup warning:") + " " + cleanupErr.Error())
+			}
+		}
+		if closeErr := closeSSHControlMaster(actionConn); closeErr != nil {
+			if returnErr == nil {
+				returnErr = closeErr
+			} else {
+				a.println(a.msg("SSH 控制会话清理警告：", "SSH control-session cleanup warning:") + " " + closeErr.Error())
 			}
 		}
 	}()
@@ -1521,9 +1957,6 @@ func sameConnectionTarget(left, right *Connection) bool {
 }
 
 func (a *App) unbindManagedKey() error {
-	if err := a.ensureOpenSSH(); err != nil {
-		return err
-	}
 	a.println(a.msg("请输入要解绑的 VPS。只会处理由本工具按 VPS + 用户保存的长期 key。", "Enter the VPS to unbind. Only a managed key stored by this tool for that VPS + user is affected."))
 	c, err := a.promptConnection(AuthManagedKey)
 	if err != nil {
@@ -1532,12 +1965,22 @@ func (a *App) unbindManagedKey() error {
 	if !fileExists(c.KeyPath) || !fileExists(c.KeyPath+".pub") {
 		return fmt.Errorf(a.msg("没有找到该目标的已绑定 key：%s", "No bound key was found for this target: %s"), c.KeyPath)
 	}
-	if !tcpReachable(c.Host, c.Port) {
-		return errors.New(a.msg("SSH TCP 不可达。为避免只删本机却把远端公钥遗留，本次不执行解绑。", "SSH TCP is unreachable. Unbinding is refused so the remote public key is not left behind while only the local key disappears."))
+	// K is dispatched as a local menu so list/archive/folder operations never
+	// run an OpenSSH preflight.  The unbind branch is the first point where a
+	// VPS is actually needed; resolve OpenSSH lazily after the local target and
+	// key pair have been selected, then keep one per-action ControlMaster for
+	// host-key verification, authentication, and exact remote revocation.
+	if err := a.ensureOpenSSH(); err != nil {
+		return err
 	}
 	if err := a.ensureHostKey(c); err != nil {
 		return err
 	}
+	c.ControlPath = newSSHControlPath()
+	// Route K's remote branch through the same runRemoteAction lifecycle used
+	// by the main operations.  It closes this control master after revocation,
+	// including when the operator cancels or an intermediate step fails.
+	a.actionConnection = &c
 	verified := verifyKey(c, c.KeyPath)
 	if !verified.OK() || strings.TrimSpace(verified.Stdout) != "SSH_KEY_OK" {
 		return fmt.Errorf(a.msg("已绑定 key 无法登录，不能确认远端撤销；本机文件保持不动：%s", "The bound key cannot log in, so remote revocation cannot be confirmed; local files were left untouched: %s"), processFailureDetail(verified))
@@ -1556,7 +1999,7 @@ func (a *App) unbindManagedKey() error {
 		return nil
 	}
 	result := a.sshCapture(c, authorizedKeyRemovalCommand(publicKey, "MANAGED_SSH_KEY_REMOVED"))
-	if !result.OK() || !strings.Contains(result.Stdout, "MANAGED_SSH_KEY_REMOVED") {
+	if !result.OK() || !outputHasExactMarker(result.Stdout, "MANAGED_SSH_KEY_REMOVED") {
 		return fmt.Errorf(a.msg("远端公钥撤销未确认（退出码 %d）；本机 key 保持不动：%s", "Remote key revocation was not confirmed (exit %d); the local key was left untouched: %s"), result.ExitCode, processFailureDetail(result))
 	}
 	backupPath, err := moveManagedKeyDirectoryToBackup(c.KeyPath, time.Now())
@@ -1570,6 +2013,9 @@ func (a *App) unbindManagedKey() error {
 		a.conn = nil
 	}
 	a.killTunnels()
+	if cleanupErr := a.releaseHeldPanelConnection(); cleanupErr != nil {
+		a.println(a.msg("SSH 控制会话清理警告：", "SSH control-session cleanup warning:") + " " + cleanupErr.Error())
+	}
 	a.println(a.msg("解绑完成。远端公钥已精确撤销；本机文件没有销毁，已移到：", "Unbinding completed. The remote public key was revoked exactly; local files were preserved at:") + " " + backupPath)
 	return nil
 }
@@ -1630,6 +2076,9 @@ func (a *App) archiveAllManagedKeys() error {
 		return nil
 	}
 	a.killTunnels()
+	if cleanupErr := a.releaseHeldPanelConnection(); cleanupErr != nil {
+		a.println(a.msg("SSH 控制会话清理警告：", "SSH control-session cleanup warning:") + " " + cleanupErr.Error())
+	}
 	a.conn = nil
 	a.actionConnection = nil
 	when := time.Now()
@@ -1715,10 +2164,7 @@ func restoreManagedKeyFiles(entry managedKeyEntry, c Connection, sourceKnownHost
 	return destinationKey, nil
 }
 
-func (a *App) restoreManagedKeyBackup() (returnErr error) {
-	if err := a.ensureOpenSSH(); err != nil {
-		return err
-	}
+func (a *App) restoreManagedKeyBackup() error {
 	root, err := revokedKeyRoot()
 	if err != nil {
 		return err
@@ -1768,21 +2214,40 @@ func (a *App) restoreManagedKeyBackup() (returnErr error) {
 	if fileExists(managedPath) || fileExists(managedPath+".pub") {
 		return fmt.Errorf(a.msg("目标已有长期 key，拒绝覆盖：%s", "A managed key already exists for this target; refusing to overwrite: %s"), managedPath)
 	}
-	backupConnection := Connection{Host: host, User: user, Port: port, KeyPath: entry.KeyPath, AuthMode: AuthManagedKey}
+	// Restore is a mixed local/remote operation.  All backup selection and key
+	// pair validation above remain local; only now do we resolve OpenSSH and
+	// allocate a private per-operation control socket.  The same socket is
+	// reused for verification, rebind/rollback, and final verification, then
+	// closed exactly once on every return path.
+	if err := a.ensureOpenSSH(); err != nil {
+		return err
+	}
+	controlPath := newSSHControlPath()
+	backupConnection := Connection{Host: host, User: user, Port: port, KeyPath: entry.KeyPath, AuthMode: AuthManagedKey, ControlPath: controlPath}
+	// Keep the connection in the common action lifecycle.  If password
+	// fallback is needed below, the pointer is switched to that temporary
+	// connection before returning so its remote key is revoked before the
+	// shared control socket is closed.
+	a.actionConnection = &backupConnection
 	if fileExists(knownHostsPath(backupConnection)) {
 		direct := verifyKey(backupConnection, entry.KeyPath)
 		if direct.OK() && strings.TrimSpace(direct.Stdout) == "SSH_KEY_OK" {
 			a.println(a.msg("备份公钥仍在 VPS 上有效；无需输入密码，直接恢复本机绑定位置并做最终验证。", "The backup public key is still valid on the VPS; restoring the local bound position without a password, followed by final verification."))
-			restoredPath, restoreErr := restoreManagedKeyFiles(entry, Connection{Host: host, User: user, Port: port}, knownHostsPath(backupConnection))
+			restoredPath, restoreErr := restoreManagedKeyFiles(entry, Connection{Host: host, User: user, Port: port, ControlPath: controlPath}, knownHostsPath(backupConnection))
 			if restoreErr != nil {
 				return restoreErr
 			}
-			restored := Connection{Host: host, User: user, Port: port, KeyPath: restoredPath, AuthMode: AuthManagedKey}
-			verified := verifyKey(restored, restoredPath)
+			restored := Connection{Host: host, User: user, Port: port, KeyPath: restoredPath, AuthMode: AuthManagedKey, ControlPath: controlPath}
+			// The restored pair is an exact local copy of the already verified
+			// backup pair.  Use the existing authenticated master for the final
+			// marker instead of opening a second TCP login just to re-read the
+			// same key, which can trip VPS connection throttles.
+			verified := a.sshCapture(restored, "printf SSH_KEY_OK")
 			if !verified.OK() || strings.TrimSpace(verified.Stdout) != "SSH_KEY_OK" {
 				_ = os.RemoveAll(filepath.Dir(restoredPath))
 				return fmt.Errorf("directly restored managed key failed final verification: %s", processFailureDetail(verified))
 			}
+			restored.ControlPath = ""
 			_ = writeManagedKeyMetadata(entry.Dir, restored, "RESTORED_COPY_RETAINED")
 			a.conn = &restored
 			a.println(a.msg("恢复成功：绑定位置已经重新建立，原备份仍保留。", "Restore succeeded: the bound position was recreated and the original backup was retained."))
@@ -1790,20 +2255,43 @@ func (a *App) restoreManagedKeyBackup() (returnErr error) {
 			a.println(a.msg("仍保留的恢复源备份：", "Retained source backup:") + " " + entry.Dir)
 			return nil
 		}
+		detail := processFailureDetail(direct)
+		// A host-key or transport failure must not trigger a password prompt or
+		// another login attempt.  Only an explicit public-key rejection (or a
+		// local key-loading failure) is eligible for the password rebind path.
+		if direct.ExitCode != 255 || !isRecoverableManagedKeyDetail(detail) {
+			return fmt.Errorf(a.msg("备份 key 验证失败，未尝试密码回退；请先检查 Host 指纹或网络：%s", "Backup-key verification failed; password fallback was not attempted. Check the host fingerprint or network first: %s"), detail)
+		}
+		// The failed key probe may have left a master behind.  Retire it before
+		// the password session so the fresh temporary-key verification cannot be
+		// answered by stale credentials.  Keep the same short path for the new
+		// master; verifyKey recreates its directory when needed.
+		if err := closeSSHControlMaster(&backupConnection); err != nil {
+			return fmt.Errorf("failed to reset SSH control session before password rebind: %w", err)
+		}
+		backupConnection.ControlPath = controlPath
 		a.println(a.msg("备份 key 不能直接登录；可能已从远端撤销。下面改用一次临时密码会话重新绑定。", "The backup key cannot log in directly and may have been revoked remotely. Falling back to one temporary password session for rebinding."))
 	}
 	temporary, err := a.promptlessTemporaryConnection(host, user, port)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if cleanupErr := a.cleanupTemporaryConnection(&temporary); cleanupErr != nil {
-			a.println(a.msg("[WARN] 恢复流程已结束，但一次性登录清理不完整：", "[WARN] Restoration finished, but one-time login cleanup was incomplete:") + " " + cleanupErr.Error())
-			if returnErr == nil {
-				returnErr = cleanupErr
-			}
+	temporary.ControlPath = controlPath
+	a.actionConnection = &temporary
+	// Also publish the temporary session to the process-level shutdown path.
+	// A SIGTERM/SIGHUP can arrive while this restore is inside OpenSSH; the
+	// shutdown cleanup must revoke the one-time authorized-key line before it
+	// closes the control socket.  The normal action wrapper will clear this
+	// registration after its own idempotent cleanup.
+	a.registerTemporaryConnection(&temporary)
+	// Reuse the target-specific known_hosts captured with the backup whenever
+	// possible.  This avoids a second host-key scan during the password
+	// fallback and keeps the entire restore flow on the same pinned identity.
+	if sourceHosts := knownHostsPath(backupConnection); fileExists(sourceHosts) {
+		if err := copyFileExclusive(sourceHosts, knownHostsPath(temporary), 0600); err != nil {
+			return fmt.Errorf("known_hosts preparation for password rebind failed: %w", err)
 		}
-	}()
+	}
 	if err := a.prepareTemporaryPasswordAuth(&temporary); err != nil {
 		return err
 	}
@@ -1812,18 +2300,23 @@ func (a *App) restoreManagedKeyBackup() (returnErr error) {
 		return err
 	}
 	backupPublicKey, _ := readPublicKey(entry.KeyPath)
-	restoredPath, err := restoreManagedKeyFiles(entry, Connection{Host: host, User: user, Port: port}, knownHostsPath(temporary))
+	restoredPath, err := restoreManagedKeyFiles(entry, Connection{Host: host, User: user, Port: port, ControlPath: controlPath}, knownHostsPath(temporary))
 	if err != nil {
 		_ = a.sshCapture(temporary, authorizedKeyRemovalCommand(backupPublicKey, "RESTORE_ROLLBACK_KEY_REMOVED"))
 		return fmt.Errorf("local restore failed after remote key install: %w", err)
 	}
-	restored := Connection{Host: host, User: user, Port: port, KeyPath: restoredPath, AuthMode: AuthManagedKey}
-	verified := verifyKey(restored, restoredPath)
+	restored := Connection{Host: host, User: user, Port: port, KeyPath: restoredPath, AuthMode: AuthManagedKey, ControlPath: controlPath}
+	// installPublicKey/prepareTemporaryPasswordAuth already authenticated the
+	// control master with the temporary key.  The restored pair is an exact
+	// copy of the backup pair installed remotely, so verify through that same
+	// master and avoid a fresh TCP handshake.
+	verified := a.sshCapture(restored, "printf SSH_KEY_OK")
 	if !verified.OK() || strings.TrimSpace(verified.Stdout) != "SSH_KEY_OK" {
 		_ = a.sshCapture(temporary, authorizedKeyRemovalCommand(backupPublicKey, "RESTORE_ROLLBACK_KEY_REMOVED"))
 		_ = os.RemoveAll(filepath.Dir(restoredPath))
 		return fmt.Errorf("restored managed key failed final verification: %s", processFailureDetail(verified))
 	}
+	restored.ControlPath = ""
 	_ = writeManagedKeyMetadata(entry.Dir, restored, "RESTORED_COPY_RETAINED")
 	a.conn = &restored
 	a.println(a.msg("恢复成功：备份公钥已重新绑定，长期私钥已验证可登录。", "Restore succeeded: the backup public key was rebound and the managed private key was verified."))
@@ -1871,17 +2364,26 @@ func (a *App) manageBoundKeys() error {
 	case "1":
 		return a.listBoundKeys()
 	case "2":
-		return a.unbindManagedKey()
+		// Unbind is the first K branch that needs a VPS.  Keep it inside the
+		// standard action lifecycle so the authenticated ControlMaster is closed
+		// only after the exact remote key-removal marker is confirmed.
+		return a.runRemoteAction(a.unbindManagedKey)
 	case "3":
 		return a.listRecoverableKeyBackups()
 	case "4":
-		return a.restoreManagedKeyBackup()
+		// Restore can create a temporary password session.  The shared wrapper
+		// revokes that one-time key through the same master before releasing it,
+		// including on cancellation and error paths.
+		return a.runRemoteAction(a.restoreManagedKeyBackup)
 	case "5":
 		return a.openManagedKeyFolders()
 	case "6":
 		return a.archiveAllManagedKeys()
 	case "7":
 		a.killTunnels()
+		if cleanupErr := a.releaseHeldPanelConnection(); cleanupErr != nil {
+			a.println(a.msg("SSH 控制会话清理警告：", "SSH control-session cleanup warning:") + " " + cleanupErr.Error())
+		}
 		a.conn = nil
 		a.actionConnection = nil
 		a.println(a.msg("已清空当前选择。下一项操作会重新询问登录模式、VPS、用户和端口；其他 VPS 的绑定互不影响。", "The current selection was cleared. The next action asks again for login mode, VPS, user, and port; bindings for different VPS targets are independent."))
@@ -1908,11 +2410,22 @@ func (a *App) showKeyHandoff(keyPath, heading string) error {
 }
 
 func (a *App) ensureKey(c Connection) error {
-	if err := a.ensureHostKey(c); err != nil {
-		return err
-	}
 	if !fileExists(c.KeyPath) || !fileExists(c.KeyPath+".pub") {
 		return errors.New(a.msg("长期 key 文件不完整；本次不会覆盖。请用 [K] 检查/解绑旧目录，再选择密码模式重新绑定。", "The managed key files are incomplete and will not be overwritten. Use [K] to inspect/unbind the old directory, then select password mode and bind again."))
+	}
+	// Validate the private/public pair locally before touching the network. A
+	// stale .pub file or an interrupted rotation must never be reported as a
+	// remote authentication failure, and a bad pair should be recoverable via
+	// the explicit password-rebind path without first probing the VPS.
+	if err := validatePrivatePublicKeyPair(c.KeyPath); err != nil {
+		return &managedKeyVerificationError{
+			detail:      err.Error(),
+			recoverable: true,
+			message:     a.msg("本机长期 key 文件无效：", "The local managed-key files are invalid:") + " " + err.Error(),
+		}
+	}
+	if err := a.ensureHostKey(c); err != nil {
+		return err
 	}
 	verified := verifyKey(c, c.KeyPath)
 	if verified.OK() && strings.TrimSpace(verified.Stdout) == "SSH_KEY_OK" {
@@ -1922,7 +2435,17 @@ func (a *App) ensureKey(c Connection) error {
 		a.println(a.msg("SSH_KEY_OK：已使用这台 VPS 专属的长期 key。", "SSH_KEY_OK: the managed key for this VPS was used."))
 		return nil
 	}
-	return errors.New(a.msg("本机已有 SSH key，但当前节点验证失败；请改选临时密码，或用 [K] 解绑后重新绑定。旧 key 不会被覆盖。", "A local SSH key exists but does not verify; choose temporary password, or unbind it with [K] and bind again. The old key will not be overwritten."))
+	detail := processFailureDetail(verified)
+	return &managedKeyVerificationError{
+		detail: detail,
+		// OpenSSH conventionally reserves exit status 255 for client-side
+		// connection or authentication failures.  A remote command that merely
+		// prints an auth-looking line normally returns its own status (for example
+		// 1), so require the usual client failure status in addition to the strict
+		// diagnostic-line parser before offering stale-key archival.
+		recoverable: verified.ExitCode == 255 && isRecoverableManagedKeyDetail(detail),
+		message:     a.msg("本机已有 SSH key，但当前节点验证失败：", "A local SSH key exists but the current node verification failed:") + " " + detail,
+	}
 }
 
 func (a *App) readyConn() (Connection, error) {
@@ -1932,9 +2455,6 @@ func (a *App) readyConn() (Connection, error) {
 	c, err := a.getActionConnection()
 	if err != nil {
 		return Connection{}, err
-	}
-	if !tcpReachable(c.Host, c.Port) {
-		return Connection{}, fmt.Errorf(a.msg("SSH 未就绪：无法连接 %s:%d", "SSH is not ready: cannot reach %s:%d"), c.Host, c.Port)
 	}
 	if err := a.authenticateActionConnection(c); err != nil {
 		return Connection{}, err
@@ -2096,6 +2616,14 @@ func (a *App) ensureToolkit(c Connection) error {
 	if err != nil {
 		return err
 	}
+	return a.ensureToolkitProbe(probe)
+}
+
+// ensureToolkitProbe applies the toolkit compatibility policy to an already
+// collected probe.  Keeping the policy separate lets multi-step actions share
+// one authenticated SSH request instead of opening a new TCP connection for
+// every read-only check.
+func (a *App) ensureToolkitProbe(probe ToolkitProbe) error {
 	relation, err := classifyToolkit(probe, toolkitVersion)
 	if err != nil {
 		return fmt.Errorf(a.msg("无法安全识别远端工具包版本：%w", "Could not safely classify the remote toolkit version: %w"), err)
@@ -2373,16 +2901,50 @@ func (a *App) fetchHandoff(c Connection) (string, error) {
 }
 
 func (a *App) panelMetadata(c Connection) (PanelMetadata, error) {
-	command := "set -u; root=" + shQuote(remoteRoot) + "; " +
-		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyTextRemoteRoot) + "; " +
-		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyRunbookRemoteRoot) + "; " +
-		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || { echo PANEL_METADATA_ERROR=SCRIPT_MISSING >&2; exit 12; }; " +
-		"bash \"$root/linux/18-panel-metadata.sh\""
-	result := a.rootCapture(c, command)
+	result := a.rootCapture(c, panelMetadataCommand())
 	if !result.OK() {
 		return PanelMetadata{}, fmt.Errorf("panel metadata command failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}
 	return parsePanelMetadata(result.Stdout)
+}
+
+func panelMetadataCommand() string {
+	return "set -u; root=" + shQuote(remoteRoot) + "; " +
+		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyTextRemoteRoot) + "; " +
+		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyRunbookRemoteRoot) + "; " +
+		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || { echo PANEL_METADATA_ERROR=SCRIPT_MISSING >&2; exit 12; }; " +
+		"bash \"$root/linux/18-panel-metadata.sh\""
+}
+
+// panelPreflightCommand intentionally keeps the toolkit probe, panel metadata
+// lookup and handoff export in one read-only SSH invocation.  The old flow
+// opened a fresh TCP connection for each of these steps; after a successful
+// key bind that burst could trip VPS connection-rate limits and make the
+// second request time out before authentication.  The command emits the same
+// framed blocks consumed by the existing parsers, so malformed or incomplete
+// output still fails closed.
+func panelPreflightCommand() string {
+	return remoteToolkitProbeCommand() + "; " + panelMetadataCommand() + "; " + remoteHandoffCommand()
+}
+
+func (a *App) panelPreflight(c Connection) (ToolkitProbe, PanelMetadata, string, error) {
+	result := a.rootCapture(c, panelPreflightCommand())
+	if !result.OK() {
+		return ToolkitProbe{}, PanelMetadata{}, "", fmt.Errorf("panel preflight SSH failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
+	}
+	probe, err := parseToolkitProbe(result.Stdout)
+	if err != nil {
+		return ToolkitProbe{}, PanelMetadata{}, "", err
+	}
+	if err := a.ensureToolkitProbe(probe); err != nil {
+		return ToolkitProbe{}, PanelMetadata{}, "", err
+	}
+	meta, err := parsePanelMetadata(result.Stdout)
+	if err != nil {
+		return ToolkitProbe{}, PanelMetadata{}, "", fmt.Errorf("panel metadata command failed: %w", err)
+	}
+	handoff, _ := validateHandoff(result.Stdout)
+	return probe, meta, handoff, nil
 }
 
 func (a *App) remoteRunStatus(c Connection) map[string]string {
@@ -2412,14 +2974,95 @@ func pickLocalPort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
-func (a *App) startTunnel(c Connection, remotePort int) (int, error) {
+// controlMasterRequest sends an OpenSSH multiplexing control command to an
+// already-running master. `-O forward`, `-O cancel`, and `-O exit` operate on
+// the Unix-domain control socket and do not create a second TCP/SSH login.
+// Use a bounded direct command rather than the normal retry wrapper: a missing
+// or stale socket must fail immediately instead of being retried as another
+// network connection.
+func controlMasterRequest(c Connection, operation, forward string) ProcessResult {
+	args := []string{
+		"-o", "ControlPath=" + openSSHOptionPath(c.ControlPath),
+		"-o", "ConnectTimeout=3",
+		"-o", "ConnectionAttempts=1",
+		"-o", "BatchMode=yes",
+		"-S", c.ControlPath,
+		"-O", operation,
+	}
+	if forward != "" {
+		args = append(args, "-L", forward)
+	}
+	args = append(args, "-p", strconv.Itoa(c.Port), target(c))
+	// A control request is a local Unix-socket transaction.  Keep its hard
+	// deadline short so an unresponsive master cannot leave the GUI stuck in
+	// "running" for the ordinary 30-second SSH command timeout.  Deliberately
+	// do not use runCaptured (which can retry network failures): a retry here
+	// must never turn a missing socket into a second TCP login.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, managedCommandPath("ssh.exe"), args...)
+	hideChildWindow(cmd)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if stderr.Len() > 0 {
+			stderr.WriteString("\n")
+		}
+		stderr.WriteString("SSH control request timed out after 5s")
+		err = ctx.Err()
+	}
+	return ProcessResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitCode(err), Err: err}
+}
+
+func controlMasterReady(c Connection) error {
+	path := strings.TrimSpace(c.ControlPath)
+	if runtime.GOOS == "windows" || path == "" {
+		return errors.New("SSH control master is unavailable; refusing to open a second TCP connection")
+	}
+	if info, err := os.Stat(path); err != nil || info.IsDir() {
+		if err != nil {
+			return fmt.Errorf("SSH control master is unavailable at %s; refusing to open a second TCP connection: %w", path, err)
+		}
+		return fmt.Errorf("SSH control master path is not a socket: %s; refusing to open a second TCP connection", path)
+	}
+	result := controlMasterRequest(c, "check", "")
+	if !result.OK() {
+		return fmt.Errorf("SSH control master is not running; refusing to open a second TCP connection: %s", processFailureDetail(result))
+	}
+	return nil
+}
+
+// holdPanelConnection keeps the exact action connection (including temporary
+// key bookkeeping) alive while the panel forward is exposed.  A value copy is
+// used only for callers that do not have an actionConnection pointer, such as
+// isolated tests.
+func (a *App) holdPanelConnection(c Connection) {
+	if a.actionConnection != nil &&
+		strings.TrimSpace(a.actionConnection.ControlPath) != "" &&
+		a.actionConnection.ControlPath == c.ControlPath {
+		a.heldPanelConnection = a.actionConnection
+		return
+	}
+	held := c
+	a.heldPanelConnection = &held
+}
+
+// startLegacyTunnel is retained for Win32-OpenSSH, where ControlMaster is
+// intentionally disabled.  The child process owns the listener in this mode,
+// so the existing process-based cleanup remains correct.
+func (a *App) startLegacyTunnel(c Connection, remotePort int) (int, error) {
 	localPort, err := pickLocalPort()
 	if err != nil {
 		return 0, err
 	}
 	forward := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort)
 	args := sshBase(c, true, false, "")
-	args = append(args, "-N", "-o", "ExitOnForwardFailure=yes", "-L", forward, target(c))
+	args = append(args,
+		"-o", "ControlMaster=no",
+		"-o", "ControlPath=none",
+		"-N", "-o", "ExitOnForwardFailure=yes", "-L", forward, target(c))
 	cmd := exec.Command(managedCommandPath("ssh.exe"), args...)
 	hideChildWindow(cmd)
 	var stderr bytes.Buffer
@@ -2441,6 +3084,7 @@ func (a *App) startTunnel(c Connection, remotePort int) (int, error) {
 		if dialErr == nil {
 			_ = conn.Close()
 			a.tunnels = append(a.tunnels, cmd)
+			a.holdPanelConnection(c)
 			return localPort, nil
 		}
 		time.Sleep(150 * time.Millisecond)
@@ -2450,7 +3094,97 @@ func (a *App) startTunnel(c Connection, remotePort int) (int, error) {
 	return 0, fmt.Errorf("SSH tunnel did not listen within 8 seconds: %s", sanitizeSSHStderr(stderr.String()))
 }
 
+// startControlMasterTunnel installs a forwarding listener through the
+// existing authenticated ControlMaster.  A multiplexed `ssh -N -L` client
+// exits after asking the master to create the forward; treating that short
+// client as the lifetime owner makes the caller report a false failure while
+// leaking the listener in the master.  The explicit -O protocol gives us a
+// durable, cancellable record instead.
+func (a *App) startControlMasterTunnel(c Connection, remotePort int) (int, error) {
+	if err := controlMasterReady(c); err != nil {
+		return 0, err
+	}
+	localPort, err := pickLocalPort()
+	if err != nil {
+		return 0, err
+	}
+	forward := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort)
+	result := controlMasterRequest(c, "forward", forward)
+	if !result.OK() {
+		return 0, fmt.Errorf("SSH control master forwarding request failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
+	}
+	// OpenSSH may report the control request before the local listener is
+	// visible to another process.  Poll briefly, then cancel the forward so a
+	// failed startup cannot leave an untracked listener behind.
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 250*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			a.panelForwards = append(a.panelForwards, panelForward{
+				connection: c,
+				spec:       forward,
+				localPort:  localPort,
+			})
+			a.holdPanelConnection(c)
+			return localPort, nil
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	cleanupErr := cancelPanelForward(panelForward{connection: c, spec: forward, localPort: localPort})
+	if cleanupErr != nil {
+		return 0, fmt.Errorf("SSH control master forwarding did not listen within 8 seconds (%v); cancel failed: %w", sanitizeSSHStderr(result.Stderr), cleanupErr)
+	}
+	return 0, fmt.Errorf("SSH control master forwarding did not listen within 8 seconds")
+}
+
+func (a *App) startTunnel(c Connection, remotePort int) (int, error) {
+	// Windows keeps the historical child-process forward because Win32
+	// OpenSSH does not provide dependable ControlMaster support.  On Unix an
+	// empty/missing path is a hard failure: opening a second raw TCP login here
+	// would reintroduce the rate-limit and authentication race this lifecycle
+	// is designed to prevent.
+	if runtime.GOOS == "windows" {
+		return a.startLegacyTunnel(c, remotePort)
+	}
+	return a.startControlMasterTunnel(c, remotePort)
+}
+
+func cancelPanelForward(forward panelForward) error {
+	path := strings.TrimSpace(forward.connection.ControlPath)
+	if path == "" || forward.spec == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("SSH control socket lookup failed: %w", err)
+	}
+	result := controlMasterRequest(forward.connection, "cancel", forward.spec)
+	if result.OK() {
+		return nil
+	}
+	// A master can exit concurrently with UI cleanup.  Treat the resulting
+	// missing-socket diagnostics as already cancelled; never open a fallback
+	// network connection to clean up a dead master.
+	detail := strings.ToLower(processFailureDetail(result))
+	if strings.Contains(detail, "no such file") ||
+		strings.Contains(detail, "master running") ||
+		strings.Contains(detail, "control socket") ||
+		strings.Contains(detail, "no master") {
+		return nil
+	}
+	return fmt.Errorf("SSH control master forward cancel failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
+}
+
 func (a *App) killTunnels() {
+	for _, forward := range a.panelForwards {
+		if err := cancelPanelForward(forward); err != nil {
+			a.println(a.msg("面板转发取消警告：", "Panel forward cancellation warning: ") + err.Error())
+		}
+	}
+	a.panelForwards = nil
 	for _, cmd := range a.tunnels {
 		if cmd != nil && cmd.Process != nil {
 			_ = cmd.Process.Kill()

@@ -1,0 +1,296 @@
+--- a/remote.go
++++ b/remote.go
+@@ -112,14 +112,18 @@
+ }
+ 
+ type Connection struct {
+-	Host       string
+-	User       string
+-	Port       int
+-	KeyPath    string
+-	AuthMode   AuthMode
+-	Temporary  *TemporaryAuth
+-	Ready      bool
+-	NewlyBound bool
++	Host    string
++	User    string
++	Port    int
++	KeyPath string
++	// ControlPath is a per-action OpenSSH multiplexing socket. Keeping it on
++	// the connection lets a multi-step workflow reuse the authenticated SSH
++	// session instead of opening a fresh TCP connection for every probe.
++	ControlPath string
++	AuthMode    AuthMode
++	Temporary   *TemporaryAuth
++	Ready       bool
++	NewlyBound  bool
+ }
+ 
+ var errConnectionSelectionCancelled = errors.New("connection selection cancelled")
+@@ -536,6 +540,19 @@
+ 		"-o", "StrictHostKeyChecking=yes",
+ 		"-o", "UpdateHostKeys=no",
+ 	}
++	// On Unix OpenSSH, multiplex all steps of one action through a short-lived
++	// control socket. This is especially important after password→key binding:
++	// metadata, tunnel setup and handoff should not each create another TCP
++	// login (which can trip provider rate limits or fail2ban). Win32-OpenSSH
++	// has historically lacked reliable ControlMaster support, so leave its
++	// existing independent-connection behavior unchanged there.
++	if runtime.GOOS != "windows" && strings.TrimSpace(c.ControlPath) != "" {
++		args = append(args,
++			"-o", "ControlMaster=auto",
++			"-o", "ControlPersist=60s",
++			"-o", "ControlPath="+c.ControlPath,
++		)
++	}
+ 	key := keyOverride
+ 	if key == "" {
+ 		key = c.KeyPath
+@@ -564,6 +581,13 @@
+ 		"-o", "UpdateHostKeys=no",
+ 		"-o", "BatchMode=yes",
+ 	}
++	if runtime.GOOS != "windows" && strings.TrimSpace(c.ControlPath) != "" {
++		args = append(args,
++			"-o", "ControlMaster=auto",
++			"-o", "ControlPersist=60s",
++			"-o", "ControlPath="+c.ControlPath,
++		)
++	}
+ 	if keyPath != "" && fileExists(keyPath) {
+ 		args = append(args, "-i", keyPath, "-o", "IdentitiesOnly=yes")
+ 	}
+@@ -673,6 +697,22 @@
+ 	a.tempCleanupMu.Unlock()
+ }
+ 
++// newSSHControlPath creates a private, per-action directory for OpenSSH's
++// multiplexing socket. The socket is removed by runRemoteAction's deferred
++// cleanup; a unique directory prevents two GUI actions from sharing a master.
++// Win32-OpenSSH is intentionally excluded because ControlMaster support is
++// not dependable there (macOS/Linux use the native OpenSSH implementation).
++func newSSHControlPath() string {
++	if runtime.GOOS == "windows" {
++		return ""
++	}
++	dir, err := os.MkdirTemp("", "ProxyNodeAssistant-v1.0.0-ssh-")
++	if err != nil {
++		return ""
++	}
++	return filepath.Join(dir, "ctl")
++}
++
+ func (a *App) getActionConnection() (*Connection, error) {
+ 	if a.actionConnection != nil {
+ 		return a.actionConnection, nil
+@@ -688,6 +728,10 @@
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	// Keep one authenticated OpenSSH master for every step of this action.
++	// This path is deliberately allocated after the user has selected the
++	// target and is never persisted with managed-key metadata.
++	c.ControlPath = newSSHControlPath()
+ 	a.actionConnection = &c
+ 	if mode == AuthTemporaryPassword {
+ 		a.registerTemporaryConnection(&c)
+@@ -1149,7 +1193,7 @@
+ 		return fmt.Errorf("managed public-key promotion failed: %w", err)
+ 	}
+ 	created = append(created, managedPath+".pub")
+-	managed := Connection{Host: c.Host, User: c.User, Port: c.Port, KeyPath: managedPath, AuthMode: AuthManagedKey}
++	managed := Connection{Host: c.Host, User: c.User, Port: c.Port, KeyPath: managedPath, AuthMode: AuthManagedKey, ControlPath: c.ControlPath}
+ 	sourceHosts := knownHostsPath(*c)
+ 	destinationHosts := knownHostsPath(managed)
+ 	if !fileExists(destinationHosts) {
+@@ -1206,6 +1250,7 @@
+ 		if err != nil {
+ 			return err
+ 		}
++		temporary.ControlPath = c.ControlPath
+ 		*c = temporary
+ 		a.registerTemporaryConnection(c)
+ 	}
+@@ -1241,6 +1286,42 @@
+ 	c := a.actionConnection
+ 	a.actionConnection = nil
+ 	return a.cleanupTemporaryConnection(c)
++}
++
++// closeSSHControlMaster asks OpenSSH to terminate the per-action multiplexing
++// master and removes its private socket directory. A missing/already-exited
++// master is harmless; directory cleanup is still attempted. The connection is
++// passed explicitly so temporary-key cleanup can run through the master first,
++// then close it without opening a new TCP session.
++func closeSSHControlMaster(c *Connection) error {
++	if c == nil || strings.TrimSpace(c.ControlPath) == "" {
++		return nil
++	}
++	path := c.ControlPath
++	var closeErr error
++	args := []string{
++		"-o", "ControlPath=" + path,
++		"-o", "ConnectTimeout=2",
++		"-S", path,
++		"-O", "exit",
++		target(*c),
++	}
++	result := runCaptured("ssh.exe", args, nil, true)
++	if !result.OK() {
++		// OpenSSH exits non-zero when no master is present; do not turn that
++		// normal cleanup race into an operation failure.
++		detail := strings.ToLower(processFailureDetail(result))
++		if !strings.Contains(detail, "no such file") &&
++			!strings.Contains(detail, "master running") &&
++			!strings.Contains(detail, "control socket") {
++			closeErr = fmt.Errorf("SSH control master close failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
++		}
++	}
++	if err := os.RemoveAll(filepath.Dir(path)); err != nil && closeErr == nil {
++		closeErr = fmt.Errorf("SSH control socket cleanup failed: %w", err)
++	}
++	c.ControlPath = ""
++	return closeErr
+ }
+ 
+ // runRemoteAction is the lifecycle wrapper for every remote action.  Each
+@@ -1250,6 +1331,12 @@
+ func (a *App) runRemoteAction(action func() error) (returnErr error) {
+ 	a.actionConnection = nil
+ 	defer func() {
++		// Keep a pointer to the action connection while temporary authorized-key
++		// cleanup runs. That removal must reuse the authenticated master; closing
++		// it first would force cleanup to open a fresh TCP login (and the temporary
++		// private key may already be gone). The forwarding tunnel has no control
++		// path, so closing this master cannot interrupt a held panel tunnel.
++		actionConn := a.actionConnection
+ 		if cleanupErr := a.cleanupActionTemporaryAuth(); cleanupErr != nil {
+ 			if returnErr == nil {
+ 				returnErr = fmt.Errorf(a.msg("本项操作结束，但临时登录清理不完整：%w", "The action ended, but temporary-login cleanup was incomplete: %w"), cleanupErr)
+@@ -1257,6 +1344,13 @@
+ 				a.println(a.msg("临时登录清理警告：", "Temporary-login cleanup warning:") + " " + cleanupErr.Error())
+ 			}
+ 		}
++		if closeErr := closeSSHControlMaster(actionConn); closeErr != nil {
++			if returnErr == nil {
++				returnErr = closeErr
++			} else {
++				a.println(a.msg("SSH 控制会话清理警告：", "SSH control-session cleanup warning:") + " " + closeErr.Error())
++			}
++		}
+ 	}()
+ 	returnErr = action()
+ 	if errors.Is(returnErr, errConnectionSelectionCancelled) {
+@@ -2096,6 +2190,14 @@
+ 	if err != nil {
+ 		return err
+ 	}
++	return a.ensureToolkitProbe(probe)
++}
++
++// ensureToolkitProbe applies the toolkit compatibility policy to an already
++// collected probe.  Keeping the policy separate lets multi-step actions share
++// one authenticated SSH request instead of opening a new TCP connection for
++// every read-only check.
++func (a *App) ensureToolkitProbe(probe ToolkitProbe) error {
+ 	relation, err := classifyToolkit(probe, toolkitVersion)
+ 	if err != nil {
+ 		return fmt.Errorf(a.msg("无法安全识别远端工具包版本：%w", "Could not safely classify the remote toolkit version: %w"), err)
+@@ -2373,18 +2475,52 @@
+ }
+ 
+ func (a *App) panelMetadata(c Connection) (PanelMetadata, error) {
+-	command := "set -u; root=" + shQuote(remoteRoot) + "; " +
+-		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyTextRemoteRoot) + "; " +
+-		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyRunbookRemoteRoot) + "; " +
+-		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || { echo PANEL_METADATA_ERROR=SCRIPT_MISSING >&2; exit 12; }; " +
+-		"bash \"$root/linux/18-panel-metadata.sh\""
+-	result := a.rootCapture(c, command)
++	result := a.rootCapture(c, panelMetadataCommand())
+ 	if !result.OK() {
+ 		return PanelMetadata{}, fmt.Errorf("panel metadata command failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
+ 	}
+ 	return parsePanelMetadata(result.Stdout)
++}
++
++func panelMetadataCommand() string {
++	return "set -u; root=" + shQuote(remoteRoot) + "; " +
++		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyTextRemoteRoot) + "; " +
++		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || root=" + shQuote(legacyRunbookRemoteRoot) + "; " +
++		"[ -x \"$root/linux/18-panel-metadata.sh\" ] || { echo PANEL_METADATA_ERROR=SCRIPT_MISSING >&2; exit 12; }; " +
++		"bash \"$root/linux/18-panel-metadata.sh\""
+ }
+ 
++// panelPreflightCommand intentionally keeps the toolkit probe, panel metadata
++// lookup and handoff export in one read-only SSH invocation.  The old flow
++// opened a fresh TCP connection for each of these steps; after a successful
++// key bind that burst could trip VPS connection-rate limits and make the
++// second request time out before authentication.  The command emits the same
++// framed blocks consumed by the existing parsers, so malformed or incomplete
++// output still fails closed.
++func panelPreflightCommand() string {
++	return remoteToolkitProbeCommand() + "; " + panelMetadataCommand() + "; " + remoteHandoffCommand()
++}
++
++func (a *App) panelPreflight(c Connection) (ToolkitProbe, PanelMetadata, string, error) {
++	result := a.rootCapture(c, panelPreflightCommand())
++	if !result.OK() {
++		return ToolkitProbe{}, PanelMetadata{}, "", fmt.Errorf("panel preflight SSH failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
++	}
++	probe, err := parseToolkitProbe(result.Stdout)
++	if err != nil {
++		return ToolkitProbe{}, PanelMetadata{}, "", err
++	}
++	if err := a.ensureToolkitProbe(probe); err != nil {
++		return ToolkitProbe{}, PanelMetadata{}, "", err
++	}
++	meta, err := parsePanelMetadata(result.Stdout)
++	if err != nil {
++		return ToolkitProbe{}, PanelMetadata{}, "", fmt.Errorf("panel metadata command failed: %w", err)
++	}
++	handoff, _ := validateHandoff(result.Stdout)
++	return probe, meta, handoff, nil
++}
++
+ func (a *App) remoteRunStatus(c Connection) map[string]string {
+ 	command := "printf '%s\\n' " + shQuote(statusBegin) + "; " +
+ 		"cat /etc/text-node-assistant/last-run.env 2>/dev/null || true; " +
+@@ -2418,7 +2554,13 @@
+ 		return 0, err
+ 	}
+ 	forward := fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", localPort, remotePort)
+-	args := sshBase(c, true, false, "")
++	// Keep the long-lived forwarding process independent from the short-lived
++	// action control master. runRemoteAction closes its master as soon as the
++	// operation returns, while the GUI intentionally keeps this tunnel alive
++	// until the user presses "关闭面板隧道".
++	tunnelConnection := c
++	tunnelConnection.ControlPath = ""
++	args := sshBase(tunnelConnection, true, false, "")
+ 	args = append(args, "-N", "-o", "ExitOnForwardFailure=yes", "-L", forward, target(c))
+ 	cmd := exec.Command(managedCommandPath("ssh.exe"), args...)
+ 	hideChildWindow(cmd)
+--- a/operations.go
++++ b/operations.go
+@@ -644,10 +644,7 @@
+ }
+ 
+ func (a *App) openPanelWithConn(c Connection) error {
+-	if err := a.ensureToolkit(c); err != nil {
+-		return err
+-	}
+-	meta, err := a.panelMetadata(c)
++	_, meta, handoff, err := a.panelPreflight(c)
+ 	if err != nil {
+ 		return fmt.Errorf(a.msg("无法读取 panel 运行态元数据：%w。运行 [3]，不要手猜端口。", "Could not read panel runtime metadata: %w. Run [3]; do not guess the port."), err)
+ 	}
+@@ -662,7 +659,7 @@
+ 	a.println(a.msg("面板已通过 127.0.0.1 本地隧道打开：", "Panel opened through a local 127.0.0.1 tunnel:") + " " + panelURL)
+ 	a.println(a.msg("元数据来源：", "Metadata source:") + " " + meta.Source)
+ 	a.println(a.msg("EXE 退出时会终止自己创建的隧道。", "The tunnel is terminated automatically when this EXE exits."))
+-	if handoff, err := a.fetchHandoff(c); err == nil {
++	if handoff != "" {
+ 		// This shortcut used to parse the raw concatenated handoff directly,
+ 		// bypassing the canonical formatter.  On an upgraded node that exposed
+ 		// the legacy PANEL_USERNAME/PASSWORD rows (and occasionally an older

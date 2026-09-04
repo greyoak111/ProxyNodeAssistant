@@ -912,7 +912,11 @@ SS2022_ALLOWED_COUNT="$(grep -c . /etc/proxy-runbook/ss2022/allowlist.txt 2>/dev
 if [ "${SS2022_ALLOWED_COUNT:-0}" -gt 0 ]; then
   green "SS2022_TCP_READY_ALLOWLIST_COUNT=$SS2022_ALLOWED_COUNT"
 else
-  warn "SS2022_TCP_WAITING_ALLOWLIST — use client menu [19] to detect and explicitly approve the current public IPv4"
+  # Keep the no-allowlist state non-fatal: the listener is intentionally
+  # reachable only after the operator explicitly approves a source IPv4 via
+  # menu [19]/[24].  `warn` was never defined in this shell module and made
+  # an otherwise successful SS2022 setup exit 127 on a fresh node.
+  yellow "SS2022_TCP_WAITING_ALLOWLIST — use client menu [19] to detect and explicitly approve the current public IPv4"
 fi
 
 step "FINAL CREDENTIAL HANDOFF"

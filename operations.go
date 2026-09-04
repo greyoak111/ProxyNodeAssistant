@@ -644,10 +644,7 @@ func (a *App) openPanel() error {
 }
 
 func (a *App) openPanelWithConn(c Connection) error {
-	if err := a.ensureToolkit(c); err != nil {
-		return err
-	}
-	meta, err := a.panelMetadata(c)
+	_, meta, handoff, err := a.panelPreflight(c)
 	if err != nil {
 		return fmt.Errorf(a.msg("无法读取 panel 运行态元数据：%w。运行 [3]，不要手猜端口。", "Could not read panel runtime metadata: %w. Run [3]; do not guess the port."), err)
 	}
@@ -662,7 +659,7 @@ func (a *App) openPanelWithConn(c Connection) error {
 	a.println(a.msg("面板已通过 127.0.0.1 本地隧道打开：", "Panel opened through a local 127.0.0.1 tunnel:") + " " + panelURL)
 	a.println(a.msg("元数据来源：", "Metadata source:") + " " + meta.Source)
 	a.println(a.msg("EXE 退出时会终止自己创建的隧道。", "The tunnel is terminated automatically when this EXE exits."))
-	if handoff, err := a.fetchHandoff(c); err == nil {
+	if handoff != "" {
 		// This shortcut used to parse the raw concatenated handoff directly,
 		// bypassing the canonical formatter.  On an upgraded node that exposed
 		// the legacy PANEL_USERNAME/PASSWORD rows (and occasionally an older
@@ -737,21 +734,16 @@ func (a *App) diagnose() error {
 	if err := a.ensureOpenSSH(); err != nil {
 		return err
 	}
-	candidate, err := a.getActionConnection()
-	if err != nil {
-		return err
-	}
-	if !tcpReachable(candidate.Host, candidate.Port) {
-		a.println(a.msg("【本地诊断】SSH TCP 根本连不到。此时不要重装 Xray。", "[Local diagnosis] SSH TCP is unreachable. Do not reinstall Xray at this stage."))
-		a.println(a.msg("可能层级：VPS 关机 / IP 或线路不可达 / SSH 端口写错 / 防火墙 / 上游封锁。", "Possible layers: VPS down / path or IP unreachable / wrong SSH port / firewall / upstream filtering."))
-		a.println(a.msg("下一步：先到 VPS 厂商 Console/VNC 看机器是否活着；再换宽带/热点对照测试。", "Next: check the provider Console/VNC, then compare another network/hotspot."))
-		return nil
-	}
 	c, err := a.readyConn()
 	if err != nil {
-		return fmt.Errorf(a.msg("SSH 登录层仍失败：%w", "SSH authentication layer still fails: %w"), err)
+		// readyConn now performs the real OpenSSH handshake directly.  Do not
+		// precede it with another speculative TCP dial: on a busy public SSH
+		// endpoint that extra socket can be the one that gets dropped and makes
+		// a healthy password/key look unreachable.  The OpenSSH diagnostic
+		// contains the actual failing layer (banner, host key, or auth).
+		return fmt.Errorf(a.msg("SSH 连接/登录层失败：%w", "SSH connection/authentication failed: %w"), err)
 	}
-	a.println(a.msg("【GOOD】SSH TCP 可达，问题至少不是“完全到不了 VPS”。", "[GOOD] SSH TCP is reachable; the VPS is not completely unreachable."))
+	a.println(a.msg("【GOOD】SSH 已完成 TCP、Host key 和身份验证。", "[GOOD] SSH completed TCP, host-key, and identity authentication."))
 	if observed, detectErr := localPublicIPv4(); detectErr == nil {
 		a.println(fmt.Sprintf("LOCAL_PUBLIC_IPV4=%s (%d/%d direct sources agree)", observed.IP, len(observed.Sources), observed.Total))
 	} else {

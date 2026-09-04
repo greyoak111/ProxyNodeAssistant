@@ -1,0 +1,3 @@
+7193f4eaceb6e4d5d29d1bdaadc94623c72bd19cf134bfe5d75833663515c20d  ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg
+573fa836f5986f2ec6ed882ca13a96f3b9c63be31f8fae87ac41ba3eea92d22c  macos-pkg/sources/ProxyNodeAssistant-v1.0.0-cli-darwin-amd64.tar.gz
+3614006e2ef932b67717c66c44db276d25b1aff264ef7f8cc6fed2027b7e59c3  macos-pkg/sources/ProxyNodeAssistant-v1.0.0-cli-darwin-arm64.tar.gz

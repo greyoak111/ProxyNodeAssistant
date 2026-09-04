@@ -5,10 +5,12 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // Unix desktops do not share a single clipboard utility. Prefer the native
@@ -16,11 +18,38 @@ import (
 // is deliberately selected with LookPath and receives the payload on stdin;
 // no shell interpolation is involved.
 func clipboardCandidates() []string {
+	// Tests can supply a deterministic backend list without ever touching the
+	// real pasteboard.  This is intentionally opt-in and is not used by the
+	// application in normal operation.
+	if override := strings.TrimSpace(os.Getenv("PNA_TEST_CLIPBOARD_CANDIDATES")); override != "" {
+		var overridden []string
+		for _, candidate := range strings.Split(override, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate != "" {
+				overridden = append(overridden, candidate)
+			}
+		}
+		if len(overridden) > 0 {
+			return overridden
+		}
+	}
 	candidates := []string{"wl-copy", "xclip", "xsel"}
 	if runtime.GOOS == "darwin" {
-		candidates = []string{"pbcopy", "wl-copy", "xclip", "xsel"}
+		// Finder-launched apps do not always inherit a shell PATH.  Keep the
+		// command name first for normal shells and tests, then fall back to the
+		// canonical system path when PATH is empty or trimmed.
+		candidates = []string{"pbcopy", "/usr/bin/pbcopy", "wl-copy", "xclip", "xsel"}
 	}
-	return candidates
+	seen := make(map[string]struct{}, len(candidates))
+	result := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
 }
 
 func clipboardCommand() (string, error) {
@@ -87,6 +116,53 @@ func runClipboardCommand(value []byte, clear bool) error {
 	return fmt.Errorf("all clipboard utilities failed: %s", strings.Join(failures, "; "))
 }
 
-func copyClipboardPlatform(value string) error { return runClipboardCommand([]byte(value), false) }
+// verifyClipboardReadback waits briefly for the pasteboard server to publish
+// the new value, then compares bytes in memory.  It deliberately reports only
+// lengths on failure; neither the expected handoff nor pbpaste output can
+// reach a log or an error string.
+func verifyClipboardReadback(expected []byte) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	pastePath := "/usr/bin/pbpaste"
+	if info, err := os.Stat(pastePath); err != nil || info.Mode()&0111 == 0 {
+		var err error
+		pastePath, err = exec.LookPath("pbpaste")
+		if err != nil {
+			return fmt.Errorf("clipboard readback utility unavailable")
+		}
+	}
+	actualLength := 0
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		cmd := exec.Command(pastePath)
+		hideChildWindow(cmd)
+		actual, err := cmd.Output()
+		if err == nil {
+			actualLength = len(actual)
+			if bytes.Equal(actual, expected) {
+				return nil
+			}
+		} else {
+			lastErr = err
+		}
+		// pbcopy returns before the pasteboard daemon necessarily makes the
+		// value visible to a separate pbpaste process.  A short bounded retry
+		// handles that handoff without leaving the SSH operation hanging.
+		time.Sleep(40 * time.Millisecond)
+	}
+	if lastErr != nil && actualLength == 0 {
+		return fmt.Errorf("clipboard readback failed")
+	}
+	return fmt.Errorf("clipboard readback mismatch (expected %d bytes, got %d)", len(expected), actualLength)
+}
+
+func copyClipboardPlatform(value string) error {
+	payload := []byte(value)
+	if err := runClipboardCommand(payload, false); err != nil {
+		return err
+	}
+	return verifyClipboardReadback(payload)
+}
 
 func clearClipboardPlatform() error { return runClipboardCommand(nil, true) }

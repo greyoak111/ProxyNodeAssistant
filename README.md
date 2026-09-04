@@ -130,6 +130,25 @@ Windows 命令行与 WPF 前端由同一个 Go `InstallPlan`、同一套校验�
 
 两端嵌入同一远端工具包、报告同一内部构建身份，并使用同一组线路、模板、性能、端口与失败关闭语义。平台输入约束仍以界面为准：当前 Android 对全新节点只接受 `WARP=确保开启`，已有节点才提供 `保持现状`；Windows 会明确提供两项并要求选择。
 
+## macOS 原生 GUI、两台 VPS 与凭据交接
+
+macOS 的正式桌面入口是原生 SwiftUI 应用包
+`ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg`。它安装到当前用户的
+`~/Applications/ProxyNodeAssistant.app`，不会写入 `/Applications` 或
+`/usr/local/bin`，也不需要管理员权限：
+
+```zsh
+installer -pkg ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg \
+  -target CurrentUserHomeDirectory
+open ~/Applications/ProxyNodeAssistant.app
+```
+
+应用中的长期 SSH key 按“VPS 主机 + SSH 用户”独立管理，所以两台 VPS 可以分别绑定不同的 key；新增、查看、归档、恢复和解绑不会把一台主机的 key 误用于另一台。`[12]` 清空剪贴板和 `[14]` 本地 10808 只在本机执行，不会要求登录 VPS。
+
+在任一目标上运行 `[7] 显示当前凭据交接单` 时，CLI 会先用当前 SSH 会话校验完整的 VPS/面板登录凭据，再把完整交接单通过 macOS `pbcopy` 写入系统剪贴板，并用 `pbpaste` 做字节级回读；回读不一致会明确失败，不会伪报“已复制”。运行日志只保留“已复制”和安全的文件路径提示，不显示密码、私钥或令牌。原生 GUI 会显示“保存好以后按 Enter”和“是否清空含秘密的剪贴板”的明确提示；需要粘贴时选择 `N` 保留内容，粘贴完成后可运行 `[12]` 清空，若一直无人操作则由安全超时自动清理。发行前验收必须分别对每台 VPS 做一次 `[7]`，确认剪贴板非空、包含 `REQUIRED LOGIN CREDENTIALS` 及四个账号/密码字段，然后立即清空剪贴板。
+
+应用设置中的“无管理员卸载”只清理当前用户的应用、缓存、日志、偏好和安装收据；它不会触碰 VPS 上的节点配置，也不会删除仍由用户管理的 SSH key。旧版系统级残留需要按说明书中的精确路径单独处理。
+
 ## 支持范围与构建
 
 - Windows 10/11：x64、x86、ARM64；

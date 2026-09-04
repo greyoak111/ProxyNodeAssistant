@@ -144,21 +144,49 @@ extract_trial_sources() {
 }
 
 remove_trial_ufw_rules() {
-  command -v ufw >/dev/null 2>&1 || return 0
-  local number
+  command -v ufw >/dev/null 2>&1 || {
+    printf 'PNA_SS2022_TRIAL_CLEANUP_OK=ufw_unavailable\n' >&2
+    return 0
+  }
+  local number status_output
   while :; do
-    number="$(ufw status numbered 2>/dev/null \
-      | grep -F 'tna-ss2022-112-trial' \
-      | sed -n 's/^\[[[:space:]]*\([0-9]\+\)\].*/\1/p' \
+    # With `set -o pipefail`, a deliberately empty grep result has status 1.
+    # The old command substitution therefore aborted the whole SS2022 stage
+    # immediately after deleting the last trial rule, before FORMAL_COMMITTED
+    # was set.  Keep the UFW command separate from the expected no-match
+    # filter so trial-rule cleanup cannot roll back an already verified formal
+    # listener.
+    # Read UFW output first so a real UFW failure is distinguishable from an
+    # ordinary no-match.  The second pipeline contains no grep and therefore
+    # remains successful when there are no tagged trial rules.
+    if ! status_output="$(ufw status numbered 2>/dev/null)"; then
+      printf 'PNA_SS2022_TRIAL_CLEANUP_WARN=ufw_status_failed\n' >&2
+      return 0
+    fi
+    number="$(printf '%s\n' "$status_output" \
+      | sed -n '/tna-ss2022-112-trial/s/^\[[[:space:]]*\([0-9]\+\)\].*/\1/p' \
       | sort -rn | sed -n '1p')"
     [ -n "$number" ] || break
-    yes | ufw delete "$number" >/dev/null 2>&1 || break
+    # Feed exactly one confirmation.  An unbounded `yes` can receive SIGPIPE
+    # when UFW exits after the first answer; with `pipefail` that looks like a
+    # failed cleanup even though UFW succeeded and can leave the trial rule.
+    if ! printf 'y\n' | ufw delete "$number" >/dev/null 2>&1; then
+      printf 'PNA_SS2022_TRIAL_CLEANUP_WARN=ufw_delete_%s\n' "$number" >&2
+      return 0
+    fi
   done
+  printf 'PNA_SS2022_TRIAL_CLEANUP_OK=1\n'
 }
 
 install_firewall_helper() {
+  local tmp
   install -d -m 755 "$HELPER_DIR"
-  cat > "$FIREWALL_HELPER" <<'EOF'
+  # systemd may invoke ExecStartPre/ExecReload while an installer is replacing
+  # this helper.  Write in the same directory and rename atomically so a
+  # callback can only observe the old complete file or the new complete file,
+  # never a truncated heredoc.
+  tmp="$(mktemp "$HELPER_DIR/.ss2022-firewall.XXXXXX")"
+  if ! cat > "$tmp" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 STATE_DIR="/etc/proxy-runbook/ss2022"
@@ -166,24 +194,83 @@ META_FILE="$STATE_DIR/service.env"
 ALLOWLIST_FILE="$STATE_DIR/allowlist.txt"
 CHAIN="PNA_SS2022"
 NEXT="PNA_SS2022_NEXT"
+LOCK_FILE="/run/lock/proxy-node-assistant-ss2022-firewall.lock"
 
 [ "$(id -u)" -eq 0 ] || exit 1
+command -v flock >/dev/null 2>&1 || { printf 'PNA_SS2022_FIREWALL_ERROR=flock_missing\n' >&2; exit 1; }
+install -d -m 755 "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+chmod 600 "$LOCK_FILE" 2>/dev/null || true
+# ExecStartPre, ExecReload, and ExecStopPost can overlap when systemd is
+# restarting a service while the installer performs its explicit final apply.
+# Serialize the helper so one invocation cannot delete the chain while another
+# is validating it.  A bounded wait avoids hanging the service forever.
+flock -w 30 9 || { printf 'PNA_SS2022_FIREWALL_ERROR=concurrent_operation_timeout\n' >&2; exit 75; }
 PORT="$(sed -n 's/^PORT=//p' "$META_FILE" 2>/dev/null | sed -n '1p')"
 [[ "$PORT" =~ ^[0-9]+$ ]] || exit 1
 
-remove_jump() {
-  local target="$1"
-  while iptables -w 5 -C INPUT -p tcp --dport "$PORT" -j "$target" 2>/dev/null; do
-    iptables -w 5 -D INPUT -p tcp --dport "$PORT" -j "$target"
-  done
+chain_exists() {
+  iptables -w 5 -n -L "$1" >/dev/null 2>&1
+}
+
+# A previous run may have inserted the managed jump with a different port
+# (for example, while moving the 30443 trial to the formal 32443 listener),
+# or a UFW/fail2ban reload may have copied the jump into another user chain.
+# Matching only INPUT + the current --dport leaves those stale references in
+# place; iptables then refuses to delete/rename PNA_SS2022 and the service
+# fails with an unhelpful rc=1. Enumerate every chain and remove references by
+# line number instead. The target names are private to this helper, so this
+# cannot remove an unrelated rule.
+list_chains() {
+  {
+    printf '%s\n' INPUT FORWARD OUTPUT
+    iptables -w 5 -S 2>/dev/null \
+      | awk '$1 == "-P" || $1 == "-N" { print $2 }'
+  } | awk 'NF && !seen[$0]++'
+}
+
+remove_target_jumps() {
+  local target="$1" chain line
+  while IFS= read -r chain; do
+    [ -n "$chain" ] || continue
+    while :; do
+      line="$(iptables -w 5 -L "$chain" -n --line-numbers 2>/dev/null \
+        | awk -v target="$target" '$1 ~ /^[0-9]+$/ && $2 == target { print $1; exit }')"
+      [ -n "$line" ] || break
+      # Deleting by line number also handles jumps whose original rule had a
+      # different port, protocol-module ordering, source, or comment.
+      iptables -w 5 -D "$chain" "$line"
+    done
+  done < <(list_chains)
+}
+
+delete_chain() {
+  local chain="$1"
+  if chain_exists "$chain"; then
+    iptables -w 5 -F "$chain"
+    iptables -w 5 -X "$chain"
+  fi
+}
+
+count_target_jumps() {
+  local target="$1" chain count=0
+  while IFS= read -r chain; do
+    [ -n "$chain" ] || continue
+    while IFS= read -r _; do
+      count=$((count + 1))
+    done < <(iptables -w 5 -L "$chain" -n --line-numbers 2>/dev/null \
+      | awk -v target="$target" '$1 ~ /^[0-9]+$/ && $2 == target { print $1 }')
+  done < <(list_chains)
+  printf '%s\n' "$count"
 }
 
 case "${1:-apply}" in
   apply)
     command -v iptables >/dev/null 2>&1 || exit 1
-    remove_jump "$NEXT"
-    iptables -w 5 -F "$NEXT" 2>/dev/null || true
-    iptables -w 5 -X "$NEXT" 2>/dev/null || true
+    # Remove stale generations first. This is deliberately all-chain and
+    # all-port so an interrupted port migration cannot strand a reference.
+    remove_target_jumps "$NEXT"
+    delete_chain "$NEXT"
     iptables -w 5 -N "$NEXT"
     if [ -s "$ALLOWLIST_FILE" ]; then
       while IFS= read -r source; do
@@ -192,41 +279,51 @@ case "${1:-apply}" in
       done < "$ALLOWLIST_FILE"
     fi
     iptables -w 5 -A "$NEXT" -j DROP
-    iptables -w 5 -I INPUT 1 -p tcp --dport "$PORT" -j "$NEXT"
-    remove_jump "$CHAIN"
-    iptables -w 5 -F "$CHAIN" 2>/dev/null || true
-    iptables -w 5 -X "$CHAIN" 2>/dev/null || true
+    # PNA_SS2022 may still be referenced by an older port rule or a UFW
+    # helper chain. Remove every such reference before deleting the old chain;
+    # otherwise `iptables -E` returns rc=1 and systemd hides the cause.
+    remove_target_jumps "$CHAIN"
+    delete_chain "$CHAIN"
     iptables -w 5 -E "$NEXT" "$CHAIN"
+    # Exactly one jump is installed at the top of INPUT. Rebuilding it from
+    # line numbers above makes repeated ExecStartPre/ExecReload calls
+    # idempotent and prevents duplicate PNA_SS2022 rules.
+    iptables -w 5 -I INPUT 1 -p tcp --dport "$PORT" -j "$CHAIN"
     ;;
   remove)
-    remove_jump "$NEXT"
-    remove_jump "$CHAIN"
-    iptables -w 5 -F "$NEXT" 2>/dev/null || true
-    iptables -w 5 -X "$NEXT" 2>/dev/null || true
-    iptables -w 5 -F "$CHAIN" 2>/dev/null || true
-    iptables -w 5 -X "$CHAIN" 2>/dev/null || true
+    remove_target_jumps "$NEXT"
+    remove_target_jumps "$CHAIN"
+    delete_chain "$NEXT"
+    delete_chain "$CHAIN"
     ;;
   verify)
-    iptables -w 5 -C INPUT -p tcp --dport "$PORT" -j "$CHAIN"
-    iptables -w 5 -C "$CHAIN" -j DROP
-    first_target="$(iptables -w 5 -L INPUT -n --line-numbers 2>/dev/null | awk 'NR>2 && $1 ~ /^[0-9]+$/ {print $2; exit}')"
+    [ "$(count_target_jumps "$CHAIN")" -eq 1 ]
+    iptables -w 5 -C INPUT -p tcp --dport "$PORT" -j "$CHAIN" >/dev/null 2>&1
+    iptables -w 5 -C "$CHAIN" -j DROP >/dev/null 2>&1
+    first_target="$(iptables -w 5 -L INPUT -n --line-numbers 2>/dev/null | awk '$1 == 1 {print $2; exit}')"
     [ "$first_target" = "$CHAIN" ]
-    [ "$(iptables -w 5 -S "$CHAIN" | tail -n 1)" = "-A $CHAIN -j DROP" ]
+    last_rule="$(iptables -w 5 -S "$CHAIN" 2>/dev/null | awk '/^-A / { last=$0 } END { print last }')"
+    [ "$last_rule" = "-A $CHAIN -j DROP" ]
     expected=0
     if [ -s "$ALLOWLIST_FILE" ]; then
       while IFS= read -r source; do
         [ -n "$source" ] || continue
-        iptables -w 5 -C "$CHAIN" -s "$source" -j ACCEPT
+        iptables -w 5 -C "$CHAIN" -s "$source" -j ACCEPT >/dev/null 2>&1
         expected=$((expected+1))
       done < "$ALLOWLIST_FILE"
     fi
-    actual="$(iptables -w 5 -S "$CHAIN" | grep -c -- '-j ACCEPT$' || true)"
+    actual="$(iptables -w 5 -S "$CHAIN" 2>/dev/null | awk '$1 == "-A" && $(NF-1) == "-j" && $NF == "ACCEPT" { count++ } END { print count + 0 }')"
     [ "$actual" -eq "$expected" ]
     ;;
   *) exit 2 ;;
 esac
 EOF
-  chmod 755 "$FIREWALL_HELPER"
+  then
+    rm -f -- "$tmp"
+    die "firewall_helper_write_failed"
+  fi
+  chmod 755 "$tmp"
+  mv -f -- "$tmp" "$FIREWALL_HELPER"
 }
 
 write_metadata() {
@@ -249,11 +346,12 @@ write_metadata() {
 }
 
 write_unit() {
-  local xray="$1"
+  local xray="$1" tmp
   if [ -e "$UNIT_FILE" ] && ! grep -Fqx '# Managed by ProxyNodeAssistant v1.0.0' "$UNIT_FILE" 2>/dev/null; then
     die "refused_unmanaged_unit"
   fi
-  cat > "$UNIT_FILE" <<EOF
+  tmp="$(mktemp "$(dirname "$UNIT_FILE")/.proxy-node-assistant-ss2022.service.XXXXXX")"
+  if ! cat > "$tmp" <<EOF
 # Managed by ProxyNodeAssistant v1.0.0
 [Unit]
 Description=ProxyNodeAssistant Shadowsocks 2022 TCP-only service
@@ -277,7 +375,12 @@ ReadOnlyPaths=$STATE_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
-  chmod 644 "$UNIT_FILE"
+  then
+    rm -f -- "$tmp"
+    die "unit_write_failed"
+  fi
+  chmod 644 "$tmp"
+  mv -f -- "$tmp" "$UNIT_FILE"
 }
 
 generate_config() {

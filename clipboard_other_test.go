@@ -20,6 +20,7 @@ func TestClipboardFallsBackAfterPreferredCommandFails(t *testing.T) {
 	writeExecutable(t, filepath.Join(dir, preferred), "exit 17")
 	writeExecutable(t, filepath.Join(dir, "xclip"), `cat > "$PNA_TEST_CLIPBOARD_MARKER"`)
 	t.Setenv("PNA_TEST_CLIPBOARD_MARKER", marker)
+	t.Setenv("PNA_TEST_CLIPBOARD_CANDIDATES", preferred+",xclip")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	const payload = "fallback-payload"
@@ -37,10 +38,19 @@ func TestClipboardFallsBackAfterPreferredCommandFails(t *testing.T) {
 
 func TestClipboardReportsAllBackendFailures(t *testing.T) {
 	dir := t.TempDir()
-	for _, candidate := range clipboardCandidates() {
-		writeExecutable(t, filepath.Join(dir, candidate), "printf 'backend failed: %s\\n' \"$0\" >&2; exit 19")
+	candidates := clipboardCandidates()
+	for _, candidate := range candidates {
+		writeExecutable(t, filepath.Join(dir, filepath.Base(candidate)), "printf 'backend failed: %s\\n' \"$0\" >&2; exit 19")
 	}
 	t.Setenv("PATH", dir)
+	// Keep absolute candidates deterministic in the test: the fake executable
+	// lives in the temporary PATH directory, while production still retains
+	// /usr/bin/pbcopy as its no-PATH fallback.
+	var testCandidates []string
+	for _, candidate := range candidates {
+		testCandidates = append(testCandidates, filepath.Base(candidate))
+	}
+	t.Setenv("PNA_TEST_CLIPBOARD_CANDIDATES", strings.Join(testCandidates, ","))
 	err := runClipboardCommand([]byte("payload-not-in-error"), false)
 	if err == nil {
 		t.Fatal("runClipboardCommand unexpectedly succeeded")

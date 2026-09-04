@@ -204,7 +204,7 @@ func TestEveryEntryPointHoldsCreatedPanelTunnels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"PANEL_TUNNEL_SESSION_ACTIVE", "len(a.tunnels)", "a.killTunnels()"} {
+	for _, required := range []string{"PANEL_TUNNEL_SESSION_ACTIVE", "len(a.tunnels)", "a.killTunnels()", "releaseHeldPanelConnection"} {
 		if !strings.Contains(string(source), required) {
 			t.Fatalf("direct tunnel lifetime contract is missing %q", required)
 		}
@@ -563,6 +563,51 @@ func TestTemporaryPasswordFlowNeverHandsOffPrivateKey(t *testing.T) {
 	}
 }
 
+func TestHeldPanelCleanupRetainsMasterUntilTemporaryRevocation(t *testing.T) {
+	data, err := os.ReadFile("remote.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, "func (a *App) releaseHeldPanelConnection")
+	end := strings.Index(text, "func closeSSHControlMaster")
+	if start < 0 || end <= start {
+		t.Fatal("held panel cleanup function is missing")
+	}
+	block := text[start:end]
+	revoke := strings.Index(block, "a.cleanupTemporaryConnection(c)")
+	clear := strings.Index(block, "a.heldPanelConnection = nil")
+	if revoke < 0 || clear < 0 || revoke > clear {
+		t.Fatal("held panel pointer must remain available until temporary-key revocation succeeds")
+	}
+	if !strings.Contains(block, "if err := a.cleanupTemporaryConnection(c); err != nil") ||
+		!strings.Contains(block, "return err") {
+		t.Fatal("temporary-key cleanup failure must return without closing or dropping the retry handle")
+	}
+}
+
+func TestPasswordInstallClosesPasswordMasterBeforeKeyVerification(t *testing.T) {
+	data, err := os.ReadFile("remote.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	start := strings.Index(text, "func (a *App) installPublicKey")
+	end := strings.Index(text, "func (a *App) cleanupTemporaryConnection")
+	if start < 0 || end <= start {
+		t.Fatal("public-key installation function is missing")
+	}
+	block := text[start:end]
+	closeIdx := strings.Index(block, "closeSSHControlMaster(&closeConnection)")
+	verifyIdx := strings.Index(block, "verified := verifyKey(c, keyPath)")
+	if closeIdx < 0 || verifyIdx < 0 || closeIdx > verifyIdx {
+		t.Fatal("password-authenticated ControlMaster must be closed before verifying the newly installed key")
+	}
+	if !strings.Contains(block, "c.ControlPath = controlPath") {
+		t.Fatal("key verification must retain the short control-socket path after closing the password master")
+	}
+}
+
 func TestManagedPromotionNeverOverwritesAndPreservesFiles(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -677,7 +722,7 @@ func TestIsolatedSSHHostKeyFallbackNeverUsesCredentialsOrPersistentTrust(t *test
 	for _, required := range []string{
 		"StrictHostKeyChecking=accept-new",
 		"UserKnownHostsFile=C:/Temp/pna-hostkey/known_hosts",
-		"GlobalKnownHostsFile=NUL",
+		"GlobalKnownHostsFile=" + nullDevicePath(),
 		"BatchMode=yes",
 		"PubkeyAuthentication=no",
 		"PasswordAuthentication=no",
@@ -843,7 +888,7 @@ func TestPasswordSSHSupportsGUIAskPassAndHostTrustPrecedesKeyGeneration(t *testi
 	if strings.Contains(installBlock, "installConn.KeyPath = authKeyPath") {
 		t.Fatal("identity override must not erase the key path that anchors known_hosts")
 	}
-	if !strings.Contains(installBlock, "sshBase(c, !interactivePassword, false, authKeyPath)") {
+	if !strings.Contains(installBlock, "sshBase(installConnection, !interactivePassword, false, authKeyPath)") {
 		t.Fatal("public-key installation must retain the canonical connection for known_hosts")
 	}
 }

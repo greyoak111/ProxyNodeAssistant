@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 const version = "1.0.0"
@@ -45,12 +47,28 @@ type App struct {
 	activeTemporary  *Connection
 	tempCleanupMu    sync.Mutex
 	tunnels          []*exec.Cmd
-	inputClosed      bool
-	installPrefs     InstallPreferences
+	// panelForwards are forwarding requests installed on an already
+	// authenticated OpenSSH ControlMaster.  A multiplexed `ssh -O forward`
+	// request exits immediately while the master owns the listening socket, so
+	// these records are kept separately from legacy child-process tunnels.
+	panelForwards []panelForward
+	// heldPanelConnection keeps the authenticated per-action control master
+	// alive while a panel forwarding tunnel is exposed to the user.  The
+	// panel tunnel is intentionally tied to that master so opening it does not
+	// create a second TCP/SSH handshake (which can trip provider connection
+	// throttles immediately after the preflight).  It is released only after
+	// the GUI sends the explicit close line.
+	heldPanelConnection *Connection
+	inputClosed         bool
+	installPrefs        InstallPreferences
 	// Set only during the read-only preflight of a full install/upgrade.  It
 	// contains presence bits, never account or password values, and is reset at
 	// the start of each run so one VPS cannot influence a later operation.
 	credentialReadiness CredentialReadiness
+	// Process shutdown can be reached from both the normal main defer and a
+	// termination signal. Keep those paths idempotent so a signal arriving at
+	// the end of an action cannot race two revocation/close sequences.
+	shutdownCleanupOnce sync.Once
 }
 
 func settingsPath() (string, error) {
@@ -344,7 +362,23 @@ func (a *App) clearClipboard() error {
 func (a *App) secretHandoff(title, block string) error {
 	a.println()
 	a.println("================ " + title + " ================")
-	a.println(block)
+	if guiModeEnabled() {
+		// The native client keeps the operation log visible and copyable.  Never
+		// stream a private key, password, token, or subscription into that log;
+		// the complete handoff is copied directly to the user's clipboard below.
+		// Preserve only safe file-location hints so a key handoff remains
+		// discoverable without exposing its contents.
+		for _, line := range strings.Split(block, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "SSH_PRIVATE_KEY_FILE=") ||
+				strings.HasPrefix(trimmed, "SSH_PUBLIC_KEY_FILE=") {
+				a.println(trimmed)
+			}
+		}
+		a.println(a.msg("交接内容已复制到系统剪贴板；运行日志不显示密码、私钥或令牌。", "The handoff was copied to the system clipboard; passwords, private keys, and tokens are omitted from the run log."))
+	} else {
+		a.println(block)
+	}
 	a.println("============================================================")
 	if err := copyClipboard(block); err != nil {
 		a.println(a.msg("自动复制失败，请手工保存上面的真实信息。", "Automatic copy failed; save the real values above manually."))
@@ -444,12 +478,49 @@ func (a *App) prepareConsoleSession() bool {
 	return true
 }
 
+// actionNeedsOpenSSH distinguishes the local-only GUI entry points from
+// operations that may open a VPS session.  The native client launches the CLI
+// with --gui-action, so doing this check before prepareConsoleSession is what
+// keeps a local action genuinely local: it must not probe for ssh/scp, run
+// ssh-keyscan, or show a VPS login prompt just to clear the clipboard or edit
+// this process' 10808 proxy environment.
+//
+// K is intentionally local at dispatch time.  Its submenu contains both
+// local key inventory/archive choices and remote unbind/restore choices.  The
+// remote branches perform their own lazy OpenSSH readiness check only after
+// the operator has selected an operation that actually needs a VPS.  This is
+// what lets listing, folder browsing, and local archiving work when OpenSSH
+// is unavailable, while still preserving a PTY for the remote branches in
+// the native client.
+func actionNeedsOpenSSH(choice string) bool {
+	switch strings.ToLower(strings.TrimSpace(choice)) {
+	case "12", "14", "t", "h", "k":
+		return false
+	default:
+		return true
+	}
+}
+
+func (a *App) prepareLocalConsoleSession() {
+	a.banner()
+	a.println()
+	a.println(a.msg("这是仅本机操作，不会启动 OpenSSH 或连接 VPS。", "This is a local-only operation; OpenSSH will not be started and no VPS will be contacted."))
+	a.println()
+}
+
 func shouldHoldCreatedPanelTunnel(handled bool, actionErr error, tunnelCount int) bool {
 	return handled && actionErr == nil && tunnelCount > 0
 }
 
+// panelTunnelCount includes both legacy child-process forwards and the
+// ControlMaster-owned forwards used on Unix.  Keep the legacy `tunnels` slice
+// intact for compatibility with older tests and cleanup callers.
+func (a *App) panelTunnelCount() int {
+	return len(a.tunnels) + len(a.panelForwards)
+}
+
 func (a *App) holdCreatedPanelTunnelsIfNeeded(handled bool, actionErr error) bool {
-	if !shouldHoldCreatedPanelTunnel(handled, actionErr, len(a.tunnels)) {
+	if !shouldHoldCreatedPanelTunnel(handled, actionErr, a.panelTunnelCount()) {
 		return false
 	}
 	a.println()
@@ -457,12 +528,92 @@ func (a *App) holdCreatedPanelTunnelsIfNeeded(handled bool, actionErr error) boo
 	a.prompt(a.msg("面板 SSH 隧道正在保持。浏览器使用完毕后，点击图形界面的“关闭面板隧道”", "The panel SSH tunnel is being kept alive. When finished in the browser, click Close panel tunnel in the graphical client"))
 	a.println(a.msg("正在关闭本工具创建的面板隧道。", "Closing the panel tunnel created by this tool."))
 	a.killTunnels()
+	// The forwarding process shares the already-authenticated action control
+	// master.  Release that master only after the user has explicitly closed
+	// the tunnel; closing it in runRemoteAction's defer would tear down the
+	// forwarding channel before the GUI can use it.
+	if err := a.releaseHeldPanelConnection(); err != nil {
+		a.println(a.msg("面板隧道已关闭，但 SSH 控制会话清理需要重试：", "The panel tunnel was closed, but SSH control-session cleanup needs a retry:") + " " + err.Error())
+	}
 	return true
 }
 
+// cleanupAppResources is the single process-level shutdown path used by both
+// normal return and termination-signal handling.  The order is intentional:
+// forwarding listeners belong to the ControlMaster, temporary authorized-key
+// revocation must run through that still-authenticated master, and only then
+// may the control socket and local bookkeeping be discarded.  Keeping this
+// sequence in one helper prevents Go defer ordering from drifting away from
+// the signal path and leaves no child tunnel/socket behind on exit.
+func (a *App) cleanupAppResources() {
+	a.shutdownCleanupOnce.Do(a.cleanupAppResourcesOnce)
+}
+
+func (a *App) cleanupAppResourcesOnce() {
+	a.killTunnels()
+	if err := a.releaseHeldPanelConnection(); err != nil {
+		a.println(a.msg("SSH 控制会话退出清理警告：", "SSH control-session shutdown cleanup warning: ") + err.Error())
+	}
+	if err := a.cleanupActiveTemporaryAuth(); err != nil {
+		a.println(a.msg("临时登录退出清理警告：", "Temporary-login shutdown cleanup warning: ") + err.Error())
+	}
+	// If remote revocation was unavailable, releaseHeldPanelConnection keeps
+	// the retry handle by design while the app is alive.  At process shutdown
+	// there is no caller left to retry, so close the local master/socket anyway
+	// and report the retained local temporary key clearly.  This never starts a
+	// replacement network connection.
+	if held := a.heldPanelConnection; held != nil {
+		if err := closeSSHControlMaster(held); err != nil {
+			a.println(a.msg("SSH 控制 socket 退出清理警告：", "SSH control-socket shutdown cleanup warning: ") + err.Error())
+		}
+		a.heldPanelConnection = nil
+		if a.actionConnection == held {
+			a.actionConnection = nil
+		}
+	}
+	if action := a.actionConnection; action != nil {
+		if err := closeSSHControlMaster(action); err != nil {
+			a.println(a.msg("SSH 控制会话退出清理警告：", "SSH control-session shutdown cleanup warning: ") + err.Error())
+		}
+		a.actionConnection = nil
+	}
+}
+
+const shutdownCleanupTimeout = 15 * time.Second
+
+// cleanupAppResourcesBounded runs the normal ordered cleanup but gives a
+// signal handler a hard upper bound.  OpenSSH can wait on a dead VPS during
+// one-time-key revocation; a termination signal must never leave the process
+// unkillable forever.  The worker is intentionally allowed to finish in the
+// background if the deadline expires, and the caller exits immediately after
+// reporting the bounded-cleanup warning.
+func (a *App) cleanupAppResourcesBounded(timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = shutdownCleanupTimeout
+	}
+	done := make(chan struct{})
+	go func() {
+		a.cleanupAppResources()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		a.println(a.msg("退出清理达到时间上限；未确认的远端一次性 key 会保留到下次启动重试。", "Shutdown cleanup reached its deadline; any unconfirmed remote one-time key will be retained for retry on the next start."))
+		return false
+	}
+}
+
 func (a *App) runDirectAction(choice string, pauseAtEnd bool) {
-	if !a.prepareConsoleSession() {
-		return
+	if actionNeedsOpenSSH(choice) {
+		if !a.prepareConsoleSession() {
+			return
+		}
+	} else {
+		a.prepareLocalConsoleSession()
 	}
 	a.println(a.msg("图形客户端已直达所选操作：", "The graphical client opened the selected action directly:") + " " + strings.ToUpper(choice))
 	a.println()
@@ -499,10 +650,13 @@ func (a *App) run() {
 			a.toggleLanguage()
 			continue
 		case "c":
+			a.killTunnels()
+			if cleanupErr := a.releaseHeldPanelConnection(); cleanupErr != nil {
+				a.println(a.msg("SSH 控制会话清理警告：", "SSH control-session cleanup warning:") + " " + cleanupErr.Error())
+			}
 			if cleanupErr := a.cleanupActiveTemporaryAuth(); cleanupErr != nil {
 				a.println(a.msg("临时登录清理警告：", "Temporary-login cleanup warning:") + " " + cleanupErr.Error())
 			}
-			a.killTunnels()
 			a.conn = nil
 			a.actionConnection = nil
 			a.println(a.msg("当前选择与隧道已清空。已绑定 key 没有删除；每项操作本来就会重新选择 VPS。", "The current selection and tunnels were cleared. Bound keys were not deleted; every action already re-selects its VPS."))
@@ -616,15 +770,21 @@ func main() {
 	setUTF8Console()
 	app := &App{reader: bufio.NewReader(os.Stdin)}
 	app.loadLanguage()
-	defer app.killTunnels()
-	defer app.cleanupActiveTemporaryAuth()
+	defer app.cleanupAppResources()
 	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(interrupts)
 	go func() {
-		<-interrupts
-		_ = app.cleanupActiveTemporaryAuth()
-		app.killTunnels()
-		os.Exit(130)
+		received := <-interrupts
+		exitCode := 130
+		switch received {
+		case syscall.SIGTERM:
+			exitCode = 143
+		case syscall.SIGHUP:
+			exitCode = 129
+		}
+		app.cleanupAppResourcesBounded(shutdownCleanupTimeout)
+		os.Exit(exitCode)
 	}()
 	if requestedInputCloseSmoke(os.Args[1:]) {
 		if _, err := app.required("PNA_INPUT_CLOSE_SMOKE_REQUIRED"); !errors.Is(err, errInputClosed) {
