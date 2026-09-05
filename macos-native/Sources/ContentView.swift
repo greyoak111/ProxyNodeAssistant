@@ -881,7 +881,7 @@ struct ConnectionPanel: View {
         case "12":
             return "直接清除本机系统剪贴板，不读取、不连接 VPS，也不会启动 SSH。"
         case "14":
-            return "配置、撤销或查看当前 Mac 的 HTTP_PROXY / HTTPS_PROXY 环境变量；改动只作用于本机。"
+            return "保存当前 Mac 的系统代理设置后，可将 HTTP/HTTPS/SOCKS 代理切换到 127.0.0.1:10808 并关闭 PAC/WPAD，或恢复原设置；仅需 macOS 管理员授权，不连接 VPS。"
         case "T":
             return "读取或管理本机保存的服务商 API / 系统凭据，不连接 VPS。"
         case "H":
@@ -917,7 +917,9 @@ struct ConnectionPanel: View {
                      ? "开始操作后，主机、用户和端口会自动提交给 CLI；只有密码等秘密仍会在真正提示出现时输入。"
                      : (model.selectedOperation?.id == "K"
                         ? "查看和归档只作用于当前 Mac；选择解绑或恢复后，CLI 会在目标明确时通过 SSH 操作对应 VPS。"
-                        : "此操作直接在当前 Mac 执行，不读取 VPS 地址、SSH 用户、端口或密码。"))
+                        : (model.selectedOperation?.id == "14"
+                           ? "此操作直接读取并保存当前 Mac 的系统代理设置，将 HTTP/HTTPS/SOCKS 指向 127.0.0.1:10808、关闭 PAC/WPAD 或恢复原设置；仅在 macOS 要求时请求管理员授权，不读取 VPS 地址或建立 SSH。"
+                           : "此操作直接在当前 Mac 执行，不读取 VPS 地址、SSH 用户、端口或密码。")))
                     .font(.system(size: 10, design: .rounded))
                     .foregroundStyle(Color.pnaMuted)
                     .lineSpacing(3)
@@ -1564,11 +1566,11 @@ struct SettingsView: View {
                             Button {
                                 model.uninstallApplication()
                             } label: {
-                                Label("无管理员卸载", systemImage: "trash")
+                                Label("卸载应用", systemImage: "trash")
                             }
                             .buttonStyle(AccentTextButtonStyle())
                         }
-                        Text("用户级安装包的应用、配置和本地组件可直接卸载；系统安装登记属于 macOS 的受保护记录。")
+                        Text("用户级安装包的应用、配置和本地组件可直接卸载；若本工具曾接管系统代理，会先恢复原设置并按 macOS 要求授权。")
                             .font(.system(size: 10, design: .rounded))
                             .foregroundStyle(Color.pnaMuted)
                             .lineSpacing(3)

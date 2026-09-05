@@ -142,18 +142,18 @@ macOS 发行入口是原生 SwiftUI 图形 `.pkg`，使用系统 OpenSSH 并把 
 
 两项都不会把 SSH 配置、节点凭据或普通用户文件当作工具包垃圾直接删除。
 
-## Windows 与 Android 差异
+## Windows、macOS 与 Android 差异
 
 Windows 三个 GUI 文件必须按宿主架构选择：Intel/AMD 64 位使用 `ProxyNodeAssistant-v1.0.0-win64.exe`，32 位系统使用 `ProxyNodeAssistant-v1.0.0-win32.exe`，Windows on ARM 使用 `ProxyNodeAssistant-v1.0.0-win-arm64.exe`。GUI 现在会在启动前检查内嵌工作流引擎；误选架构时会明确提示正确文件，不再触发系统的“映像文件无效”弹窗。
 
-| 项目 | Windows | Android |
-|---|---|---|
-| SSH/SCP | 经验证的 Windows OpenSSH | 应用内 SSH/SCP |
-| 长期 key | 本机 SSH 目录及可恢复归档 | Android Keystore 保护的密钥仓 |
-| 服务商 API 密钥 | 经同意后进 Credential Manager | 经同意后进 Keystore 加密仓 |
-| 界面 | WPF GUI，保留 CLI/日志视图 | 原生 Android 页面 |
-| 剪贴板 | Windows 剪贴板 | Android 剪贴板/分享 |
-| 本地 10808 `[14]` | 当前用户环境变量 | 应用内开关，仅作用于服务商 API 请求；不接管 SSH/系统流量 |
+| 项目 | Windows | macOS | Android |
+|---|---|---|---|
+| SSH/SCP | 经验证的 Windows OpenSSH | 系统 OpenSSH；原生 SwiftUI GUI | 应用内 SSH/SCP |
+| 长期 key | 本机 SSH 目录及可恢复归档 | 本机 SSH 目录及可恢复归档 | Android Keystore 保护的密钥仓 |
+| 服务商 API 密钥 | 经同意后进 Credential Manager | macOS Keychain | 经同意后进 Keystore 加密仓 |
+| 界面 | WPF GUI，保留 CLI/日志视图 | 原生 SwiftUI GUI | 原生 Android 页面 |
+| 剪贴板 | Windows 剪贴板 | macOS 系统剪贴板 | Android 剪贴板/分享 |
+| 本地 10808 `[14]` | 当前用户环境变量 | 系统级 HTTP/HTTPS/SOCKS 代理 `127.0.0.1:10808`，关闭 PAC/WPAD；配置前保存、撤销/恢复时还原；仅需 macOS 管理员授权 | 应用内开关，仅作用于服务商 API 请求；不接管 SSH/系统流量 |
 
 两端远端施工边界相同：没有本机 admin/恢复、UI 门禁、设备身份/准入、controller、邀请、租约或网盘；菜单 `[1]` 使用同一组线路、模板、性能、端口和 `APPLY` 语义。当前 Android 对全新节点只接受 `WARP=确保开启`，已有节点才允许 `保持现状`；Windows 会显示两项并要求明确选择。
 

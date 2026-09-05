@@ -36,6 +36,17 @@ func parseEnvironmentLines(output string) map[string]string {
 }
 
 func readUserLocalProxyEnvironment() (map[string]string, error) {
+	if runtime.GOOS == "darwin" {
+		// The authoritative state on macOS lives in the per-network-service
+		// system proxy database. Keep this helper for compatibility with the
+		// shared CLI/tests, but never pretend process environment variables are
+		// the system-wide setting.
+		values := map[string]string{}
+		for _, name := range localProxyNames {
+			values[name] = os.Getenv(name)
+		}
+		return values, nil
+	}
 	if runtime.GOOS != "windows" {
 		// A child process cannot mutate its parent shell's environment. Return
 		// this process' values so status still reflects what this CLI will pass
@@ -55,6 +66,14 @@ func readUserLocalProxyEnvironment() (map[string]string, error) {
 }
 
 func writeUserLocalProxyEnvironment(remove bool) error {
+	if runtime.GOOS == "darwin" {
+		if remove {
+			restoreLocalProxyEnvironment()
+		} else {
+			rememberAndSetLocalProxyEnvironment()
+		}
+		return nil
+	}
 	if runtime.GOOS != "windows" {
 		for _, name := range localProxyNames {
 			if remove {
@@ -115,6 +134,9 @@ func writeUserLocalProxyEnvironment(remove bool) error {
 }
 
 func (a *App) showLocalProxyStatus() error {
+	if runtime.GOOS == "darwin" {
+		return a.showMacOSProxyStatus()
+	}
 	values, err := readUserLocalProxyEnvironment()
 	if err != nil {
 		return err
@@ -136,6 +158,9 @@ func (a *App) showLocalProxyStatus() error {
 }
 
 func (a *App) configureLocalProxy() error {
+	if runtime.GOOS == "darwin" {
+		return a.configureMacOSProxy()
+	}
 	if err := writeUserLocalProxyEnvironment(false); err != nil {
 		return err
 	}
@@ -153,6 +178,9 @@ func (a *App) configureLocalProxy() error {
 }
 
 func (a *App) removeLocalProxy() error {
+	if runtime.GOOS == "darwin" {
+		return a.removeMacOSProxy()
+	}
 	if err := writeUserLocalProxyEnvironment(true); err != nil {
 		return err
 	}
@@ -168,14 +196,21 @@ func (a *App) removeLocalProxy() error {
 }
 
 func (a *App) manageLocalProxy() error {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS == "darwin" {
+		a.println(a.msg("本功能管理当前 Mac 的系统级 HTTP/HTTPS/SOCKS 代理：不会读取或连接 VPS。配置前自动保存每个可用网络服务的原设置，同时关闭 PAC/WPAD；撤销时完整恢复；修改系统代理时只会出现 macOS 自己的管理员授权框。", "This feature manages the Mac system-wide HTTP/HTTPS/SOCKS proxy and never reads or connects to a VPS. It saves each readable service before configuration, disables PAC/WPAD, and restores everything on removal; macOS may show its own administrator authorization dialog for the system change."))
+	} else if runtime.GOOS != "windows" {
 		a.println(a.msg("macOS/Linux 只能影响本工具及其子进程；无法替父 shell 持久写入环境。", "On macOS/Linux this affects only this tool and its child processes; it cannot persistently modify the parent shell."))
 		a.println(a.msg("本功能只修改本工具进程的代理环境变量，不会询问或连接任何 VPS。", "This feature only changes proxy environment variables for this tool process. It never asks for or connects to any VPS."))
 	} else {
 		a.println(a.msg("本功能只修改本机当前 Windows 用户的代理环境变量，不会询问或连接任何 VPS。", "This feature only changes proxy environment variables for the current Windows user. It never asks for or connects to any VPS."))
 	}
-	a.println("[1] " + a.msg("配置并验证：HTTP/HTTPS → 127.0.0.1:10808", "Configure and verify: HTTP/HTTPS -> 127.0.0.1:10808"))
-	a.println("[2] " + a.msg("撤销并验证：删除三个环境变量", "Remove and verify: delete all three environment variables"))
+	if runtime.GOOS == "darwin" {
+		a.println("[1] " + a.msg("配置并验证：系统 HTTP/HTTPS/SOCKS → 127.0.0.1:10808（关闭 PAC/WPAD，先保存原设置）", "Configure and verify: system HTTP/HTTPS/SOCKS -> 127.0.0.1:10808 (disable PAC/WPAD and save original settings first)"))
+		a.println("[2] " + a.msg("恢复并验证：还原配置前的系统代理", "Restore and verify: restore the system proxy saved before configuration"))
+	} else {
+		a.println("[1] " + a.msg("配置并验证：HTTP/HTTPS → 127.0.0.1:10808", "Configure and verify: HTTP/HTTPS -> 127.0.0.1:10808"))
+		a.println("[2] " + a.msg("撤销并验证：删除三个环境变量", "Remove and verify: delete all three environment variables"))
+	}
 	a.println("[3] " + a.msg("只查看当前状态", "Inspect current status only"))
 	a.println("[0] " + a.msg("返回主菜单", "Return to the main menu"))
 	for {

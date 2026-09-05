@@ -139,7 +139,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build-unix.ps1 -Target lin
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build-unix.ps1 -Target darwin -Architecture amd64
 ```
 
-产物位于 `dist/ProxyNodeAssistant-v1.0.0-cli-<os>-<arch>`，同时生成对应 `.tar.gz` 和 `SHA256SUMS-unix-v1.0.0.txt`。归档由 `scripts/create_deterministic_tar.py` 生成：gzip 与 TarInfo 的时间固定为 epoch 0，属主固定为 `root:root`，目录和脚本/二进制使用 `0755`（普通资料使用 `0644`）；构建脚本会立即复核这些模式。这样从 Windows 构建机生成的包在 Linux/macOS 解包后可直接执行。 这些 CLI 不携带 WPF/AskPass；运行主机需自行安装 `ssh`、`scp`、`ssh-keygen`、`ssh-keyscan`。macOS/Linux 的 `[14]` 代理环境操作只影响本工具及其子进程，不能替父 shell 持久修改环境变量。
+产物位于 `dist/ProxyNodeAssistant-v1.0.0-cli-<os>-<arch>`，同时生成对应 `.tar.gz` 和 `SHA256SUMS-unix-v1.0.0.txt`。归档由 `scripts/create_deterministic_tar.py` 生成：gzip 与 TarInfo 的时间固定为 epoch 0，属主固定为 `root:root`，目录和脚本/二进制使用 `0755`（普通资料使用 `0644`）；构建脚本会立即复核这些模式。这样从 Windows 构建机生成的包在 Linux/macOS 解包后可直接执行。 这些 CLI 不携带 WPF/AskPass；运行主机需自行安装 `ssh`、`scp`、`ssh-keygen`、`ssh-keyscan`。Darwin 的 `[14]` 管理 macOS 系统级 HTTP/HTTPS/SOCKS 代理 `127.0.0.1:10808`，同时关闭 PAC/WPAD；配置前保存系统代理、撤销或恢复时还原原设置，必要时请求 macOS 管理员授权，且不连接 VPS；Linux 的 `[14]` 只影响本工具及其子进程的环境，不能替父 shell 持久修改变量。
 
 Unix 凭据与交互边界：macOS 使用系统 Keychain 的 `security`，Linux 使用 Secret Service 的 `secret-tool`；若命令或后台不可用，菜单会返回带安装提示的明确错误，不会回退到明文文件。Linux 写入通过 `secret-tool` 的标准输入传递秘密；macOS `security` 的非交互写入接口只有 `-w` 参数，工具不会把它写入日志或文件，但该系统 CLI 本身可能在短暂进程参数中暴露值，单用户本机使用更合适。Unix 终端秘密提示通过 `/dev/tty` 配合 `stty -echo`/`stty echo`，读取结束或出错都会恢复回显。
 

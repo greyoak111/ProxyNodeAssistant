@@ -32,8 +32,8 @@ SwiftUI 图形客户端由 `macos-pkg/build-macos-gui-pkg.sh` 重新编译为通
 - 从最终 `.pkg` payload 提取应用后执行 `codesign --verify --deep --strict`（通过）；`pkgutil --check-signature` 确认安装包本身为 unsigned，payload 内应用为 ad hoc 签名（仅用于本机用户级安装）；
 - 本机不可达 `127.0.0.1:1` 回归：流程在明确的 `SSH 未就绪` 处结束，顶部状态显示“上次失败”，没有卡死；
 - 解析最终 `.pkg` 的 `Distribution` / `PackageInfo`，确认 `CFBundleShortVersionString=1.0.0`；应用、内置 CLI 和 PTY bridge 均为 `x86_64 arm64` 通用 Mach-O。
-- 最终包 SHA-256：`7193f4eaceb6e4d5d29d1bdaadc94623c72bd19cf134bfe5d75833663515c20d`，并已通过 `shasum -a 256 -c SHA256SUMS-macos-pkg-gui-user.txt`。
-- 当前 Darwin CLI 源包 SHA-256：arm64 `3614006e2ef932b67717c66c44db276d25b1aff264ef7f8cc6fed2027b7e59c3`；amd64 `573fa836f5986f2ec6ed882ca13a96f3b9c63be31f8fae87ac41ba3eea92d22c`。
+- 最终包 SHA-256：`83f743b56a9726e09fb91cd85f406dd28900cb29fda2f573b58389970a8ffaa0`，并已通过 `shasum -a 256 -c SHA256SUMS-macos-pkg-gui-user.txt`。
+- 当前 Darwin CLI 源包 SHA-256：arm64 `2c82552142cf3e3f9c825dd109aa40ded35db9d8ac1eab6dbbf584c368ada0dd`；amd64 `d585fdba488bc6d3f621b50c57e79e147e6b3ff3feeb9b4e802f1c06e847d87b`。
 
 最终安装包的 SHA-256 记录在项目根目录的 `SHA256SUMS-macos-pkg-gui-user.txt`。
 

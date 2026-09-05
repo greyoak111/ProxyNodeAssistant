@@ -339,7 +339,7 @@ final class AppModel: ObservableObject {
         OperationInfo(id: "11", category: .access, title: "绑定 / 重新生成 SSH key", description: "先验证新钥匙，再撤销旧公钥，避免把自己锁在 VPS 外。", symbol: "key.horizontal", tint: .pnaBlue),
         OperationInfo(id: "12", category: .local, title: "清空系统剪贴板", description: "立即清除可能仍包含密码或密钥的本地剪贴板。", symbol: "scissors", tint: .pnaMuted),
         OperationInfo(id: "13", category: .security, title: "卸载远端内嵌工具包", description: "只删除管理工具，保留节点、配置、凭据、证书与备份。", symbol: "trash.slash", tint: .pnaOrange),
-        OperationInfo(id: "14", category: .local, title: "本地 10808 代理环境", description: "配置、撤销或查看 HTTP_PROXY / HTTPS_PROXY，不连接 VPS。", symbol: "network", tint: .pnaMuted),
+        OperationInfo(id: "14", category: .local, title: "macOS 10808 系统代理", description: "保存原设置后，将 macOS 系统 HTTP/HTTPS/SOCKS 代理切换到 127.0.0.1:10808 并关闭 PAC/WPAD；可恢复原设置，仅需管理员授权，不连接 VPS。", symbol: "network", tint: .pnaMuted),
         OperationInfo(id: "15", category: .backup, title: "整理远端备份", description: "验证当前配置备份后，只清理本工具产生的冗余旧包。", symbol: "archivebox.fill", tint: .pnaPurple),
         OperationInfo(id: "16", category: .maintain, title: "自适应性能档位", description: "检测硬件后选择低配、标准、高配或自动档，支持回滚。", symbol: "gauge.with.dots.needle.33percent", tint: .pnaGreen),
         OperationInfo(id: "17", category: .maintain, title: "SSH / vnStat 流量估算", description: "通过 VPS 本地计数估算流量，并在 70/85/95% 分级预警。", symbol: "chart.xyaxis.line", tint: .pnaGreen),
@@ -1335,9 +1335,62 @@ final class AppModel: ObservableObject {
         let appPath = Bundle.main.bundleURL.path
         let homeApplications = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications").path
         guard appPath.hasPrefix(homeApplications + "/") else {
-            showToast("当前应用装在系统 Applications；要无管理员卸载，请使用用户级安装包")
+            showToast("当前应用装在系统 Applications；请使用用户级安装包后再卸载")
             return
         }
+
+        // A previous [14] run may have taken ownership of the macOS system
+        // proxy and left a verified restore snapshot beside the app. Restore
+        // that snapshot before deleting the app data; otherwise an uninstall
+        // would remove the only recovery record and strand 127.0.0.1:10808 in
+        // the user's network settings. The bundled CLI invokes Apple's own
+        // administrator dialog when the snapshot exists, then we continue
+        // with the same user-level file cleanup as before.
+        let restoreState = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/ProxyNodeAssistant/local-proxy-state.json")
+        if FileManager.default.fileExists(atPath: restoreState.path) {
+            guard let cli = bundledCLIURL() else {
+                showToast("找不到本地代理恢复组件；为避免留下系统代理，暂不卸载")
+                return
+            }
+            let restore = Process()
+            let restoreOutput = Pipe()
+            restore.executableURL = cli
+            restore.arguments = ["--restore-local-proxy"]
+            restore.environment = ProcessInfo.processInfo.environment.merging(["PNA_GUI_MODE": "1"]) { _, new in new }
+            restore.standardOutput = restoreOutput
+            restore.standardError = restoreOutput
+            showToast("正在恢复 macOS 系统代理，完成后继续卸载")
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                do {
+                    try restore.run()
+                    restore.waitUntilExit()
+                    let status = restore.terminationStatus
+                    let output = String(data: restoreOutput.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        guard status == 0 else {
+                            self.operationLog += "[PNA] 系统代理恢复失败，已停止卸载：\n" + output
+                            self.showToast("系统代理恢复失败，未删除应用；请重试")
+                            return
+                        }
+                        self.finishApplicationUninstall(appPath: appPath)
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        self.operationLog += "[PNA] 系统代理恢复启动失败，已停止卸载：\n\(error.localizedDescription)\n"
+                        self.showToast("系统代理恢复启动失败，未删除应用")
+                    }
+                }
+            }
+            return
+        }
+
+        finishApplicationUninstall(appPath: appPath)
+    }
+
+    private func finishApplicationUninstall(appPath: String) {
         let escapedApp = appPath.replacingOccurrences(of: "'", with: "'\\''")
         let script = "#!/bin/zsh\nsleep 1\n/bin/rm -rf -- '\(escapedApp)'\n/bin/rm -rf -- \"$HOME/Library/Application Support/ProxyNodeAssistant\" \"$HOME/Library/Caches/com.greyoak111.proxynodeassistant\" \"$HOME/Library/Logs/ProxyNodeAssistant\" \"$HOME/Library/Saved Application State/com.greyoak111.proxynodeassistant.savedState\"\n/bin/rm -f -- \"$HOME/Library/Preferences/com.greyoak111.proxynodeassistant.plist\"\n/usr/bin/defaults delete com.greyoak111.proxynodeassistant >/dev/null 2>&1 || true\n/usr/sbin/pkgutil --volume \"$HOME\" --forget com.greyoak111.proxynodeassistant >/dev/null 2>&1 || true\n/bin/rm -f -- \"$0\"\n"
         let scriptURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("pna-uninstall-\(UUID().uuidString).sh")
@@ -1350,7 +1403,7 @@ final class AppModel: ObservableObject {
             child.standardOutput = FileHandle.nullDevice
             child.standardError = FileHandle.nullDevice
             try child.run()
-            showToast("正在无管理员卸载，应用即将退出")
+            showToast("正在卸载，应用即将退出")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
         } catch {
             showToast("卸载启动失败：\(error.localizedDescription)")

@@ -120,7 +120,7 @@ Host Key 是 VPS 的服务器身份，不是客户端私钥。首次连接需核
 | 11 | 绑定 / 重新生成 SSH key | 是 | 否 |
 | 12 | 清空本应用写入的秘密剪贴板 | 否 | 否 |
 | 13 | 卸载远端内嵌包 | 是 | 否，只卸载 |
-| 14 | 本地 10808 代理环境变量 | 否 | 否 |
+| 14 | 本地 10808 代理（macOS 为系统级 HTTP/HTTPS/SOCKS，关闭 PAC/WPAD） | 否 | 否 |
 | 15 | 整理远端备份 | 是 | 否 |
 | 16 | 自适应性能档位 | 是 | 否 |
 | 17 | SSH/vnStat 流量估算 | 是 | 否 |
@@ -326,9 +326,13 @@ APPLY
 
 输入精确确认词后，只删除本工具包、维护命令和上传残留。保留 x-ui/Xray、Nginx、WARP、节点配置、凭据、证书和备份。卸载后节点可继续工作，但菜单管理脚本不存在；恢复只能用 `[1]`。
 
-### `[14]` 本地 10808
+### `[14]` macOS 系统级 HTTP/HTTPS/SOCKS 代理：127.0.0.1:10808
 
-此项不登录 VPS，也不自动证明 `127.0.0.1:10808` 上的程序可信。Windows 可配置、撤销或查看当前用户的 `HTTP_PROXY`、`HTTPS_PROXY` 与 `NO_PROXY`。Android 的 `[14]` 是独立的应用内开关：只让本应用的服务商 API 请求经 `10808`，不接管 SSH，也不修改 Android 系统 VPN/代理。
+此项不登录 VPS，也不自动证明 `127.0.0.1:10808` 上的程序可信。
+
+macOS 原生 GUI 和 Darwin CLI 的 `[14]` 会把 macOS 系统网络服务的 HTTP、HTTPS 与 SOCKS 代理切换到固定地址 `127.0.0.1:10808`，并关闭 PAC/WPAD 自动接管。配置前先保存当前每个可用网络服务的完整代理设置；选择撤销或恢复时，按这份保存内容还原原设置。修改系统网络设置时只请求 macOS 管理员授权，不读取 VPS 地址、SSH 用户或密码，不建立 SSH 连接，也不设置 `HTTP_PROXY`、`HTTPS_PROXY` 或 `NO_PROXY` 环境变量。
+
+Windows 的 `[14]` 仍管理当前用户的 `HTTP_PROXY`、`HTTPS_PROXY` 与 `NO_PROXY`；Android 的 `[14]` 是独立的应用内开关，只让本应用的服务商 API 请求经 `10808`，不接管 SSH，也不修改 Android 系统 VPN/代理。
 
 ### `[15]` 整理远端备份
 
@@ -404,17 +408,17 @@ KiwiVM 使用 VEID 与 Private API Key；其他服务商只有提供明确只读
 
 旧实验组件不会被迁移到活动配置，也不会继续提供访问入口。
 
-## 11. Windows 与 Android 差异
+## 11. Windows、macOS 与 Android 差异
 
-| 项目 | Windows | Android |
-|---|---|---|
-| SSH 实现 | 系统 OpenSSH | 应用内 SSH/SCP |
-| 密钥保护 | 用户 SSH 目录、系统 ACL | Android Keystore + 应用私有存储 |
-| 服务商秘密 | 可选 Windows Credential Manager | Keystore 加密仓 |
-| 本地 10808 | 可管理当前用户环境变量 | 仅让本应用的服务商 API 请求走 10808，不接管 SSH/系统流量 |
-| 文件导出 | 常规下载目录/选择路径 | 系统文件选择器或分享面板 |
-| 面板隧道 | 本地进程持有 | 前台服务持有，系统通知可停止 |
-| OpenSSH 安装 | 可一次性安装验证 | 不需要系统 OpenSSH |
+| 项目 | Windows | macOS | Android |
+|---|---|---|---|
+| SSH 实现 | 系统 OpenSSH | 系统 OpenSSH；原生 GUI 通过 PTY 桥接 CLI | 应用内 SSH/SCP |
+| 密钥保护 | 用户 SSH 目录、系统 ACL | 用户 SSH 目录、macOS Keychain 凭据 | Android Keystore + 应用私有存储 |
+| 服务商秘密 | 可选 Windows Credential Manager | macOS Keychain | Keystore 加密仓 |
+| 本地 10808 | 可管理当前用户环境变量 | 系统级 HTTP/HTTPS/SOCKS 代理并关闭 PAC/WPAD；配置前保存，撤销/恢复时还原；仅需管理员授权 | 仅让本应用的服务商 API 请求走 10808，不接管 SSH/系统流量 |
+| 文件导出 | 常规下载目录/选择路径 | 常规下载目录/选择路径 | 系统文件选择器或分享面板 |
+| 面板隧道 | 本地进程持有 | 本地进程持有 | 前台服务持有，系统通知可停止 |
+| OpenSSH 安装 | 可一次性安装验证 | 运行主机提供系统 OpenSSH | 不需要系统 OpenSSH |
 
 Android 包体通常小于 Windows 单 EXE，因为 Windows 自包含 .NET/WPF 运行依赖，而 Android 依赖系统运行环境；包体大小不能用来判断功能是否齐全。正式包必须内嵌与 Windows 同哈希的远端工具包。
 

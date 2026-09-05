@@ -297,7 +297,7 @@ func (a *App) printMenu() {
 		a.println("[11] 绑定 / 重新生成 SSH 登录密钥（先验证再换旧钥）")
 		a.println("[12] 清空系统剪贴板")
 		a.println("[13] 卸载远端内嵌包（保留节点、配置、凭据与备份）")
-		a.println("[14] 本地 10808 代理环境变量：配置 / 撤销 / 查看（不连接 VPS）")
+		a.println("[14] 本地 10808 代理：macOS 系统级 HTTP/HTTPS 配置 / 恢复 / 查看（不连接 VPS）")
 		a.println("[15] 清理远端多余备份 + 仅备份当前配置（只保留一份）")
 		a.println("[16] 自适应性能档位：检测 / 低配 / 标准 / 高配 / 回滚")
 		a.println("[17] SSH/vnStat 流量估算与 70/85/95% 预警")
@@ -328,7 +328,7 @@ func (a *App) printMenu() {
 		a.println("[11] Bind / regenerate the SSH login key (verify before replacing)")
 		a.println("[12] Clear the system clipboard")
 		a.println("[13] Uninstall the remote embedded toolkit (preserve node data and backups)")
-		a.println("[14] Local 10808 proxy environment: configure / remove / inspect (no VPS login)")
+		a.println("[14] Local 10808 proxy: macOS system HTTP/HTTPS configure / restore / inspect (no VPS login)")
 		a.println("[15] Prune redundant remote backups + keep one current-config backup")
 		a.println("[16] Adaptive performance: detect / low / standard / high / rollback")
 		a.println("[17] SSH/vnStat traffic estimate with 70/85/95% warnings")
@@ -482,8 +482,8 @@ func (a *App) prepareConsoleSession() bool {
 // operations that may open a VPS session.  The native client launches the CLI
 // with --gui-action, so doing this check before prepareConsoleSession is what
 // keeps a local action genuinely local: it must not probe for ssh/scp, run
-// ssh-keyscan, or show a VPS login prompt just to clear the clipboard or edit
-// this process' 10808 proxy environment.
+// ssh-keyscan, or show a VPS login prompt just to clear the clipboard or manage
+// this Mac's system-level 10808 proxy.
 //
 // K is intentionally local at dispatch time.  Its submenu contains both
 // local key inventory/archive choices and remote unbind/restore choices.  The
@@ -739,6 +739,15 @@ func requestedTunnelCloseSmoke(args []string) bool {
 	return false
 }
 
+func requestedRestoreLocalProxy(args []string) bool {
+	for _, value := range args {
+		if value == "--restore-local-proxy" {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) runPromptSequenceSmoke() int {
 	a.println("BACKUP_ROOT=C:\\example\\managed-key-backups")
 	if strings.TrimSpace(a.prompt(a.msg("输入备份编号；0 取消", "Enter backup number; 0 cancels"))) != "1" {
@@ -802,6 +811,13 @@ func main() {
 	if requestedTunnelCloseSmoke(os.Args[1:]) {
 		if code := app.runTunnelCloseSmoke(); code != 0 {
 			os.Exit(code)
+		}
+		return
+	}
+	if requestedRestoreLocalProxy(os.Args[1:]) {
+		if err := app.restoreMacOSProxyForUninstall(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
 		return
 	}
