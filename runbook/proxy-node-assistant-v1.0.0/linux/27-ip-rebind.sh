@@ -3,11 +3,15 @@ set -Eeuo pipefail
 umask 077
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-STATE_DIR="/etc/text-node-assistant"
+# shellcheck source=lib-handoff.sh
+. "$ROOT/linux/lib-handoff.sh"
+STATE_DIR="${PNA_REBIND_STATE_DIR:-/etc/text-node-assistant}"
 STATE_FILE="$STATE_DIR/ip-rebind-public.env"
 IDENTITY_FILE="$STATE_DIR/node-identity.env"
-PUBLIC_FILE="$STATE_DIR/public.env"
-DEPLOYMENT_FILE="$STATE_DIR/deployment-state.env"
+PUBLIC_FILE="${PNA_REBIND_PUBLIC_FILE:-/etc/proxy-runbook/public.env}"
+LEGACY_PUBLIC_FILE="/etc/text-node-assistant/public.env"
+DEPLOYMENT_FILE="${PNA_REBIND_DEPLOYMENT_FILE:-/etc/text-node-assistant/deployment-state.env}"
+LEGACY_DEPLOYMENT_FILE="/etc/proxy-runbook/deployment-state.env"
 LOCK_FILE="/run/lock/text-node-assistant-ip-rebind.lock"
 AUDIT_FILE="$STATE_DIR/ip-rebind-audit.log"
 
@@ -57,7 +61,40 @@ identity_value() {
 }
 
 deployment_value() {
-  value_from "$DEPLOYMENT_FILE" "$1"
+  local key="$1" value route phase owner edge
+  # Newer nodes persist the canonical route state; older nodes may have
+  # explicit rebind fields. Never silently assume direct mode when state is
+  # absent or malformed: a CDN origin must not be cut over as DNS-only.
+  value="$(value_from "$DEPLOYMENT_FILE" "$key" 2>/dev/null || true)"
+  [ -n "$value" ] && { printf '%s\n' "$value"; return 0; }
+  value="$(value_from "$LEGACY_DEPLOYMENT_FILE" "$key" 2>/dev/null || true)"
+  [ -n "$value" ] && { printf '%s\n' "$value"; return 0; }
+  [ "$key" = DEPLOYMENT_MODE ] || [ "$key" = ACTIVE_MODE ] || return 1
+  route="$(value_from "$DEPLOYMENT_FILE" ROUTE_MODE 2>/dev/null || value_from "$LEGACY_DEPLOYMENT_FILE" ROUTE_MODE 2>/dev/null || true)"
+  phase="$(value_from "$DEPLOYMENT_FILE" ROUTE_PHASE 2>/dev/null || value_from "$LEGACY_DEPLOYMENT_FILE" ROUTE_PHASE 2>/dev/null || true)"
+  owner="$(value_from "$DEPLOYMENT_FILE" REALITY_443_OWNER 2>/dev/null || value_from "$LEGACY_DEPLOYMENT_FILE" REALITY_443_OWNER 2>/dev/null || true)"
+  [ "$phase" = active ] || return 1
+  case "$route:$owner" in
+    managed-gray:xray-reality)
+      [ "$key" = DEPLOYMENT_MODE ] && printf '%s\n' direct-reality || printf '%s\n' ACTIVE_DIRECT ;;
+    managed-orange:none)
+      [ "$key" = DEPLOYMENT_MODE ] && printf '%s\n' cdn-xhttp-tls || printf '%s\n' ACTIVE_CDN ;;
+    managed-dual:xray-reality)
+      edge="$(value_from /etc/text-node-assistant/cloudflare/edge-state.env CDN_CLIENT_CONFIRMED 2>/dev/null || true)"
+      if [ "$key" = DEPLOYMENT_MODE ]; then printf '%s\n' dual-hot-switch
+      elif [ "$edge" = 1 ]; then printf '%s\n' DUAL_INSTALLED_ACTIVE_CDN
+      else printf '%s\n' DUAL_INSTALLED_ACTIVE_DIRECT
+      fi ;;
+    *) return 1 ;;
+  esac
+}
+
+deployment_mode_active() {
+  local mode active
+  mode="$(deployment_value DEPLOYMENT_MODE 2>/dev/null || true)"
+  active="$(deployment_value ACTIVE_MODE 2>/dev/null || true)"
+  [ -n "$mode" ] && [ -n "$active" ] || return 1
+  printf '%s:%s\n' "$mode" "$active"
 }
 
 write_state() {
@@ -73,7 +110,7 @@ write_state() {
     printf 'DOMAIN_CHANGED=%s\n' "$([ "$old_domain" = "$new_domain" ] && printf false || printf true)"
     printf 'SERVER_ID=%s\nNODE_ID=%s\n' "$(identity_value SERVER_ID)" "$(identity_value NODE_ID)"
     printf 'MACHINE_ID_SHA256=%s\nSSH_HOST_KEY_SHA256=%s\n' "$(identity_value MACHINE_ID_SHA256)" "$(identity_value SSH_HOST_KEY_SHA256)"
-    printf 'DEPLOYMENT_MODE=%s\nACTIVE_MODE=%s\n' "$(deployment_value DEPLOYMENT_MODE || printf direct-reality)" "$(deployment_value ACTIVE_MODE || printf ACTIVE_DIRECT)"
+    printf 'DEPLOYMENT_MODE=%s\nACTIVE_MODE=%s\n' "$(deployment_value DEPLOYMENT_MODE)" "$(deployment_value ACTIVE_MODE)"
     printf 'DNS_PHASE=%s\nSNAPSHOT=%s\n' "$dns_phase" "$snapshot"
     printf 'UPDATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$tmp"
@@ -93,15 +130,86 @@ append_audit() {
 
 managed_reference_count() {
   local old_ip="$1" count=0 file
-  for file in "$PUBLIC_FILE" "$IDENTITY_FILE" "$DEPLOYMENT_FILE" \
-    /etc/text-node-assistant/cdn-xhttp.env \
-    /etc/nginx/conf.d/text-node-assistant*.conf /etc/nginx/sites-enabled/text-node-assistant*; do
+  for file in "$PUBLIC_FILE" "$LEGACY_PUBLIC_FILE" "$IDENTITY_FILE" "$DEPLOYMENT_FILE" "$LEGACY_DEPLOYMENT_FILE" \
+    /etc/text-node-assistant/cdn-xhttp.env /root/proxy-node-client-link.txt \
+    /root/.config/proxy-runbook/reality-shadow.env /root/.config/text-node-assistant/reality-shadow.env \
+    /root/.config/proxy-node-assistant/reality-shadow.env \
+    /root/.config/proxy-runbook/cdn-xhttp.env /root/.config/text-node-assistant/cdn-xhttp.env /root/.config/proxy-node-assistant/cdn-xhttp.env \
+    /etc/nginx/conf.d/text-node-assistant*.conf /etc/nginx/sites-available/tna-cdn-xhttp-stage \
+    /etc/nginx/sites-enabled/tna-cdn-xhttp-stage /etc/text-node-assistant/candidates/*.conf; do
     [ -f "$file" ] || continue
-    if grep -Fq -- "$old_ip" "$file" 2>/dev/null; then
+    if unresolved_ip_reference "$file" "$old_ip"; then
       count=$((count + 1))
     fi
   done
+  while IFS= read -r file; do
+    [ -f "$file" ] || continue
+    unresolved_ip_reference "$file" "$old_ip" && count=$((count + 1))
+  done < <(handoff_all_candidate_files 2>/dev/null || true)
   printf '%s\n' "$count"
+}
+
+unresolved_ip_reference() {
+  local file="$1" old_ip="$2"
+  [ -f "$file" ] || return 1
+  case "$file" in
+    "$IDENTITY_FILE")
+      awk -v ip="$old_ip" 'index($0, ip) && $0 !~ /^FIRST_KNOWN_PUBLIC_IP=/' "$file" | grep -q . ;;
+    *) grep -Fq -- "$old_ip" "$file" 2>/dev/null ;;
+  esac
+}
+
+replace_ip_in_file() {
+  local file="$1" old_ip="$2" new_ip="$3" tmp
+  [ -f "$file" ] || return 0
+  grep -Fq -- "$old_ip" "$file" 2>/dev/null || return 0
+  tmp="$(mktemp "$(dirname "$file")/.ip-rebind.XXXXXX")"
+  awk -v old="$old_ip" -v new="$new_ip" 'BEGIN { gsub(/\./, "\\.", old) } { gsub(old, new); print }' "$file" > "$tmp"
+  chmod --reference="$file" "$tmp" 2>/dev/null || true
+  chown --reference="$file" "$tmp" 2>/dev/null || true
+  mv -f -- "$tmp" "$file"
+}
+
+env_has_key() {
+  local file="$1" key="$2"
+  [ -f "$file" ] && grep -q "^${key}=" "$file"
+}
+
+update_public_metadata() {
+  local old_ip="$1" new_ip="$2" file key updated=0
+  for file in "$PUBLIC_FILE" "$LEGACY_PUBLIC_FILE"; do
+    [ -f "$file" ] || continue
+    for key in PUBLIC_IP VPS_PUBLIC_IP IPV4_PUBLIC PUBLIC_IP_AT_HANDOFF; do
+      if env_has_key "$file" "$key"; then
+        replace_env_value "$file" "$key" "$new_ip" || return 1
+        updated=1
+      fi
+    done
+  done
+  [ "$updated" -eq 1 ]
+}
+
+update_managed_files() {
+  local old_ip="$1" new_ip="$2" file
+  for file in /etc/nginx/sites-available/tna-cdn-xhttp-stage \
+    /etc/nginx/sites-enabled/tna-cdn-xhttp-stage /etc/text-node-assistant/candidates/*.conf \
+    /root/proxy-node-client-link.txt \
+    /root/.config/proxy-runbook/reality-shadow.env /root/.config/text-node-assistant/reality-shadow.env \
+    /root/.config/proxy-node-assistant/reality-shadow.env \
+    /root/.config/proxy-runbook/cdn-xhttp.env /root/.config/text-node-assistant/cdn-xhttp.env /root/.config/proxy-node-assistant/cdn-xhttp.env; do
+    replace_ip_in_file "$file" "$old_ip" "$new_ip"
+  done
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    replace_ip_in_file "$file" "$old_ip" "$new_ip"
+  done < <(handoff_all_candidate_files 2>/dev/null || true)
+}
+
+post_dns_block() {
+  local old_ip="$1" new_ip="$2" old_domain="$3" new_domain="$4" snapshot="$5" reason="$6"
+  write_state IP_REBIND_BLOCKED_POST_DNS "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" POST_DNS
+  append_audit "BLOCKED_POST_DNS_${reason}" "$old_ip" "$new_ip"
+  die "$reason" 74
 }
 
 unmanaged_reference_count() {
@@ -157,8 +265,9 @@ preflight() {
   nginx -t >/dev/null 2>&1 || die NGINX_CONFIG_INVALID 67
   ss -lntH | awk '$4 ~ /:443$/ {ok=1} END{exit !ok}' || die PORT_443_LISTENER_MISSING 67
   curl -fsS --max-time 8 http://127.0.0.1:8443/ >/dev/null || die COVER_LOOPBACK_FAILED 67
-  mode="$(deployment_value DEPLOYMENT_MODE || printf direct-reality)"
-  active="$(deployment_value ACTIVE_MODE || printf ACTIVE_DIRECT)"
+  mode="$(deployment_value DEPLOYMENT_MODE 2>/dev/null || true)"
+  active="$(deployment_value ACTIVE_MODE 2>/dev/null || true)"
+  [ -n "$mode" ] && [ -n "$active" ] || die DEPLOYMENT_STATE_UNAVAILABLE 68
   case "$mode:$active" in
     direct-reality:ACTIVE_DIRECT|dual-hot-switch:DUAL_INSTALLED_ACTIVE_DIRECT|cdn-xhttp-tls:ACTIVE_CDN|dual-hot-switch:DUAL_INSTALLED_ACTIVE_CDN) ;;
     *) die DEPLOYMENT_STATE_NOT_REBINDABLE 68;;
@@ -225,18 +334,30 @@ commit_direct() {
   # provider may have reclaimed. From this point failures are POST_DNS and all
   # managed state stays directed at the verified new address for repair.
   write_state IP_REBIND_COMMITTING "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" POST_DNS
-  replace_env_value "$PUBLIC_FILE" PUBLIC_IP "$new_ip" || die PUBLIC_ENV_UPDATE_FAILED 72
-  replace_env_value "$IDENTITY_FILE" CURRENT_PUBLIC_IP "$new_ip" || die IDENTITY_IP_UPDATE_FAILED 72
-  if ! bash "$ROOT/linux/04a-reality-api.sh" normalize-share "$new_ip" >/dev/null; then
-    write_state IP_REBIND_BLOCKED_POST_DNS "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" POST_DNS
-    append_audit BLOCKED_POST_DNS "$old_ip" "$new_ip"
-    die REALITY_SHARE_ADDRESS_UPDATE_FAILED 73
+  update_public_metadata "$old_ip" "$new_ip" || post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" PUBLIC_ENV_UPDATE_FAILED
+  replace_env_value "$IDENTITY_FILE" CURRENT_PUBLIC_IP "$new_ip" || post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" IDENTITY_IP_UPDATE_FAILED
+  if ! bash "$ROOT/linux/04a-reality-api.sh" normalize-all-shares "$new_ip" >/dev/null; then
+    post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" REALITY_SHARE_ADDRESS_UPDATE_FAILED
   fi
+  update_managed_files "$old_ip" "$new_ip"
+  if [ -x "$ROOT/linux/04e-export-reality-handoff.sh" ] && ! bash "$ROOT/linux/04e-export-reality-handoff.sh" "$new_ip" >/dev/null; then
+    post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" REALITY_HANDOFF_UPDATE_FAILED
+  fi
+  if [ -s /etc/proxy-runbook/ss2022/service.env ] && [ -s /etc/proxy-runbook/ss2022/server.json ]; then
+    if ! bash "$ROOT/linux/23-ss2022-tcp.sh" handoff >/dev/null; then
+      post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" SS2022_HANDOFF_UPDATE_FAILED
+    fi
+  fi
+  update_managed_files "$old_ip" "$new_ip"
+  if [ -f /etc/nginx/sites-available/tna-cdn-xhttp-stage ]; then
+    nginx -t >/dev/null 2>&1 || post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" NGINX_CONFIG_INVALID_POST_DNS
+    systemctl reload nginx >/dev/null 2>&1 || post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" NGINX_RELOAD_FAILED
+  fi
+  [ "$(managed_reference_count "$old_ip")" -eq 0 ] || post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" MANAGED_OLD_IP_REMAINS
+  [ "$(unmanaged_reference_count "$old_ip")" -eq 0 ] || post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" UNMANAGED_OLD_IP_REMAINS
   if ! bash "$ROOT/linux/04a-reality-api.sh" inspect-443 "$new_domain" "$new_ip" >/dev/null || \
      ! systemctl is-active --quiet x-ui || ! nginx -t >/dev/null 2>&1; then
-    write_state IP_REBIND_BLOCKED_POST_DNS "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" POST_DNS
-    append_audit BLOCKED_POST_DNS "$old_ip" "$new_ip"
-    die POST_DNS_HEALTH_CHECK_FAILED 74
+    post_dns_block "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" POST_DNS_HEALTH_CHECK_FAILED
   fi
   write_state IP_REBIND_COMPLETE "$old_ip" "$new_ip" "$old_domain" "$new_domain" "$snapshot" POST_DNS
   append_audit COMPLETE "$old_ip" "$new_ip"

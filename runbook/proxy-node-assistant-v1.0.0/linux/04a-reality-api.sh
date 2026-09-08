@@ -247,12 +247,49 @@ normalize_share() {
   echo "REALITY_443_SHARE_ADDRESS_NORMALIZED"
 }
 
+normalize_all_shares() {
+  local ip="${1:-}" obj id payload resp count=0 verify
+  [ -n "$ip" ] || { echo "usage: normalize-all-shares PUBLIC_IP"; exit 1; }
+  while IFS= read -r obj; do
+    [ -n "$obj" ] || continue
+    id="$(jq -r '.id // empty' <<<"$obj")"
+    [ -n "$id" ] || continue
+    payload="$(jq -c --arg ip "$ip" '
+      {enable,remark,listen,port,protocol,expiryTime,total,settings,streamSettings,sniffing,
+       subSortIndex,trafficReset,trafficResetDay,shareAddrStrategy,shareAddr}
+      | .shareAddrStrategy="custom" | .shareAddr=$ip
+    ' <<<"$obj")"
+    resp="$(xui_api_post_json "/panel/api/inbounds/update/${id}" "$payload")"
+    jq -e '.success == true' <<<"$resp" >/dev/null || {
+      echo "ERROR updating Reality inbound id=${id}." >&2
+      exit 1
+    }
+    count=$((count + 1))
+  done < <(list_inbounds | jq -c '[.obj[]? |
+    (.settings | if type == "string" then (try fromjson catch {}) else . end) as $settings |
+    (.streamSettings | if type == "string" then (try fromjson catch {}) else . end) as $stream |
+    .settings=$settings | .streamSettings=$stream |
+    select((.enable // true) == true or .enable == 1 or .enable == "1") |
+    select(.protocol == "vless" and .streamSettings.security == "reality")
+  ] | .[]')
+  [ "$count" -gt 0 ] || { echo "ERROR: no VLESS+REALITY inbounds found." >&2; exit 1; }
+  verify="$(list_inbounds | jq -r --arg ip "$ip" '[.obj[]? |
+    (.streamSettings | if type == "string" then (try fromjson catch {}) else . end) as $stream |
+    .streamSettings=$stream |
+    select((.enable // true) == true or .enable == 1 or .enable == "1") |
+    select(.protocol == "vless" and .streamSettings.security == "reality") |
+    select(.shareAddrStrategy == "custom" and .shareAddr == $ip)] | length')"
+  [ "$verify" -eq "$count" ] || { echo "ERROR: Reality share address verification failed." >&2; exit 1; }
+  printf 'REALITY_ALL_SHARE_ADDRESSES_NORMALIZED=%s\n' "$count"
+}
+
 case "$cmd" in
   create-test) create_test "$@" ;;
   show-shadow) show_shadow "$@" ;;
   promote-shadow) promote_shadow "$@" ;;
   inspect-443) inspect_443 "$@" ;;
   normalize-share) normalize_share "$@" ;;
+  normalize-all-shares) normalize_all_shares "$@" ;;
   list) list_inbounds | jq '.obj | map({id,remark,port,protocol,enable,shareAddrStrategy,shareAddr,security:.streamSettings.security,target:(.streamSettings.realitySettings.target // .streamSettings.realitySettings.dest)})' ;;
-  *) echo "usage: $0 {create-test DOMAIN PUBLIC_IP [PORT]|show-shadow [PORT]|promote-shadow [TEST_PORT] [PROD_PORT]|inspect-443 [EXPECTED_DOMAIN] [EXPECTED_IP]|normalize-share PUBLIC_IP|list}"; exit 1 ;;
+  *) echo "usage: $0 {create-test DOMAIN PUBLIC_IP [PORT]|show-shadow [PORT]|promote-shadow [TEST_PORT] [PROD_PORT]|inspect-443 [EXPECTED_DOMAIN] [EXPECTED_IP]|normalize-share PUBLIC_IP|normalize-all-shares PUBLIC_IP|list}"; exit 1 ;;
 esac

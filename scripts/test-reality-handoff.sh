@@ -103,7 +103,7 @@ EOF
 printf 'fixture-token\n' > "$PNA_HANDOFF_DIR/XUI_API_TOKEN"
 export PNA_ACCEPT_TOKENS=fixture-token
 
-output="$($SCRIPT 203.0.113.77 2>&1)"
+output="$(bash "$SCRIPT" 203.0.113.77 2>&1)"
 handoff="$PNA_HANDOFF_DIR/HANDOFF-SECRETS.txt"
 grep -Fq 'REALITY_SERVER_PORT=443' "$handoff"
 grep -Fq 'REALITY_443_PUBLIC_KEY=public-443' "$handoff"
