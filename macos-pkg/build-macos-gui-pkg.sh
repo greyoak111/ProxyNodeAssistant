@@ -24,6 +24,24 @@ if [[ ! -f "$ARM_TAR" ]]; then
   exit 1
 fi
 
+verify_cli_archive() {
+  local archive="$1"
+  local label="$2"
+  if ! gzip -t "$archive" >/dev/null 2>&1; then
+    print -u2 "The $label CLI archive is corrupt: $archive"
+    exit 1
+  fi
+  if ! tar -tzf "$archive" >/dev/null 2>&1; then
+    print -u2 "The $label CLI archive is not a readable tarball: $archive"
+    exit 1
+  fi
+}
+
+verify_cli_archive "$ARM_TAR" "arm64"
+if [[ -f "$X86_TAR" ]]; then
+  verify_cli_archive "$X86_TAR" "amd64"
+fi
+
 tar -xzf "$ARM_TAR" -C "$OUT/arm64"
 ARM_BIN="$OUT/arm64/ProxyNodeAssistant-v1.0.0-cli-darwin-arm64"
 # Deterministic release archives keep a directory root.  Older local archives
