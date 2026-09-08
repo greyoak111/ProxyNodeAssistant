@@ -1167,8 +1167,10 @@ struct PromptPanel: View {
                     Group {
                         if model.operationSecretPrompt {
                             SecureField("遮罩输入，不会显示", text: $model.inputDraft)
+                                .onSubmit { model.sendInput() }
                         } else {
                             TextField("输入本次回答", text: $model.inputDraft)
+                                .onSubmit { model.sendInput() }
                         }
                     }
                     .textFieldStyle(.plain)
