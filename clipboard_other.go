@@ -134,7 +134,19 @@ func verifyClipboardReadback(expected []byte) error {
 	}
 	actualLength := 0
 	var lastErr error
-	for attempt := 0; attempt < 8; attempt++ {
+	for attempt := 0; attempt < 12; attempt++ {
+		// A GUI-launched pbcopy can return successfully before the pasteboard
+		// server publishes the value, and another pasteboard client can clear
+		// that first publication while the handoff is being assembled.  Retry
+		// the write as well as the read so a transient empty pasteboard does not
+		// strand a successfully generated credential handoff.
+		if attempt > 0 {
+			if err := runClipboardCommand(expected, false); err != nil {
+				lastErr = err
+				time.Sleep(80 * time.Millisecond)
+				continue
+			}
+		}
 		cmd := exec.Command(pastePath)
 		hideChildWindow(cmd)
 		actual, err := cmd.Output()
@@ -147,9 +159,9 @@ func verifyClipboardReadback(expected []byte) error {
 			lastErr = err
 		}
 		// pbcopy returns before the pasteboard daemon necessarily makes the
-		// value visible to a separate pbpaste process.  A short bounded retry
-		// handles that handoff without leaving the SSH operation hanging.
-		time.Sleep(40 * time.Millisecond)
+		// value visible to a separate pbpaste process.  A bounded retry handles
+		// that handoff without leaving the SSH operation hanging.
+		time.Sleep(80 * time.Millisecond)
 	}
 	if lastErr != nil && actualLength == 0 {
 		return fmt.Errorf("clipboard readback failed")
