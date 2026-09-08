@@ -171,6 +171,19 @@ func verifyClipboardReadback(expected []byte) error {
 
 func copyClipboardPlatform(value string) error {
 	payload := []byte(value)
+	if bridge := strings.TrimSpace(os.Getenv("PNA_CLIPBOARD_BRIDGE")); bridge != "" {
+		info, err := os.Stat(bridge)
+		if err != nil || info.Mode()&0111 == 0 {
+			return fmt.Errorf("clipboard bridge unavailable")
+		}
+		cmd := exec.Command(bridge)
+		cmd.Stdin = bytes.NewReader(payload)
+		hideChildWindow(cmd)
+		if _, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("clipboard bridge failed")
+		}
+		return nil
+	}
 	if err := runClipboardCommand(payload, false); err != nil {
 		return err
 	}

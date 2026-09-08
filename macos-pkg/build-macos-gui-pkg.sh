@@ -105,6 +105,22 @@ fi
 chmod 755 "$APP/Contents/Resources/pna-pty-bridge"
 codesign --force --sign - "$APP/Contents/Resources/pna-pty-bridge" >/dev/null
 
+clang -O2 -target arm64-apple-macos13.0 -isysroot "$SDK" \
+  -framework AppKit \
+  "$ROOT/macos-native/Resources/pna-clipboard-bridge.m" \
+  -o "$OUT/pna-clipboard-bridge-arm64"
+if clang -O2 -target x86_64-apple-macos13.0 -isysroot "$SDK" \
+    -framework AppKit \
+    "$ROOT/macos-native/Resources/pna-clipboard-bridge.m" \
+    -o "$OUT/pna-clipboard-bridge-x86_64"; then
+  lipo -create -output "$APP/Contents/Resources/pna-clipboard-bridge" \
+    "$OUT/pna-clipboard-bridge-arm64" "$OUT/pna-clipboard-bridge-x86_64"
+else
+  cp "$OUT/pna-clipboard-bridge-arm64" "$APP/Contents/Resources/pna-clipboard-bridge"
+fi
+chmod 755 "$APP/Contents/Resources/pna-clipboard-bridge"
+codesign --force --sign - "$APP/Contents/Resources/pna-clipboard-bridge" >/dev/null
+
 ICON_SOURCE="$ICON_ASSET"
 if [[ -f "$ICON_SOURCE" ]]; then
   for size in 16 32 128 256 512; do

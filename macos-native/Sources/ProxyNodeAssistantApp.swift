@@ -757,7 +757,12 @@ final class AppModel: ObservableObject {
             child.executableURL = binary
             child.arguments = selectedOperation.map { ["--gui-action", $0.id] } ?? []
         }
-        child.environment = ProcessInfo.processInfo.environment.merging(["PNA_GUI_MODE": "1"]) { _, new in new }
+        var childEnvironment = ProcessInfo.processInfo.environment
+        childEnvironment["PNA_GUI_MODE"] = "1"
+        if let clipboardBridge = bundledClipboardBridgeURL() {
+            childEnvironment["PNA_CLIPBOARD_BRIDGE"] = clipboardBridge.path
+        }
+        child.environment = childEnvironment
         child.standardInput = stdin
         child.standardOutput = stdout
         child.standardError = stdout
@@ -1418,6 +1423,12 @@ final class AppModel: ObservableObject {
 
     private func bundledPTYBridgeURL() -> URL? {
         guard let url = Bundle.main.url(forResource: "pna-pty-bridge", withExtension: nil),
+              FileManager.default.isExecutableFile(atPath: url.path) else { return nil }
+        return url
+    }
+
+    private func bundledClipboardBridgeURL() -> URL? {
+        guard let url = Bundle.main.url(forResource: "pna-clipboard-bridge", withExtension: nil),
               FileManager.default.isExecutableFile(atPath: url.path) else { return nil }
         return url
     }
