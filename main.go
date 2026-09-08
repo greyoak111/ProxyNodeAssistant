@@ -13,11 +13,18 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
+
+const version = "1.0.0"
 
 var errInputClosed = errors.New("interactive input was closed")
 
-//go:embed assets/text-node-assistant-toolkit-v0.9.5.tar.gz
+const guiPromptPrefix = "PNA_GUI_PROMPT_B64="
+const guiSecretPromptPrefix = "PNA_GUI_SECRET_B64="
+
+//go:embed assets/proxy-node-assistant-toolkit-v1.0.0.tar.gz
 var embeddedToolkit []byte
 
 type Lang string
@@ -28,7 +35,8 @@ const (
 )
 
 type Settings struct {
-	Language Lang `json:"language"`
+	Language           Lang               `json:"language"`
+	InstallPreferences InstallPreferences `json:"installPreferences"`
 }
 
 type App struct {
@@ -39,32 +47,87 @@ type App struct {
 	activeTemporary  *Connection
 	tempCleanupMu    sync.Mutex
 	tunnels          []*exec.Cmd
-	inputClosed      bool
-	currentOperation operationSpec
-	activeOperation  *nodeOperationLease
+	// panelForwards are forwarding requests installed on an already
+	// authenticated OpenSSH ControlMaster.  A multiplexed `ssh -O forward`
+	// request exits immediately while the master owns the listening socket, so
+	// these records are kept separately from legacy child-process tunnels.
+	panelForwards []panelForward
+	// heldPanelConnection keeps the authenticated per-action control master
+	// alive while a panel forwarding tunnel is exposed to the user.  The
+	// panel tunnel is intentionally tied to that master so opening it does not
+	// create a second TCP/SSH handshake (which can trip provider connection
+	// throttles immediately after the preflight).  It is released only after
+	// the GUI sends the explicit close line.
+	heldPanelConnection *Connection
+	inputClosed         bool
+	installPrefs        InstallPreferences
+	// Set only during the read-only preflight of a full install/upgrade.  It
+	// contains presence bits, never account or password values, and is reset at
+	// the start of each run so one VPS cannot influence a later operation.
+	credentialReadiness CredentialReadiness
+	// Process shutdown can be reached from both the normal main defer and a
+	// termination signal. Keep those paths idempotent so a signal arriving at
+	// the end of an action cannot race two revocation/close sequences.
+	shutdownCleanupOnce sync.Once
 }
 
 func settingsPath() (string, error) {
-	base, err := productConfigRoot()
-	if err != nil {
-		return "", err
+	base := os.Getenv("APPDATA")
+	if base == "" {
+		var err error
+		base, err = os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
 	}
-	return filepath.Join(base, "settings.json"), nil
+	return filepath.Join(base, "ProxyNodeAssistant", "settings.json"), nil
+}
+
+func legacySettingsPath() (string, error) {
+	base := os.Getenv("APPDATA")
+	if base == "" {
+		var err error
+		base, err = os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(base, "TextNodeAssistant", "settings.json"), nil
 }
 
 func (a *App) loadLanguage() {
 	a.lang = LangZH
+	a.installPrefs = defaultInstallPreferences()
 	path, err := settingsPath()
 	if err != nil {
 		return
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		legacyPath, legacyErr := legacySettingsPath()
+		if legacyErr != nil {
+			return
+		}
+		data, err = os.ReadFile(legacyPath)
+		if err != nil {
+			return
+		}
 	}
 	var settings Settings
 	if json.Unmarshal(data, &settings) == nil && (settings.Language == LangZH || settings.Language == LangEN) {
 		a.lang = settings.Language
+		candidate := settings.InstallPreferences
+		_, coverOK := normalizeCoverTemplateChoice(candidate.CoverChoice)
+		if strings.EqualFold(strings.TrimSpace(candidate.CoverChoice), "preserve") {
+			coverOK = true
+		}
+		if validRouteMode(candidate.RouteMode) &&
+			validPerformanceMode(candidate.Performance) &&
+			validWarpMode(candidate.WarpMode) &&
+			coverOK &&
+			candidate.BackupBeforeChange {
+			a.installPrefs = candidate
+		}
 	}
 }
 
@@ -76,7 +139,7 @@ func (a *App) saveLanguage() {
 	if os.MkdirAll(filepath.Dir(path), 0700) != nil {
 		return
 	}
-	data, _ := json.MarshalIndent(Settings{Language: a.lang}, "", "  ")
+	data, _ := json.MarshalIndent(Settings{Language: a.lang, InstallPreferences: a.installPrefs}, "", "  ")
 	_ = os.WriteFile(path, data, 0600)
 }
 
@@ -103,7 +166,7 @@ func (a *App) prompt(label string) string {
 	if a.inputClosed {
 		return ""
 	}
-	if guiModeEnabled() {
+	if os.Getenv("PNA_GUI_MODE") == "1" {
 		fmt.Println(guiPromptFrame(label))
 	} else {
 		fmt.Print(label + ": ")
@@ -120,7 +183,7 @@ func (a *App) secretPrompt(label string) string {
 		return ""
 	}
 	var restore func()
-	if guiModeEnabled() {
+	if os.Getenv("PNA_GUI_MODE") == "1" {
 		fmt.Println(guiSecretPromptFrame(label))
 	} else {
 		fmt.Print(label + ": ")
@@ -137,15 +200,16 @@ func (a *App) secretPrompt(label string) string {
 	return strings.TrimSpace(value)
 }
 
-// secretPromptExact removes only the line ending added by the prompt protocol.
-// It intentionally preserves all other characters, including leading and
-// trailing spaces, so a custom password is never silently normalized.
+// secretPromptExact removes only the line ending added by the prompt
+// protocol.  Custom login passwords are opaque values: leading/trailing
+// spaces are significant and must not be silently normalized before they are
+// sent to the VPS.
 func (a *App) secretPromptExact(label string) string {
 	if a.inputClosed {
 		return ""
 	}
 	var restore func()
-	if guiModeEnabled() {
+	if os.Getenv("PNA_GUI_MODE") == "1" {
 		fmt.Println(guiSecretPromptFrame(label))
 	} else {
 		fmt.Print(label + ": ")
@@ -209,7 +273,7 @@ func (a *App) toggleLanguage() {
 
 func (a *App) banner() {
 	a.println("============================================================")
-	a.println(" " + productName + " v" + version)
+	a.println(" ProxyNodeAssistant v" + version)
 	a.println(a.msg(" 隐私优先 · 中英双语 · 失败不连锁", " Privacy-first · bilingual · fail-closed"))
 	a.println("============================================================")
 	a.println(a.msg("共享 EXE 不内置任何真实 VPS IP、域名、账户或密钥。", "The shared EXE contains no real VPS IP, domain, account, or key."))
@@ -224,31 +288,28 @@ func (a *App) printMenu() {
 		a.println("[2] 无感打开 3x-ui 面板（127.0.0.1 SSH 隧道）")
 		a.println("[3] 自动体检与排障")
 		a.println("[4] 安全自动修复（先备份）")
-		a.println("[5] 随机化 VPS 登录密码（显示真密码 + 剪贴板）")
-		a.println("[6] 随机化 3x-ui 账号密码（显示真凭据 + 剪贴板）")
+		a.println("[5] VPS 登录密码：随机生成或自定义（显示真密码 + 剪贴板）")
+		a.println("[6] 3x-ui 账号密码：随机生成或自定义（显示真凭据 + 剪贴板）")
 		a.println("[7] 显示并复制当前凭据交接单")
 		a.println("[8] 切换 15 套伪装站（随机/编号）+ 优化 Nginx")
-		a.println("[9] 完整灾备（含程序/身份，体积较大）")
+		a.println("[9] 完整灾备（含程序/远端节点配置，体积较大）")
 		a.println("[10] 生成并下载紧急诊断报告")
 		a.println("[11] 绑定 / 重新生成 SSH 登录密钥（先验证再换旧钥）")
-		a.println("[12] 清空 Windows 剪贴板")
+		a.println("[12] 清空系统剪贴板")
 		a.println("[13] 卸载远端内嵌包（保留节点、配置、凭据与备份）")
-		a.println("[14] 本地 10808 代理环境变量：配置 / 撤销 / 查看（不连接 VPS）")
+		a.println("[14] 本地 10808 代理：macOS 系统级 HTTP/HTTPS 配置 / 恢复 / 查看（不连接 VPS）")
 		a.println("[15] 清理远端多余备份 + 仅备份当前配置（只保留一份）")
 		a.println("[16] 自适应性能档位：检测 / 低配 / 标准 / 高配 / 回滚")
 		a.println("[17] SSH/vnStat 流量估算与 70/85/95% 预警")
-		a.println("[18] 拆除施工和恢复基线（可仅拆代理保留强制网盘；高风险，先下载救援包）")
-		a.println("[19] 访问与封禁日志（聚合元数据 / 受管 Fail2ban）")
-		a.println("[20] 设备准入：独立 VLESS / 单次邀请 / 暂停与吊销")
-		a.println("[21] 强制网盘：本机 SSH 隧道 / admin 能力 / 普通账号 / 配额")
-		a.println("[22] 线路拓扑只读状态（施工/互切/拆除只允许从 [1] 执行）")
+		a.println("[18] 全量拆除本工具施工并恢复原始基线（高风险，先下载救援包）")
+		a.println("[19] SS2022 来源白名单：识别本机 IP / 对照 VPS / 添加当前来源")
+		a.println("[24] SS2022 白名单管理：查看 / 添加指定 IPv4 / 删除")
+		a.println("[20] 安全事件与基线：聚合 SSH / 防火墙 / Nginx / Fail2ban 记录")
+		a.println("[22] 线路拓扑：灰云 / 橙云 / 双路的状态、施工、切换与回滚")
 		a.println("[23] 更换 VPS 公网 IP 后安全重绑定（复用原 key；身份不符即停止）")
 		a.println("[T] 服务商流量中心：KiwiVM 精确 API / 兼容 API / 凭据管理器")
 		a.println("[K] 管理已绑定 key：查看 / 恢复 / 全部转入备份态并清空绑定位置")
 		a.println("[H] 管理 VPS 登录历史：查看 / 删除单条 / 清空全部")
-		a.println("[J] 新设备加入已有节点：无需先登录 VPS，响应 controller 邀请并完成首次 key 核验")
-		a.println("[A] 内层专用：修改本机 admin 密码并重建恢复包")
-		a.println("[B] 内层专用：高级控制台 admin 门禁开关与会话超时")
 		a.println("[L] English / 中文")
 		a.println("[C] 清空当前选择和隧道（不删除已绑定 key）")
 		a.println("[0] 退出")
@@ -258,31 +319,28 @@ func (a *App) printMenu() {
 		a.println("[2] Open 3x-ui through a 127.0.0.1 SSH tunnel")
 		a.println("[3] Automatic diagnosis")
 		a.println("[4] Safe automatic repair (backup first)")
-		a.println("[5] Rotate VPS login password (real password + clipboard)")
-		a.println("[6] Rotate 3x-ui credentials (real values + clipboard)")
+		a.println("[5] VPS login password: generate random or set custom (real password + clipboard)")
+		a.println("[6] 3x-ui credentials: generate random or set custom (real values + clipboard)")
 		a.println("[7] Show and copy the current credential handoff")
 		a.println("[8] Switch 15 cover templates (random/ID) + optimize Nginx")
-		a.println("[9] Full disaster backup (includes programs/identity; larger)")
+		a.println("[9] Full disaster backup (includes program/remote-node configuration; larger)")
 		a.println("[10] Generate and download an emergency report")
 		a.println("[11] Bind / regenerate the SSH login key (verify before replacing)")
-		a.println("[12] Clear the Windows clipboard")
+		a.println("[12] Clear the system clipboard")
 		a.println("[13] Uninstall the remote embedded toolkit (preserve node data and backups)")
-		a.println("[14] Local 10808 proxy environment: configure / remove / inspect (no VPS login)")
+		a.println("[14] Local 10808 proxy: macOS system HTTP/HTTPS configure / restore / inspect (no VPS login)")
 		a.println("[15] Prune redundant remote backups + keep one current-config backup")
 		a.println("[16] Adaptive performance: detect / low / standard / high / rollback")
 		a.println("[17] SSH/vnStat traffic estimate with 70/85/95% warnings")
-		a.println("[18] Dismantle construction and restore the baseline (proxy-only removal may keep the mandatory drive; rescue first)")
-		a.println("[19] Access and ban events (aggregated metadata / managed Fail2ban)")
-		a.println("[20] Device admission: per-device VLESS / one-time invitation / pause and revoke")
-		a.println("[21] Mandatory drive: local SSH tunnel / admin capability / ordinary accounts / quota")
-		a.println("[22] Read-only link-topology status (construct/switch/remove only through [1])")
+		a.println("[18] Fully dismantle managed construction and restore the original baseline (high risk; rescue first)")
+		a.println("[19] SS2022 source allowlist: detect local IP / compare VPS view / add current source")
+		a.println("[24] SS2022 allowlist manager: view / add exact IPv4 / remove")
+		a.println("[20] Security events and baseline: aggregate SSH / firewall / Nginx / Fail2ban evidence")
+		a.println("[22] Link topology: gray / orange / dual status, construction, switching, and rollback")
 		a.println("[23] Safely rebind a changed VPS public IP (reuse the original key; stop on identity mismatch)")
 		a.println("[T] Provider traffic center: exact KiwiVM API / compatible API / Credential Manager")
 		a.println("[K] Manage bound keys: inspect / restore / archive all and empty bound positions")
 		a.println("[H] Manage VPS login history: inspect / delete one / clear all")
-		a.println("[J] Join an existing node: no prior VPS login; answer a controller invitation and prove the new key")
-		a.println("[A] Inner-console only: change local admin password and rebuild its recovery package")
-		a.println("[B] Inner-console only: advanced-console admin gate and session timeout")
 		a.println("[L] English / 中文")
 		a.println("[C] Clear the current selection and tunnels (keep bound keys)")
 		a.println("[0] Exit")
@@ -290,18 +348,12 @@ func (a *App) printMenu() {
 }
 
 func copyClipboard(value string) error {
-	command := `[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); [Console]::In.ReadToEnd() | Set-Clipboard`
-	result := runCaptured("powershell.exe", []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command}, []byte(value), true)
-	if !result.OK() {
-		return fmt.Errorf("clipboard command failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
-	}
-	return nil
+	return copyClipboardPlatform(value)
 }
 
 func (a *App) clearClipboard() error {
-	result := runCaptured("powershell.exe", []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value $null"}, nil, true)
-	if !result.OK() {
-		return fmt.Errorf("clipboard clear failed (exit %d): %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	if err := clearClipboardPlatform(); err != nil {
+		return err
 	}
 	a.println(a.msg("剪贴板已清空。", "Clipboard cleared."))
 	return nil
@@ -310,13 +362,29 @@ func (a *App) clearClipboard() error {
 func (a *App) secretHandoff(title, block string) error {
 	a.println()
 	a.println("================ " + title + " ================")
-	a.println(block)
+	if guiModeEnabled() {
+		// The native client keeps the operation log visible and copyable.  Never
+		// stream a private key, password, token, or subscription into that log;
+		// the complete handoff is copied directly to the user's clipboard below.
+		// Preserve only safe file-location hints so a key handoff remains
+		// discoverable without exposing its contents.
+		for _, line := range strings.Split(block, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "SSH_PRIVATE_KEY_FILE=") ||
+				strings.HasPrefix(trimmed, "SSH_PUBLIC_KEY_FILE=") {
+				a.println(trimmed)
+			}
+		}
+		a.println(a.msg("交接内容已复制到系统剪贴板；运行日志不显示密码、私钥或令牌。", "The handoff was copied to the system clipboard; passwords, private keys, and tokens are omitted from the run log."))
+	} else {
+		a.println(block)
+	}
 	a.println("============================================================")
 	if err := copyClipboard(block); err != nil {
 		a.println(a.msg("自动复制失败，请手工保存上面的真实信息。", "Automatic copy failed; save the real values above manually."))
 		return err
 	}
-	a.println(a.msg("已复制到 Windows 剪贴板。请立即粘贴进密码管理器/安全笔记。", "Copied to the Windows clipboard. Paste it into your password manager/secure note now."))
+	a.println(a.msg("已复制到系统剪贴板。请立即粘贴进密码管理器/安全笔记。", "Copied to the system clipboard. Paste it into your password manager/secure note now."))
 	a.prompt(a.msg("保存好以后按 Enter", "After saving it, press Enter"))
 	if a.yes(a.msg("现在清空含秘密的剪贴板？", "Clear the secret-bearing clipboard now?"), true) {
 		return a.clearClipboard()
@@ -328,11 +396,11 @@ func (a *App) extractEmbeddedTar() (string, error) {
 	if len(embeddedToolkit) < 128 {
 		return "", fmt.Errorf("embedded toolkit is unexpectedly empty")
 	}
-	dir := filepath.Join(os.TempDir(), "TextNodeAssistant-v0.9.5")
+	dir := filepath.Join(os.TempDir(), "ProxyNodeAssistant-v1.0.0")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, "text-node-assistant-toolkit-v0.9.5.tar.gz")
+	path := filepath.Join(dir, "proxy-node-assistant-toolkit-v1.0.0.tar.gz")
 	if err := os.WriteFile(path, embeddedToolkit, 0600); err != nil {
 		return "", err
 	}
@@ -342,63 +410,57 @@ func (a *App) extractEmbeddedTar() (string, error) {
 func (a *App) executeActionChoice(choice string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(choice)) {
 	case "1":
-		return true, a.runRemoteOperation(operationSpec{Type: "install-upgrade", Mutating: true}, a.deployOptimize)
+		return true, a.runRemoteAction(a.deployOptimize)
 	case "2":
-		return true, a.runRemoteOperation(operationSpec{Type: "open-panel", Mutating: false}, a.openPanel)
+		return true, a.runRemoteAction(a.openPanel)
 	case "3":
-		return true, a.runRemoteOperation(operationSpec{Type: "diagnose-repair", Mutating: true}, a.diagnose)
+		return true, a.runRemoteAction(a.diagnose)
 	case "4":
-		return true, a.runRemoteOperation(operationSpec{Type: "safe-repair", Mutating: true}, a.safeRepair)
+		return true, a.runRemoteAction(a.safeRepair)
 	case "5":
-		return true, a.runRemoteOperation(operationSpec{Type: "rotate-vps-password", Mutating: true}, a.rotateVPSPassword)
+		return true, a.runRemoteAction(a.rotateVPSPassword)
 	case "6":
-		return true, a.runRemoteOperation(operationSpec{Type: "rotate-panel-credentials", Mutating: true}, a.rotatePanelCredentials)
+		return true, a.runRemoteAction(a.rotatePanelCredentials)
 	case "7":
-		return true, a.runRemoteOperation(operationSpec{Type: "show-handoff", Mutating: false}, a.showHandoff)
+		return true, a.runRemoteAction(a.showHandoff)
 	case "8":
-		return true, a.runRemoteOperation(operationSpec{Type: "optimize-cover", Mutating: true}, a.optimizeCover)
+		return true, a.runRemoteAction(a.optimizeCover)
 	case "9":
-		return true, a.runRemoteOperation(operationSpec{Type: "backup-node", Mutating: true}, a.backupNode)
+		return true, a.runRemoteAction(a.backupNode)
 	case "10":
-		return true, a.runRemoteOperation(operationSpec{Type: "emergency-report", Mutating: false}, a.emergencyReport)
+		return true, a.runRemoteAction(a.emergencyReport)
 	case "11":
-		return true, a.runRemoteOperation(operationSpec{Type: "rotate-ssh-key", Mutating: true}, a.rotateSSHKey)
+		return true, a.runRemoteAction(a.rotateSSHKey)
 	case "12":
 		return true, a.clearClipboard()
 	case "13":
-		return true, a.runRemoteOperation(operationSpec{Type: "uninstall-toolkit", Mutating: true}, a.uninstallRemoteToolkit)
+		return true, a.runRemoteAction(a.uninstallRemoteToolkit)
 	case "14":
 		return true, a.manageLocalProxy()
 	case "15":
-		return true, a.runRemoteOperation(operationSpec{Type: "prune-backups", Mutating: true}, a.pruneBackupsAndBackupCurrentConfig)
+		return true, a.runRemoteAction(a.pruneBackupsAndBackupCurrentConfig)
 	case "16":
-		return true, a.runRemoteOperation(operationSpec{Type: "performance-profile", Mutating: true}, a.performanceProfiles)
+		return true, a.runRemoteAction(a.performanceProfiles)
 	case "17":
-		return true, a.runRemoteOperation(operationSpec{Type: "traffic-estimate", Mutating: true}, a.trafficEstimate)
+		return true, a.runRemoteAction(a.trafficEstimate)
 	case "18":
-		return true, a.runRemoteOperation(operationSpec{Type: "restore-baseline", Mutating: true}, a.dismantleManagedNode)
+		return true, a.runRemoteAction(a.dismantleManagedNode)
 	case "19":
-		return true, a.runRemoteOperation(operationSpec{Type: "security-management", Mutating: true}, a.manageSecurityEvents)
+		return true, a.runRemoteAction(a.manageSS2022Allowlist)
+	case "24":
+		return true, a.runRemoteAction(a.manageSS2022AllowlistEntries)
 	case "20":
-		return true, a.runRemoteOperation(operationSpec{Type: "device-admission", Mutating: true}, a.manageDeviceAdmission)
-	case "21":
-		return true, a.runRemoteOperation(operationSpec{Type: "drive-management", Mutating: true}, a.managePrivateDrive)
+		return true, a.runRemoteAction(a.manageSecurityEvents)
 	case "22":
-		return true, a.runRemoteOperation(operationSpec{Type: "topology-management", Mutating: true}, a.manageCDNXHTTPPrototype)
+		return true, a.runRemoteAction(a.manageCDNXHTTPPrototype)
 	case "23":
-		return true, a.runRemoteOperation(operationSpec{Type: "rebind-public-ip", Mutating: true}, a.rebindPublicIP)
+		return true, a.runRemoteAction(a.rebindPublicIP)
 	case "t":
 		return true, a.providerTrafficCenter()
 	case "k":
 		return true, a.manageBoundKeys()
 	case "h":
 		return true, a.manageRecentTargets()
-	case "j":
-		return true, a.joinDeviceWithInvitation()
-	case "a":
-		return true, a.changeLocalAdminInteractive()
-	case "b":
-		return true, a.manageLocalAdminGate()
 	default:
 		return false, nil
 	}
@@ -406,16 +468,9 @@ func (a *App) executeActionChoice(choice string) (bool, error) {
 
 func (a *App) prepareConsoleSession() bool {
 	a.banner()
-	if migration, err := migrateLegacyLocalState(); err != nil {
-		a.println(a.msg("旧版本地状态迁移失败；为避免丢失节点或密钥，本次停止：", "Legacy local-state migration failed; this run is stopped to avoid losing nodes or keys:") + " " + err.Error())
-		return false
-	} else if len(migration.Copied) > 0 {
-		a.println(a.msg("已复制旧版本地状态到 TextNodeAssistant；旧数据仍保留，可恢复。", "Legacy local state was copied into TextNodeAssistant; the legacy copy remains recoverable."))
-		a.loadLanguage()
-	}
 	if err := a.startupOpenSSHPreflight(); err != nil {
 		a.println()
-		a.println(a.msg("Windows OpenSSH 准备失败，程序不会反复安装或进入远端菜单：", "Windows OpenSSH setup failed. The program will not retry in a loop or enter the remote menu:") + " " + err.Error())
+		a.println(a.msg("OpenSSH 准备失败，程序不会反复安装或进入远端菜单：", "OpenSSH setup failed. The program will not retry in a loop or enter the remote menu:") + " " + err.Error())
 		a.prompt(a.msg("按 Enter 安全退出", "Press Enter to exit safely"))
 		return false
 	}
@@ -423,12 +478,49 @@ func (a *App) prepareConsoleSession() bool {
 	return true
 }
 
+// actionNeedsOpenSSH distinguishes the local-only GUI entry points from
+// operations that may open a VPS session.  The native client launches the CLI
+// with --gui-action, so doing this check before prepareConsoleSession is what
+// keeps a local action genuinely local: it must not probe for ssh/scp, run
+// ssh-keyscan, or show a VPS login prompt just to clear the clipboard or manage
+// this Mac's system-level 10808 proxy.
+//
+// K is intentionally local at dispatch time.  Its submenu contains both
+// local key inventory/archive choices and remote unbind/restore choices.  The
+// remote branches perform their own lazy OpenSSH readiness check only after
+// the operator has selected an operation that actually needs a VPS.  This is
+// what lets listing, folder browsing, and local archiving work when OpenSSH
+// is unavailable, while still preserving a PTY for the remote branches in
+// the native client.
+func actionNeedsOpenSSH(choice string) bool {
+	switch strings.ToLower(strings.TrimSpace(choice)) {
+	case "12", "14", "t", "h", "k":
+		return false
+	default:
+		return true
+	}
+}
+
+func (a *App) prepareLocalConsoleSession() {
+	a.banner()
+	a.println()
+	a.println(a.msg("这是仅本机操作，不会启动 OpenSSH 或连接 VPS。", "This is a local-only operation; OpenSSH will not be started and no VPS will be contacted."))
+	a.println()
+}
+
 func shouldHoldCreatedPanelTunnel(handled bool, actionErr error, tunnelCount int) bool {
 	return handled && actionErr == nil && tunnelCount > 0
 }
 
+// panelTunnelCount includes both legacy child-process forwards and the
+// ControlMaster-owned forwards used on Unix.  Keep the legacy `tunnels` slice
+// intact for compatibility with older tests and cleanup callers.
+func (a *App) panelTunnelCount() int {
+	return len(a.tunnels) + len(a.panelForwards)
+}
+
 func (a *App) holdCreatedPanelTunnelsIfNeeded(handled bool, actionErr error) bool {
-	if !shouldHoldCreatedPanelTunnel(handled, actionErr, len(a.tunnels)) {
+	if !shouldHoldCreatedPanelTunnel(handled, actionErr, a.panelTunnelCount()) {
 		return false
 	}
 	a.println()
@@ -436,12 +528,92 @@ func (a *App) holdCreatedPanelTunnelsIfNeeded(handled bool, actionErr error) boo
 	a.prompt(a.msg("面板 SSH 隧道正在保持。浏览器使用完毕后，点击图形界面的“关闭面板隧道”", "The panel SSH tunnel is being kept alive. When finished in the browser, click Close panel tunnel in the graphical client"))
 	a.println(a.msg("正在关闭本工具创建的面板隧道。", "Closing the panel tunnel created by this tool."))
 	a.killTunnels()
+	// The forwarding process shares the already-authenticated action control
+	// master.  Release that master only after the user has explicitly closed
+	// the tunnel; closing it in runRemoteAction's defer would tear down the
+	// forwarding channel before the GUI can use it.
+	if err := a.releaseHeldPanelConnection(); err != nil {
+		a.println(a.msg("面板隧道已关闭，但 SSH 控制会话清理需要重试：", "The panel tunnel was closed, but SSH control-session cleanup needs a retry:") + " " + err.Error())
+	}
 	return true
 }
 
+// cleanupAppResources is the single process-level shutdown path used by both
+// normal return and termination-signal handling.  The order is intentional:
+// forwarding listeners belong to the ControlMaster, temporary authorized-key
+// revocation must run through that still-authenticated master, and only then
+// may the control socket and local bookkeeping be discarded.  Keeping this
+// sequence in one helper prevents Go defer ordering from drifting away from
+// the signal path and leaves no child tunnel/socket behind on exit.
+func (a *App) cleanupAppResources() {
+	a.shutdownCleanupOnce.Do(a.cleanupAppResourcesOnce)
+}
+
+func (a *App) cleanupAppResourcesOnce() {
+	a.killTunnels()
+	if err := a.releaseHeldPanelConnection(); err != nil {
+		a.println(a.msg("SSH 控制会话退出清理警告：", "SSH control-session shutdown cleanup warning: ") + err.Error())
+	}
+	if err := a.cleanupActiveTemporaryAuth(); err != nil {
+		a.println(a.msg("临时登录退出清理警告：", "Temporary-login shutdown cleanup warning: ") + err.Error())
+	}
+	// If remote revocation was unavailable, releaseHeldPanelConnection keeps
+	// the retry handle by design while the app is alive.  At process shutdown
+	// there is no caller left to retry, so close the local master/socket anyway
+	// and report the retained local temporary key clearly.  This never starts a
+	// replacement network connection.
+	if held := a.heldPanelConnection; held != nil {
+		if err := closeSSHControlMaster(held); err != nil {
+			a.println(a.msg("SSH 控制 socket 退出清理警告：", "SSH control-socket shutdown cleanup warning: ") + err.Error())
+		}
+		a.heldPanelConnection = nil
+		if a.actionConnection == held {
+			a.actionConnection = nil
+		}
+	}
+	if action := a.actionConnection; action != nil {
+		if err := closeSSHControlMaster(action); err != nil {
+			a.println(a.msg("SSH 控制会话退出清理警告：", "SSH control-session shutdown cleanup warning: ") + err.Error())
+		}
+		a.actionConnection = nil
+	}
+}
+
+const shutdownCleanupTimeout = 15 * time.Second
+
+// cleanupAppResourcesBounded runs the normal ordered cleanup but gives a
+// signal handler a hard upper bound.  OpenSSH can wait on a dead VPS during
+// one-time-key revocation; a termination signal must never leave the process
+// unkillable forever.  The worker is intentionally allowed to finish in the
+// background if the deadline expires, and the caller exits immediately after
+// reporting the bounded-cleanup warning.
+func (a *App) cleanupAppResourcesBounded(timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = shutdownCleanupTimeout
+	}
+	done := make(chan struct{})
+	go func() {
+		a.cleanupAppResources()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		a.println(a.msg("退出清理达到时间上限；未确认的远端一次性 key 会保留到下次启动重试。", "Shutdown cleanup reached its deadline; any unconfirmed remote one-time key will be retained for retry on the next start."))
+		return false
+	}
+}
+
 func (a *App) runDirectAction(choice string, pauseAtEnd bool) {
-	if !a.prepareConsoleSession() {
-		return
+	if actionNeedsOpenSSH(choice) {
+		if !a.prepareConsoleSession() {
+			return
+		}
+	} else {
+		a.prepareLocalConsoleSession()
 	}
 	a.println(a.msg("图形客户端已直达所选操作：", "The graphical client opened the selected action directly:") + " " + strings.ToUpper(choice))
 	a.println()
@@ -478,10 +650,13 @@ func (a *App) run() {
 			a.toggleLanguage()
 			continue
 		case "c":
+			a.killTunnels()
+			if cleanupErr := a.releaseHeldPanelConnection(); cleanupErr != nil {
+				a.println(a.msg("SSH 控制会话清理警告：", "SSH control-session cleanup warning:") + " " + cleanupErr.Error())
+			}
 			if cleanupErr := a.cleanupActiveTemporaryAuth(); cleanupErr != nil {
 				a.println(a.msg("临时登录清理警告：", "Temporary-login cleanup warning:") + " " + cleanupErr.Error())
 			}
-			a.killTunnels()
 			a.conn = nil
 			a.actionConnection = nil
 			a.println(a.msg("当前选择与隧道已清空。已绑定 key 没有删除；每项操作本来就会重新选择 VPS。", "The current selection and tunnels were cleared. Bound keys were not deleted; every action already re-selects its VPS."))
@@ -564,6 +739,15 @@ func requestedTunnelCloseSmoke(args []string) bool {
 	return false
 }
 
+func requestedRestoreLocalProxy(args []string) bool {
+	for _, value := range args {
+		if value == "--restore-local-proxy" {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) runPromptSequenceSmoke() int {
 	a.println("BACKUP_ROOT=C:\\example\\managed-key-backups")
 	if strings.TrimSpace(a.prompt(a.msg("输入备份编号；0 取消", "Enter backup number; 0 cancels"))) != "1" {
@@ -574,7 +758,7 @@ func (a *App) runPromptSequenceSmoke() int {
 	if answer != "y" && answer != "yes" && answer != "是" {
 		return 4
 	}
-	a.println("TNA_GUI_PROMPT_SEQUENCE_OK")
+	a.println("PNA_GUI_PROMPT_SEQUENCE_OK")
 	return 0
 }
 
@@ -587,49 +771,32 @@ func (a *App) runTunnelCloseSmoke() int {
 	if answer != "" {
 		return 6
 	}
-	a.println("TNA_GUI_TUNNEL_CLOSE_ACK")
+	a.println("PNA_GUI_TUNNEL_CLOSE_ACK")
 	return 0
 }
 
 func main() {
 	setUTF8Console()
-	if command := requestedLocalAdminCommand(os.Args[1:]); command != "" {
-		// The GUI invokes local-admin commands as short-lived embedded CLI
-		// processes. Run the copy-first legacy migration before the command so
-		// upgraded ProxyNodeAssistant installs can still find their verifier,
-		// recovery package metadata and Credential Manager entry.
-		if _, err := migrateLegacyLocalState(); err != nil {
-			fmt.Fprintln(os.Stderr, "TNA_LOCAL_ADMIN_ERROR=MIGRATION_FAILED")
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(10)
-		}
-		if err := migrateLegacyLocalAdminState(); err != nil {
-			fmt.Fprintln(os.Stderr, "TNA_LOCAL_ADMIN_ERROR=LOCAL_ADMIN_MIGRATION_FAILED")
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(10)
-		}
-		os.Exit(runLocalAdminCommand(command, os.Stdin))
-	}
 	app := &App{reader: bufio.NewReader(os.Stdin)}
 	app.loadLanguage()
-	defer app.killTunnels()
-	defer app.cleanupActiveTemporaryAuth()
+	defer app.cleanupAppResources()
 	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(interrupts)
 	go func() {
-		<-interrupts
-		_ = app.cleanupActiveTemporaryAuth()
-		app.killTunnels()
-		os.Exit(130)
+		received := <-interrupts
+		exitCode := 130
+		switch received {
+		case syscall.SIGTERM:
+			exitCode = 143
+		case syscall.SIGHUP:
+			exitCode = 129
+		}
+		app.cleanupAppResourcesBounded(shutdownCleanupTimeout)
+		os.Exit(exitCode)
 	}()
-	if requestedDriveSession(os.Args[1:]) {
-		os.Exit(app.runDriveSession(os.Stdin))
-	}
-	if action := requestedDriveTransaction(os.Args[1:]); action != "" {
-		os.Exit(app.runDriveTransaction(action, os.Stdin))
-	}
 	if requestedInputCloseSmoke(os.Args[1:]) {
-		if _, err := app.required("TNA_INPUT_CLOSE_SMOKE_REQUIRED"); !errors.Is(err, errInputClosed) {
+		if _, err := app.required("PNA_INPUT_CLOSE_SMOKE_REQUIRED"); !errors.Is(err, errInputClosed) {
 			fmt.Fprintln(os.Stderr, "input-close smoke did not observe EOF")
 			os.Exit(2)
 		}
@@ -647,12 +814,28 @@ func main() {
 		}
 		return
 	}
+	if requestedRestoreLocalProxy(os.Args[1:]) {
+		if err := app.restoreMacOSProxyForUninstall(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if requestedOpenSSHPreflight(os.Args[1:]) {
 		if err := app.startupOpenSSHPreflight(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
+	}
+	// Migrate the legacy v0.9.x local state before any real operation starts.
+	// The migration is copy-first and never removes the old tree; doing it here
+	// ensures the managed-key picker (and every direct GUI action) can see a
+	// previously bound node without requiring the user to refresh or re-bind it.
+	if record, err := migrateLegacyLocalState(); err != nil {
+		fmt.Fprintln(os.Stderr, "[WARN] local legacy migration skipped: "+err.Error())
+	} else if len(record.Copied) > 0 || len(record.Warnings) > 0 {
+		fmt.Fprintf(os.Stderr, "LOCAL_LEGACY_MIGRATION copied=%d warnings=%d\n", len(record.Copied), len(record.Warnings))
 	}
 	if action := requestedGUIAction(os.Args[1:]); action != "" {
 		app.runDirectAction(action, false)

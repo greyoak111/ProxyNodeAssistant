@@ -1,248 +1,165 @@
-<p align="center">
-  <img src="gui/TextNodeAssistant-v0.9.5-app-icon.png" width="112" alt="TextNodeAssistant icon">
-</p>
+# ProxyNodeAssistant v1.0.0
 
-<h1 align="center">TextNodeAssistant v0.9.5</h1>
+面向 Windows、macOS/Linux CLI 与 Android 的本地优先 VPS 节点部署、维护、排障与恢复工具。
 
-<p align="center">Windows / Android 双层私人网盘与 VPS 图形运维客户端</p>
+发行包同时包含 macOS/Linux 无 GUI CLI；它与 Windows/Android 复用同一远端工具包和施工语义，运行主机需自行提供系统 OpenSSH。
 
-<p align="center">
-  <img src="https://img.shields.io/badge/version-0.9.5-16d9e3?style=flat-square" alt="version 0.9.5">
-  <img src="https://img.shields.io/badge/Windows-x64%20%7C%20x86%20%7C%20ARM64-16d9e3?style=flat-square" alt="Windows">
-  <img src="https://img.shields.io/badge/Android-native%20Compose-16d9e3?style=flat-square" alt="Android">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-4ee0b5?style=flat-square" alt="MIT License"></a>
-</p>
+> 本仓库的 v1.0.0 是“重置线”：以稳定的 v0.9.0 为代码基线重新迭代，不继承旧实验版 v1.0.0 的设备准入、controller、邀请、租约、网盘或本机 admin/恢复门禁。版本号相同，但内部构建修订更高，菜单 `[1]` 能识别并安全替换旧实验构建；登录只使用普通 SSH 密码或长期 key。
 
-<p align="center">
-  <a href="TextNodeAssistant-v0.9.5-从零部署教程.md">从零部署教程</a> ·
-  <a href="TextNodeAssistant-v0.9.5-完整使用说明书.md">完整使用说明书</a> ·
-  <a href="ANDROID.md">Android 手册</a> ·
-  <a href="BUILD.md">构建说明</a> ·
-  <a href="TextNodeAssistant-v0.9.5-最终施工设计基线.md">设计与验收基线</a>
-</p>
+[完整使用说明书](ProxyNodeAssistant-v1.0.0-完整使用说明书.md) · [从零部署教程](ProxyNodeAssistant-v1.0.0-从零部署教程.md) · [更新说明](ProxyNodeAssistant-v1.0.0-更新说明.md) · [Android 手册](ANDROID.md) · [构建说明](BUILD.md) · [MIT License](LICENSE)
 
----
+## 重置后的产品边界
 
-TextNodeAssistant（TNA）把私人网盘日常界面与完整 VPS 运维控制台放在同一个原生客户端中。外层用于文件、账号和节点切换；内层保留全部图形施工、诊断、备份、设备准入和恢复能力。Windows 版是单文件 WPF EXE，Android 版是 Kotlin + Jetpack Compose 原生 APK；两端使用同一套 `text-node-assistant v0.9.5` Linux 工具包。
+ProxyNodeAssistant 只做一件事：在本人拥有或获得明确授权的 VPS 上，以可审计、可回滚、失败即停的方式管理节点。
 
-项目坚持：
+重置线彻底取消：
 
-- **唯一施工入口**：只有高级控制台 `[1]` 可以上传、安装、升级、恢复缺失组件或改变灰云/橙云/双路拓扑；
-- **失败即停**：退出码、结构化结束标记、真实探针和回读必须同时通过，失败后不复制空交接单、不猜端口、不继续开面板；
-- **隐私优先**：公开源码和产物不内置真实 VPS、域名、邮箱、密码、Token、私钥、订阅或交接单；
-- **可恢复**：施工前记录基线，危险动作先生成救援包；能安装、检测、回滚、拆除，并保留厂商 Console/VNC 兜底。
+- 设备准入、controller/member 角色、邀请、租约、围栏和“受信设备才能管理”的门限；
+- 私人网盘、Copyparty、普通网盘账户、远端凭证托管和相关界面；
+- 任何依赖上述功能的菜单、灰色占位按钮、服务或成功判定。
 
-> 仅用于你拥有或得到明确授权的服务器。请遵守服务商条款、所在地法律和网络服务规则。
+仍然保留：
 
-## macOS 原生 GUI 安装包（v1.0.0）
+- 每一项远端操作都会载入最近的非敏感目标供确认/修改，并明确选择“临时密码”或“节点长期 SSH key”（存在匹配 key 时才默认选中）；
+- 3x-ui、Xray、Nginx、证书、Reality、Cloudflare/XHTTP、WARP、备份、诊断、修复、流量估算和基线恢复；
+- Windows 原生 WPF 单 EXE 与 Android 原生客户端；
+- 15 套本地伪装模板、中英双语、历史 VPS 快速选择和 SSH key 归档/恢复；
+- 完整凭据交接单（VPS、面板、Reality、SS2022 与 CDN/XHTTP 链接）经校验后显示/复制。
 
-macOS 版现在使用原生 SwiftUI 图形客户端和用户级 .pkg，不再提供半成品 Darwin CLI 作为最终用户入口。它按 Windows 正式 GUI 的真实结构实现总览、安装与升级、面板与访问、维护与修复、安全与凭据、备份与报告、本机工具七组工作区，共 26 个操作；远端操作的日志、动态提示和遮罩密码输入都在同一个 macOS 窗口内完成。
+SSH key 只是这台电脑/手机登录某台 VPS 的凭据，不再被包装成设备身份系统；本机没有额外 admin、恢复包或 UI 门禁。
 
-从 [v1.0.0 Release](https://github.com/greyoak111/ProxyNodeAssistant/releases/tag/v1.0.0) 下载 ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg：
+## 设计原则
 
-- 同时支持 Apple Silicon arm64 和 Intel x86_64，最低 macOS 13；
-- 安装目标是当前用户的 ~/Applications/ProxyNodeAssistant.app，安装过程不需要管理员密码，也不会写入 /Applications、/usr/local/bin 或系统级收据；
-- 设置页提供“无管理员卸载”，会清理应用自身的配置、缓存、日志、保存状态和用户级安装收据；也可以直接把 ~/Applications/ProxyNodeAssistant.app 拖进废纸篓；
-- 包体 SHA-256 与安装、卸载验证步骤见 [MACOS.md](MACOS.md)。
+- **唯一施工入口**：只有菜单 `[1]` 可以上传、安装或升级远端工具包。其他菜单不会暗中重装。
+- **选择必须明确**：线路、模板、性能和 WARP 均不接受空回车代替决定。
+- **先预览，后上传**：完整计划通过校验后显示；只有精确输入大写 `APPLY` 才开始上传和修改。
+- **失败关闭**：任一步失败，立即停止；不复制空交接单、不清理备份、不打开面板。
+- **事务切路**：橙云/XHTTP 先暂存、外部验证、真实客户端验货，全部通过后才提交；失败自动回滚。
+- **隐私优先**：发行包不内置真实 VPS、域名、邮箱、账户、密码、Token 或私钥。域名和证书邮箱每次施工由本人手填。
 
-macOS 的详细安装、卸载、构建边界和安全说明见 [MACOS.md](MACOS.md)。
-## 产品结构
+## 线路模式
 
-```text
-启动 TNA
-  └─ 外层登录
-      ├─ 普通网盘账号 → 自己的空间、传输、挂载
-      └─ 本机 admin → admin 空间
-             └─ 再验证 admin（默认开启）
-                    └─ 完整高级图形运维控制台
-```
+菜单 `[1]` 会先只读识别现有节点，再要求明确选择：
 
-- 本机 `admin` 密码只在本机验证，不会发送给 VPS、SSH、3x-ui 或 copyparty。
-- 首次创建 admin 时同时写入系统保护凭据，并生成加密恢复包与恢复码；修改 admin 只能在内层执行。
-- 普通网盘账号在外层注册，每台 VPS 最多 2 个；注册只在远端完整施工且当前设备受信后开放。
-- 普通账号是节点/空间级账号，可在该 VPS 的所有受信设备上登录同一空间。
-- 切换网盘 VPS 会退回登录页，必须输入目标 VPS 的网盘账密，避免跨节点串号。
-- 新机或未绑定 VPS 时，外层如实显示“未挂载节点”，并引导进入高级控制台施工或走无需预登录的设备邀请入口。
+| 输入 | 中文名称 | English | 适用条件 | 结果 |
+|---:|---|---|---|---|
+| `0` | 保持现有线路 | Keep | 仅已有节点显示 | 不拆、不换现有线路；只做选定的维护/升级 |
+| `1` | 仅灰云直连 | Gray/direct | 新机与已有节点 | DNS only 域名 + Reality，链路短、性能高 |
+| `2` | 仅橙云 CDN | Orange/CDN | 新机与已有节点 | Cloudflare + TLS + XHTTP `8443`，隐藏源站且链路更复杂 |
+| `3` | 双路 | Dual | 新机与已有节点 | 同时保留灰云 Reality 与橙云 XHTTP，便于故障切换 |
 
-## 界面
+双路必须使用两个不同的主机名。灰云和橙云的域名、证书邮箱分别输入，不能沿用包内值，也不会写入偏好设置。
 
-![TextNodeAssistant 全部功能](dist/TextNodeAssistant-v0.9.5-gui-preview.png)
+## 统一自定义计划
 
-![TextNodeAssistant 图形工作流](dist/TextNodeAssistant-v0.9.5-workflow-preview.png)
+Windows 命令行与 WPF 前端由同一个 Go `InstallPlan`、同一套校验器和同一份预览驱动。Android 构建与其字段一一对应的安装计划，并沿用相同的线路、模板、性能、端口、`APPLY` 与失败关闭语义；平台特有限制见下文：
 
-所有普通输入、秘密输入、Host Key 核对、Y/N、精确危险确认、日志和隧道关闭都在当前图形窗口内完成。密码使用遮罩输入，Windows SSH 密码通过当前用户专属随机命名管道交给 OpenSSH，不进入命令行参数或日志。
-
-## 支持范围
-
-| 范围 | 当前实现 |
-|---|---|
-| Windows | Windows 10/11 x64、Windows 10 x86、Windows 10/11 ARM64 |
-| Android | Android 7.0+ universal APK，不依赖 Termux/WebView |
-| VPS | Ubuntu / Debian，root 或可 sudo 用户，推荐 KVM、1 GB+ 内存 |
-| SSH | 临时密码、节点长期 Ed25519 key、每设备独享 key、Host Key 固定 |
-| 面板 | 3x-ui，仅经 `127.0.0.1` SSH 隧道打开 |
-| 代理 | VLESS + REALITY 灰云直连；VLESS + XHTTP 橙云路径；可选双路 |
-| 网盘 | 固定并校验供应链的 copyparty，随机 `39000—39999` 回环端口，仅经 SSH 隧道 |
-| Web | Nginx、证书、15 套本地自包含伪装模板 |
-| 恢复 | 原生基线快照、配置/完整备份、救援包、代理单拆、整体恢复基线 |
-
-### Windows 包怎么选
-
-请先按系统架构下载，三个 EXE 不是“同一个包的不同名字”：
-
-- `TextNodeAssistant-v0.9.5-win64.exe`：Intel/AMD 64 位 Windows 10/11，绝大多数电脑使用这个。
-- `TextNodeAssistant-v0.9.5-win32.exe`：只有明确安装了 32 位 Windows 时使用。
-- `TextNodeAssistant-v0.9.5-win-arm64.exe`：只给 Snapdragon 等 Windows on ARM64 设备使用。
-
-ARM64 包内嵌的是 ARM64 版 rclone；在普通 Intel/AMD Windows 上运行它会弹出“映像文件无效，但它对另一种计算机类型有效”。这不是 VPS 或账号故障，关闭该包并改用 `win64` 即可。下载后请同时核对 `SHA256SUMS-v0.9.5.txt`。
-
-## 从零开始：最短可靠流程
-
-1. 准备带独立公网 IPv4、可进入厂商 Console/VNC 的 Ubuntu/Debian VPS。
-2. 准备一个已接入 Cloudflare 的域名。
-3. 下载与你系统匹配的 EXE 或正式 APK，核对 `SHA256SUMS-v0.9.5.txt`。
-4. 首次启动创建本机 `admin`，立即把恢复包和恢复码分开保存。
-5. 进入高级控制台，选择 `[1]`。
-6. 选择临时密码或该节点长期 key，输入 VPS、SSH 用户和端口，核对厂商 Host Key 指纹。
-7. 程序检测/迁移工具包、保存原生基线并更新设备密钥后，必须明确选择拓扑：
-
-| 选择 | 需要准备 | 优点 | 代价 |
-|---|---|---|---|
-| `[1]` 仅灰云 | 1 个 DNS-only 子域名 + 邮箱 | 路径短、通常延迟最低 | 客户端可见源站 IP |
-| `[2]` 仅橙云 | 1 个 Proxied 子域名 + 邮箱 | 客户端只使用 Cloudflare/XHTTP | 多一层边缘，必须配置 Cloudflare |
-| `[3]` 双路 | 1 个灰云 + 1 个橙云子域名，各自邮箱 | 两条独立订阅，故障切换最稳 | 配置最多 |
-| `[0]` 保持 | 仅既有受管节点显示 | 不改当前拓扑 | 不能用于新机或已拆除拓扑 |
-
-8. 灰云域名必须由公共 DNS 指向 VPS；橙云域名必须打开 Cloudflare 代理。
-9. 橙云/双路会逐项引导确认：Universal SSL 可用、`Full (strict)`、客户端使用 Cloudflare 免费支持的 `8443` 端口、Cache Rule 对该 hostname `Bypass cache`，且不挂 Access/质询/重定向/Worker。每项完成后回程序按 Enter；输入 `q` 安全停止。
-10. 程序强制安装并验收回环网盘，然后施工代理；橙云路径必须导入 `8443` XHTTP 链接并真实浏览，输入精确确认后才提交。
-11. 程序创建首个 controller、保存本机加密 admin 能力、生成完整交接单并原子提交；失败会回滚整次事务。
-12. 保存交接单、清空剪贴板，分别打开网盘和 3x-ui 隧道做最终检查。
-
-完整购买、Cloudflare 和排障步骤见[从零部署教程](TextNodeAssistant-v0.9.5-从零部署教程.md)。
-
-## Cloudflare 要点
-
-双路必须使用两个不同子域名。同一条 DNS 记录无法同时保持 DNS-only 和 Proxied，但已经施工的节点可以通过 `[1]` 在仅灰云、仅橙云和双路之间收敛切换。
-
-橙云链路的实际路径是：
-
-```text
-客户端 HTTPS:8443
-  → Cloudflare Edge :8443
-  → VPS:8443
-  → 仅允许 Cloudflare 官方 CIDR 的 Nginx
-  → 回环 XHTTP 入站
-```
-
-Cloudflare Universal SSL 解决客户端到 Cloudflare Edge 的证书；`Full (strict)` 仍要求 VPS 源站提供该 hostname 的有效证书。程序使用 Cloudflare 免费支持的 Edge :8443，源站同为 :8443，不依赖付费 Origin Rule；随后证明 `Cf-Ray`、受管源站标记和外部直连 8443 被拒。
-
-若 Windows 开着 v2rayN TUN，公共 DNS 探测可能被本机代理劫持。程序会明确提示暂停 TUN/VPN 后重测，不会把本地 DNS 故障误判成 Cloudflare 配置错误。
-
-### 面板复制的 XHTTP 链接
-
-回环 XHTTP 入站在 VPS 内部必须保持 `security=none`；橙云客户端入口则必须是公网 TLS。TNA 会为受管入站同步 `externalProxy.forceTls=tls` 和 `tna-cdn-xhttp` HostGroup，使 3x-ui 的“入站详情/分享”生成公网 hostname、SNI、Host、路径、`fp=chrome` 和 `:8443`。如果复制出的链接仍显示 `security=none`、SNI/Host 为空或出现回环端口，说明页面或链接是旧快照：刷新 3x-ui（Ctrl+F5）后从入站详情重新复制，或重新更新 TNA 的受管订阅。已经导入客户端的旧节点不会自动变更，必须删除旧节点再导入新链接。
-
-## SSH 与设备准入
-
-每项远端操作都重新选择目标与认证方式，不会绑死上一台 VPS。
-
-| 模式 | 行为 |
-|---|---|
-| 临时密码 | 密码只在当前会话内使用；一次性 key 在该项结束时撤销并删除 |
-| 节点长期 key | 按稳定节点 + SSH 用户隔离；新 key 真登录成功后才替换旧 key |
-
-新设备不需要先获得服务器密码：
-
-1. 已有 controller 在 `[20]` 创建“绑定成功后才失效”的邀请。
-2. 新设备首页选 `[J]`，粘贴邀请并生成本机独享身份、SSH key 和响应。
-3. controller 在 `[20]` 批准响应，设备进入 `pending-verification`；若网络中断可重试，邀请尚未消费。
-4. 新设备回到 `[J]` 完成首次真实 key 登录；成功后设备激活，邀请才失效。
-
-严格安全模式关闭公网 SSH 密码后，未获准设备的普通 SSH 会被拒绝；厂商 VNC/串口/救援 Console 仍是兜底。订阅与“能否 SSH 管理服务器”是两套权限：每设备 VLESS 可以独立暂停/吊销，但不是不可复制的硬件锁。
-
-## 高级控制台功能
-
-| 编号 | 功能 | 边界 |
-|---:|---|---|
-| 1 | 安装 / 升级 / 恢复 / 拓扑收敛 | 唯一施工入口；同构建跳过、旧构建升级、新构建拒绝降级 |
-| 2 | 打开 3x-ui | 本机随机端口 SSH 隧道 |
-| 3–4 | 体检 / 安全修复 | 结构化检查；修复前备份 |
-| 5–7 | VPS/面板凭据 | 真实回读；完整交接单才可显示 |
-| 8 | 伪装网站 | 15 套本地模板，随机/稳定/指定 |
-| 9–10 | 灾备 / 紧急报告 | 下载到本机，分享前人工脱敏 |
-| 11 | SSH key | 先验证新钥再撤旧钥 |
-| 13 | 卸载远端工具包 | 保留节点、配置、凭据和备份，不触发重装 |
-| 15–17 | 备份整理 / 性能 / 流量 | 可回滚配置；vnStat 不冒充厂商账单 |
-| 18 | 拆除施工和恢复基线 | 先救援；仅拆代理保留强制网盘，或整体恢复原生基线 |
-| 19 | 安全事件 | 有界、脱敏读取 SSH/Fail2ban/防火墙元数据 |
-| 20 / J | 设备准入 | 首个 controller、邀请、批准、首次绑定、暂停/恢复/吊销 |
-| 21 | 强制网盘 | 隧道、admin 能力、普通账号、改密、恢复凭据 |
-| 22 | 线路拓扑只读状态 | 不施工；所有拓扑改动回到 `[1]` |
-| 23 | 公网 IP 重绑定 | Host Key、machine-id、NODE_ID、SERVER_ID 全匹配才提交 |
-| A / B | 本机 admin | 内层改密/恢复包；门禁开关与会话超时 |
-
-## 拆除与恢复
-
-`[18]` 固定名称为“拆除施工和恢复基线”。执行前先生成、下载并校验救援包。
-
-- 代理仍存在：可“仅拆代理、保留强制网盘”，或“整体拆除并恢复原生基线”；
-- 只剩网盘：才显示“拆除剩余网盘并恢复基线”；
-- 完整拆除：撤销代理、网盘和全部 TNA 施工，最后处理当前 controller，SSH/厂商 Console 救援路径优先保留；
-- 旧节点没有可信原生快照时，界面必须明确显示 `LEGACY_UNCERTAIN`，不得谎称逐字节还原。
-
-重新施工只运行 `[1]`。它会读取基线、拆除回执和现场组件，只恢复缺失部分或执行完整收敛。
-
-## 凭据与隐私
-
-运行态秘密分别保存：
-
-| 数据 | Windows | Android |
+| 项目 | 可选值 | 说明 |
 |---|---|---|
-| 本机 admin | Credential Manager/DPAPI + 加盐验证器 + `.tna` 恢复包 | Android Keystore 加密应用仓 + 恢复导出 |
-| 节点 SSH key | 当前用户 ACL 隔离的 TNA 目录；旧版目录只读迁移 | Android Keystore 加密应用仓 |
-| 网盘 admin 能力 | Credential Manager，按 NODE_ID 隔离 | Android Keystore 加密应用仓 |
-| 普通网盘凭据恢复 | 每个 controller 的 X25519 加密信封；VPS 不保存明文 | 同左 |
-| SSH 密码 | 随机命名管道，只存当前会话 | 只存当前会话内存 |
+| 线路 | `keep / gray / orange / dual` | `keep` 仅已有节点可用 |
+| 伪装站 | 保留、`R` 随机、`A` 按域名稳定、`1—15` 指定 | 新机不能选保留 |
+| 性能 | 保留、自动、低配、标准、高配 | 保留仅已有节点有意义 |
+| WARP | 保持现状、确保开启 | 不会因空输入被静默开启 |
+| 备份 | 变更前强制备份 | v1.0.0 不允许关闭 |
+| 收尾 | 成功后可选整理备份、可选打开面板 | 只有全链路成功才执行 |
+| 端口组 | `443 / 24443 / 8443 / 40000` | 作为一个经过联调的整体固定，不开放零散自由输入 |
 
-公开包禁止出现真实 IP、域名、邮箱、密码、API Token、SSH 私钥、REALITY 私钥、完整订阅或未脱敏交接单。发布前会扫描源码、EXE/APK、ZIP、TAR 和解包内容。
+端口依次对应 Reality 正式端口、Reality 真机验货端口、Cloudflare/XHTTP 边缘与受限源站端口、WARP 本地回环端口。
 
-## 构建与发布
+## 菜单 `[1]` 的安全顺序
 
-```powershell
-# Windows x64：完整测试与运行时冒烟
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Architecture amd64
+1. 载入最近 VPS 或从历史中选择/手填目标，确认并可修改 SSH 用户、端口，再明确选择 SSH 认证方式；
+2. 只读识别远端工具包、内部构建和现有 x-ui 节点；
+3. 收集线路、域名/邮箱、模板、性能、WARP 与收尾选择；
+4. 本地校验并显示遮罩邮箱的完整预览；
+5. 精确输入 `APPLY`；未确认时不上传任何东西；
+6. 现有节点先创建备份，再按需安装/升级工具包；
+7. 使用随机文件名、root-only、`0600` 的单次输入文件施工，用后删除；
+8. Reality `24443` 与 CDN/XHTTP `8443` 均要求真实客户端导入并实际浏览；
+9. 验货成功后才提交正式拓扑、输出交接单、整理备份或打开面板。
 
-# Android 测试与签名 release
-cd android
-.\build-android.ps1 -Task Test
-.\build-signed-release.ps1
+不要为了继续而虚假确认。真机不通就拒绝，之后运行菜单 `[3]` 诊断。
+
+## 两种 SSH 登录方式
+
+| 模式 | 典型场景 | 安全行为 |
+|---|---|---|
+| 临时密码 | 新机、借用电脑、一次维护 | 密码只交给 SSH 认证；一次性 key 在操作结束时撤销并清理 |
+| 节点长期 key | 自己的固定设备 | 按 `VPS + SSH 用户` 独立保存；先实测新 key，再切换或撤旧 key |
+
+标准远端表单会自动载入最近目标（主机/IP、SSH 用户、端口）供确认和修改，不会自动开始操作；没有历史时保持空白。绑定一台 VPS 不会把软件锁死在该 VPS，认证方式仍需本次明确选择（仅在存在对应受保护长期 key 时默认选中）。密码不写日志、不进历史、不回写 EXE/APK。
+
+## 功能概览
+
+| 编号 | 功能 | 关键语义 |
+|---:|---|---|
+| 1 | 安装 / 升级 / 自适应优化 | 唯一上传与施工入口；显式计划、预览、`APPLY` |
+| 2 | 打开 3x-ui | 只经本机 `127.0.0.1` SSH 隧道 |
+| 3 / 4 | 诊断 / 安全修复 | 结构化诊断；修复前备份 |
+| 5 / 6 / 7 | VPS 密码、面板身份、交接单 | `[5]` / `[6]` 均可选随机、自定义或取消；真凭据经完整性验证后才显示/复制 |
+| 8 | 切换 15 套伪装站 | 随机、稳定或指定编号 |
+| 9 / 10 / 15 | 灾备、紧急报告、整理备份 | 报告发出前需脱敏；清理只碰已知受管备份 |
+| 11 / K | 绑定、轮换、归档、恢复 SSH key | 新钥验证成功后再处理旧钥 |
+| 12 / 14 | 剪贴板、本地 10808 代理（macOS 为系统级） | 纯本地操作；macOS `[14]` 保存/恢复 HTTP、HTTPS、SOCKS、PAC/WPAD 原系统设置，仅需管理员授权，不登录 VPS |
+| 13 | 卸载远端工具包 | 保留节点、配置、证书、凭据和备份 |
+| 16 / 17 / T | 性能、流量估算、服务商流量 | 可回滚性能档；vnStat 不冒充厂商账单 |
+| 18 | 全量拆除并恢复基线 | 高风险；先下载并校验救援包，保留 SSH 救援通道 |
+
+菜单 `[5]` 轮换 VPS 登录密码，菜单 `[6]` 轮换 3x-ui 账号/密码。两项都会先显示策略：`1` 随机生成、`2` 自定义、`0` 取消；自定义秘密使用遮罩输入并二次确认，只通过本次 SSH 的 root-only `0600` 一次性文件传给远端，成功、失败或取消都会清理，不写入设置、命令行或普通日志。取消不会修改 VPS。
+
+在 macOS 原生 GUI 或 Darwin CLI 中，菜单 `[14]` 管理 macOS 系统级 HTTP、HTTPS 和 SOCKS 代理，固定目标为 `127.0.0.1:10808`，并关闭 PAC/WPAD 自动接管。配置前会保存当前每个可用网络服务的完整代理设置；撤销或恢复时按已保存的原设置还原。修改系统网络设置时只请求 macOS 的管理员授权，不读取 VPS 地址、SSH 用户或密码，也不会建立 SSH 连接；它不设置 `HTTP_PROXY`、`HTTPS_PROXY` 或其他 shell 环境变量。
+
+完整二级菜单、输入词和失败分支见[完整使用说明书](ProxyNodeAssistant-v1.0.0-完整使用说明书.md)。
+
+## 从 v0.9.0 或旧实验版 v1.0.0 升级
+
+- v0.9.0 或更旧：菜单 `[1]` 识别旧版、先备份、升级工具包并按新计划收敛；
+- 旧实验版 v1.0.0：可见版本相同，但内部 revision 低于重置线；菜单 `[1]` 会执行受控替换并退役其设备门限、网盘和本机 admin/恢复组件；
+- 与当前 EXE/APK 完全同构建：禁止重复上传和 bootstrap；
+- 远端内部 revision 更新：拒绝降级，提示更换更新的客户端。
+
+退役旧实验功能时，会停止并移除受管服务与程序；旧实验遗留文件只作为未接管的原地数据留存，不会重新挂载或提供文件浏览入口。
+
+## 卸载与拆除不是一回事
+
+- `[13] 卸载远端内嵌包`：只移除管理工具和维护入口，节点仍工作；以后用 `[1]` 重新安装管理工具。
+- `[18] 全量拆除并恢复原始基线`：先下载 SHA-256 校验通过的完整救援包，再移除本工具管理的节点栈、网站、证书、WARP、性能与远端工具；SSH 配置、当前登录 key、22 端口和共享系统基础包保留。
+
+## 平台差异
+
+- **Windows**：使用系统 OpenSSH；缺失时只尝试一次安装并验证，不进入循环。可配置本地环境变量、使用 Windows Credential Manager 保存经同意的服务商 API 密钥，并生成 Windows 救援下载。
+- **Android**：原生 Kotlin/Compose 客户端，使用应用内 SSH/SCP；密钥由 Android Keystore 保护，报告通过系统文件选择器导出。没有 Windows 环境变量或 Credential Manager。移动网络等待人工验货时会使用保活，但切网仍可能需要重连。
+
+两端嵌入同一远端工具包、报告同一内部构建身份，并使用同一组线路、模板、性能、端口与失败关闭语义。平台输入约束仍以界面为准：当前 Android 对全新节点只接受 `WARP=确保开启`，已有节点才提供 `保持现状`；Windows 会明确提供两项并要求选择。
+
+## macOS 原生 GUI、两台 VPS 与凭据交接
+
+macOS 的正式桌面入口是原生 SwiftUI 应用包
+`ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg`。它安装到当前用户的
+`~/Applications/ProxyNodeAssistant.app`，不会写入 `/Applications` 或
+`/usr/local/bin`，也不需要管理员权限：
+
+```zsh
+installer -pkg ProxyNodeAssistant-v1.0.0-macos-gui-user.pkg \
+  -target CurrentUserHomeDirectory
+open ~/Applications/ProxyNodeAssistant.app
 ```
 
-双击 `build-all-pc.bat` 可构建 Windows x64、x86、ARM64，随后由 `package.ps1` 生成便携包、源码包、哈希和 SBOM。具体依赖、交叉编译边界与签名说明见 [BUILD.md](BUILD.md)。
+应用中的长期 SSH key 按“VPS 主机 + SSH 用户”独立管理，所以两台 VPS 可以分别绑定不同的 key；新增、查看、归档、恢复和解绑不会把一台主机的 key 误用于另一台。`[12]` 清空剪贴板和 `[14]` macOS 系统级 10808 代理只在本机执行，不会要求登录 VPS。`[14]` 配置前保存当前 HTTP/HTTPS/SOCKS、旁路、PAC/WPAD 系统代理，撤销或恢复会还原这份设置；macOS 可能弹出一次管理员授权提示，授权范围只限本机系统网络设置。
 
-## 常见故障
+在任一目标上运行 `[7] 显示当前凭据交接单` 时，CLI 会先用当前 SSH 会话校验完整的 VPS/面板登录凭据，再把完整交接单通过 macOS `pbcopy` 写入系统剪贴板，并用 `pbpaste` 做字节级回读；回读不一致会明确失败，不会伪报“已复制”。运行日志只保留“已复制”和安全的文件路径提示，不显示密码、私钥或令牌。原生 GUI 会显示“保存好以后按 Enter”和“是否清空含秘密的剪贴板”的明确提示；需要粘贴时选择 `N` 保留内容，粘贴完成后可运行 `[12]` 清空，若一直无人操作则由安全超时自动清理。发行前验收必须分别对每台 VPS 做一次 `[7]`，确认剪贴板非空、包含 `REQUIRED LOGIN CREDENTIALS` 及四个账号/密码字段，然后立即清空剪贴板。
 
-| 症状 | 处理 |
-|---|---|
-| DNS 一直重检 | 暂停 v2rayN TUN/VPN；用 1.1.1.1 与 8.8.8.8 复查公共 DNS |
-| 橙云边缘失败 | 核对 Proxied、Universal SSL、Full (strict)、客户端是否使用 :8443、Cache Bypass |
-| SSH 密码拒绝 | 核对用户、大小写、粘贴空格和厂商是否禁用 root 密码；必要时用 Console 重置 |
-| Host Key 改变 | 先在厂商后台核对重装/迁移，禁止盲目接受 |
-| 面板/网盘白屏 | 保持 TNA 运行；只能使用程序给出的 `127.0.0.1:随机端口`；关闭时点专用隧道按钮 |
-| 输入区不响应 | 等待完整结构化提示；秘密框/普通框会按提示切换；安全停止会有限退出 |
-| 订阅延迟 -1 | 使用 `[20] → [9]` 的当前设备最新链接，检查设备状态、443/8443、防火墙与客户端核心 |
+应用设置中的“卸载应用”会清理当前用户的应用、缓存、日志、偏好和安装收据；如果 `[14]` 曾保存系统代理快照，会先恢复原设置再清理。它不会触碰 VPS 上的节点配置，也不会删除仍由用户管理的 SSH key。
 
-详细失败树见[完整使用说明书](TextNodeAssistant-v0.9.5-完整使用说明书.md)和 [REPRODUCTION-AND-FIX.md](REPRODUCTION-AND-FIX.md)。
+## 支持范围与构建
 
-## 目录
+- Windows 10/11：x64、x86、ARM64；
+- Android 7.0 及以上：universal APK；
+- VPS：Ubuntu / Debian，独立公网 IPv4，root 或可 sudo 账户；
+- 推荐：KVM、1 GB 以上内存、10 GB 以上磁盘、可用的服务商 Console/VNC 救援入口。
 
-```text
-gui/                                  Windows WPF 外层网盘与内层控制台
-android/                              Android 原生客户端
-runbook/text-node-assistant-v0.9.5/   Linux 工具包与 15 套模板
-scripts/                              Shell/GUI/协议静态门禁与真机测试入口
-*.go                                  Windows 工作流、状态机、凭据和恢复逻辑
-```
+源码构建见 [BUILD.md](BUILD.md) 和 [ANDROID.md](ANDROID.md)。发布前必须扫描源码、EXE/APK、内嵌 tar 及说明文档，确认没有真实部署数据或私钥。
 
-MIT License。详见 [LICENSE](LICENSE)。
+## 使用声明
+
+本项目仅用于管理本人拥有或已获明确授权的服务器。使用者应遵守当地法律、VPS/域名/CDN 服务条款和网络服务规则。

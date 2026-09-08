@@ -23,6 +23,10 @@ type NodeIdentity struct {
 }
 
 var serverIDPattern = regexp.MustCompile(`^(?:tna|pna)-srv-[0-9a-f]{32}$`)
+
+// nodeIDPattern is shared by the stable node identity and operation protocol.
+// It is intentionally independent of the (retired) device-admission gate.
+var nodeIDPattern = regexp.MustCompile(`^(?:tna|pna)-node-[0-9a-f]{32}$`)
 var sha256FingerprintPattern = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]+$`)
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
@@ -54,7 +58,16 @@ func parseNodeIdentity(stdout string) (NodeIdentity, error) {
 }
 
 func (a *App) fetchNodeIdentity(c Connection) (NodeIdentity, error) {
-	result := a.rootCapture(c, "bash "+remoteRoot+"/linux/23-node-identity.sh --show")
+	// Keep identity readback usable during an in-place upgrade.  v0.9.x nodes
+	// may expose only the legacy compatibility symlink; selecting the first
+	// root that actually contains the helper avoids minting a replacement
+	// identity merely because the new path is not linked yet.
+	command := "set -u; root=" + shQuote(remoteRoot) + "; " +
+		"[ -x \"$root/linux/23-node-identity.sh\" ] || root=" + shQuote(legacyTextRemoteRoot) + "; " +
+		"[ -x \"$root/linux/23-node-identity.sh\" ] || root=" + shQuote(legacyRunbookRemoteRoot) + "; " +
+		"[ -x \"$root/linux/23-node-identity.sh\" ] || { echo TNA_NODE_IDENTITY_ERROR=SCRIPT_MISSING >&2; exit 62; }; " +
+		"bash \"$root/linux/23-node-identity.sh\" --show"
+	result := a.rootCapture(c, command)
 	if !result.OK() {
 		return NodeIdentity{}, fmt.Errorf("stable node identity readback failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
 	}

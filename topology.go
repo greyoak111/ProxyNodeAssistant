@@ -33,11 +33,11 @@ func (p topologyPlan) baseDomainEmail() (string, string) {
 func (p topologyPlan) lifecycle() string {
 	switch p.Mode {
 	case topologyOrange:
-		return "MANAGED_ORANGE_WITH_DRIVE"
+		return "MANAGED_ORANGE"
 	case topologyDual:
-		return "MANAGED_DUAL_WITH_DRIVE"
+		return "MANAGED_DUAL"
 	default:
-		return "MANAGED_GRAY_WITH_DRIVE"
+		return "MANAGED_GRAY"
 	}
 }
 

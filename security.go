@@ -54,7 +54,6 @@ var allowedSecurityCategories = map[string]bool{
 	"FIREWALL_REJECT":        true,
 	"REALITY_NEW_CONNECTION": true,
 	"CDN_XHTTP_REQUEST":      true,
-	"PRIVATE_DRIVE_REQUEST":  true,
 	"ACME_REQUEST":           true,
 	"WEB_REQUEST":            true,
 	"CURRENT_SSH_CONNECTION": true,

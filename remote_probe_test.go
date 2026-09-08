@@ -1,0 +1,148 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestRemoteToolkitProbeChecksCurrentAndLegacyRoots(t *testing.T) {
+	command := remoteToolkitProbeCommand()
+	for _, root := range []string{remoteRoot, legacyTextRemoteRoot, legacyRunbookRemoteRoot} {
+		if !strings.Contains(command, root) {
+			t.Fatalf("toolkit probe lost compatibility root %q: %s", root, command)
+		}
+	}
+	for _, required := range []string{
+		"THIRD_PARTY_LOCK.env",
+		"00-migrate-legacy-state.sh",
+		"00-auto-install-or-optimize.sh",
+		"00c-retire-v095-device-drive.sh",
+		"01-safe-backup.sh",
+		"04a-reality-api.sh",
+		"04e-export-reality-handoff.sh",
+		"04f-xhttp-cdn-api.sh",
+		"05h-ensure-cdn-certificate.sh",
+		"14-node-doctor.sh",
+		"22-dismantle-managed-node.sh",
+		"23-node-identity.sh",
+		"23-ss2022-tcp.sh",
+		"24-security-baseline.sh",
+		"25-security-events.sh",
+		"27-ip-rebind.sh",
+		"28-topology-reconcile.sh",
+		"28a-install-transaction.sh",
+		"lib-deployment-state.sh",
+		"lib-handoff.sh",
+		"lib-xui-api.sh",
+		"TOOLKIT_BUILD_ID",
+		"TOOLKIT_BUILD_REVISION",
+		"TOOLKIT_COMPLETE",
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("toolkit probe does not verify %q: %s", required, command)
+		}
+	}
+	if strings.Contains(command, "26-device-admission.sh") || strings.Contains(command, "lib-drive.sh") || strings.Contains(command, "29-copyparty-drive.sh") {
+		t.Fatal("reset-line toolkit probe must not make retired device/drive features completeness requirements")
+	}
+}
+
+func TestCredentialReadinessAndHandoffCommandsKeepProtectedStoresInScope(t *testing.T) {
+	readiness := remoteCredentialReadinessCommand()
+	for _, required := range []string{
+		"__PNA_CREDENTIAL_READINESS_BEGIN__",
+		"__PNA_CREDENTIAL_READINESS_END__",
+		"/root/.config/proxy-runbook",
+		"/root/.config/text-node-assistant",
+		"/root/.config/proxy-node-assistant",
+		"CURRENT-LOGIN-CREDENTIALS.env",
+		"FORM_VPS_ACCOUNT",
+		"FORM_VPS_PASSWORD",
+		"FORM_PANEL_ACCOUNT",
+		"FORM_PANEL_PASSWORD",
+	} {
+		if !strings.Contains(readiness, required) {
+			t.Fatalf("credential readiness probe lost %q", required)
+		}
+	}
+	// The preflight may report only presence bits.  It must never stream a
+	// file, variable, or canonical secret field to stdout.
+	for _, forbidden := range []string{
+		"cat \"$file\"",
+		"printf '%s\\n' \"$value\"",
+		"VPS_LOGIN_PASSWORD=%s",
+		"PANEL_PASSWORD=%s",
+	} {
+		if strings.Contains(readiness, forbidden) {
+			t.Fatalf("credential readiness probe may expose secret material via %q", forbidden)
+		}
+	}
+
+	handoff := remoteHandoffCommand()
+	for _, required := range []string{
+		"HANDOFF_RUN_STARTED=read-only-export",
+		"/root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env",
+		"/root/.config/text-node-assistant/CURRENT-LOGIN-CREDENTIALS.env",
+		"/root/.config/proxy-node-assistant/handoff-archive",
+		"/root/.config/proxy-node-assistant/HANDOFF-SECRETS.txt",
+		"/root/.config/proxy-node-assistant/CURRENT-LOGIN-CREDENTIALS.env",
+	} {
+		if !strings.Contains(handoff, required) {
+			t.Fatalf("handoff exporter lost protected store %q", required)
+		}
+	}
+}
+
+func TestRemoteHandoffCanonicalRootHasCredentialPrecedence(t *testing.T) {
+	command := remoteHandoffCommand()
+	// remoteHandoffCommand concatenates files and the form merger keeps the
+	// last usable occurrence.  Keep both compatibility roots ahead of the
+	// canonical proxy-runbook root so an active v1 store wins stale migration
+	// values deterministically.
+	archiveTokens := []string{
+		"emit_archive /root/.config/text-node-assistant/handoff-archive",
+		"emit_archive /root/.config/proxy-node-assistant/handoff-archive",
+		"emit_archive /root/.config/proxy-runbook/handoff-archive",
+	}
+	previous := -1
+	for _, token := range archiveTokens {
+		at := strings.Index(command, token)
+		if at < 0 {
+			t.Fatalf("handoff exporter lost root token %q", token)
+		}
+		if at <= previous {
+			t.Fatalf("handoff root order is not compatibility-first/canonical-last: %q at %d after %d", token, at, previous)
+		}
+		previous = at
+	}
+	canonicalStore := strings.Index(command, "[ -r /root/.config/proxy-runbook/CURRENT-LOGIN-CREDENTIALS.env ]")
+	if canonicalStore <= previous {
+		t.Fatalf("canonical protected store is not emitted after compatibility archives: %d <= %d", canonicalStore, previous)
+	}
+
+	payload := strings.Join([]string{
+		"HANDOFF_RUN_STARTED=precedence-fixture",
+		"VPS_LOGIN_USER=legacy-user",
+		"VPS_LOGIN_PASSWORD=legacy-password",
+		"PANEL_USERNAME=legacy-panel",
+		"PANEL_PASSWORD=legacy-panel-password",
+		"VPS_LOGIN_USER=current-user",
+		"VPS_LOGIN_PASSWORD=current-password",
+		"PANEL_USERNAME=current-panel",
+		"PANEL_PASSWORD=current-panel-password",
+	}, "\n")
+	fields, err := loginCredentialFormFields(payload)
+	if err != nil {
+		t.Fatalf("precedence fixture was rejected: %v", err)
+	}
+	for key, want := range map[string]string{
+		"FORM_VPS_ACCOUNT":    "current-user",
+		"FORM_VPS_PASSWORD":   "current-password",
+		"FORM_PANEL_ACCOUNT":  "current-panel",
+		"FORM_PANEL_PASSWORD": "current-panel-password",
+	} {
+		if got := fields[key]; got != want {
+			t.Errorf("%s = %q, want canonical current value %q", key, got, want)
+		}
+	}
+}

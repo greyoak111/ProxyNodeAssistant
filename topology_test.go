@@ -11,21 +11,9 @@ func TestTopologyPlanBodyMatrix(t *testing.T) {
 		plan topologyPlan
 		mode string
 	}{
-		{
-			name: "gray",
-			plan: topologyPlan{Mode: topologyGray, GrayDomain: "gray.example.com", GrayEmail: "gray@example.com"},
-			mode: "gray",
-		},
-		{
-			name: "orange",
-			plan: topologyPlan{Mode: topologyOrange, OrangeDomain: "edge.example.com", OrangeEmail: "edge@example.com"},
-			mode: "orange",
-		},
-		{
-			name: "dual",
-			plan: topologyPlan{Mode: topologyDual, GrayDomain: "gray.example.com", GrayEmail: "gray@example.com", OrangeDomain: "edge.example.com", OrangeEmail: "edge@example.com"},
-			mode: "dual",
-		},
+		{name: "gray", plan: topologyPlan{Mode: topologyGray, GrayDomain: "gray.example.com", GrayEmail: "gray@example.com"}, mode: "gray"},
+		{name: "orange", plan: topologyPlan{Mode: topologyOrange, OrangeDomain: "edge.example.com", OrangeEmail: "edge@example.com"}, mode: "orange"},
+		{name: "dual", plan: topologyPlan{Mode: topologyDual, GrayDomain: "gray.example.com", GrayEmail: "gray@example.com", OrangeDomain: "edge.example.com", OrangeEmail: "edge@example.com"}, mode: "dual"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

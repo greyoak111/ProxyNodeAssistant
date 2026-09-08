@@ -38,7 +38,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AdminPanelSettings
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Close
@@ -112,6 +111,7 @@ import com.proxynodeassistant.android.model.AuthMode
 import com.proxynodeassistant.android.model.KeyStatus
 import com.proxynodeassistant.android.model.KiwiUsage
 import com.proxynodeassistant.android.model.Language
+import com.proxynodeassistant.android.model.ManagedKeyRecord
 import com.proxynodeassistant.android.model.NodeTarget
 import com.proxynodeassistant.android.model.PromptKind
 import com.proxynodeassistant.android.model.RunStatus
@@ -154,7 +154,7 @@ fun PnaApp(viewModel: AppViewModel) {
     }
     val selectedAction = ui.selectedAction
     if (ui.showConnection && selectedAction != null) {
-        ConnectionDialog(selectedAction, ui.targets, ui.language, viewModel::dismissConnection, viewModel::launch)
+        ConnectionDialog(selectedAction, ui.targets, ui.keys, ui.language, viewModel::dismissConnection, viewModel::launch)
     }
 }
 
@@ -166,8 +166,8 @@ private fun PnaTopBar(page: AppPage, language: Language, workflow: WorkflowUiSta
         colors = TopAppBarDefaults.topAppBarColors(containerColor = Panel),
         title = {
             Column {
-                Text("TNA // NODE OPS", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                Text(if (language == Language.ZH) "ANDROID 0.9.5 / 本地控制 / 失败即停止" else "ANDROID 0.9.5 / LOCAL CONTROL / FAIL-CLOSED", color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                Text("PNA // NODE OPS", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text(if (language == Language.ZH) "ANDROID 1.0.0 / 本地控制 / 失败即停止" else "ANDROID 1.0.0 / LOCAL CONTROL / FAIL-CLOSED", color = TextMuted, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
         },
         navigationIcon = {
@@ -205,7 +205,7 @@ private fun DashboardScreen(language: Language, onAction: (ActionSpec) -> Unit) 
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth().background(Panel).padding(16.dp)) {
             Text(if (language == Language.ZH) "节点基础设施运维控制面" else "NODE INFRASTRUCTURE CONTROL PLANE", fontWeight = FontWeight.Black, fontSize = 21.sp)
-            Text(if (language == Language.ZH) "每项远端操作重新选择节点和认证模式；Android 客户端不内置任何真实目标或秘密。" else "Every remote action re-selects its target and authentication mode. No real target or secret is embedded.", color = TextMuted, fontSize = 12.sp)
+            Text(if (language == Language.ZH) "每项远端操作会载入最近节点地址并要求确认认证方式；Android 客户端不内置任何真实目标或秘密。" else "Every remote action loads the latest node address and requires an explicit authentication choice. No real target or secret is embedded.", color = TextMuted, fontSize = 12.sp)
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                 FilterChip(selected = group == null, onClick = { group = null }, label = { Text(if (language == Language.ZH) "全部" else "ALL") })
@@ -260,19 +260,31 @@ private fun ActionCard(action: ActionSpec, language: Language, onAction: (Action
 private fun ConnectionDialog(
     action: ActionSpec,
     targets: List<NodeTarget>,
+    keys: List<ManagedKeyRecord>,
     language: Language,
     onDismiss: () -> Unit,
     onLaunch: (NodeTarget, AuthMode, String?) -> Unit,
 ) {
     val context = LocalContext.current
-    var host by rememberSaveable { mutableStateOf(targets.firstOrNull()?.host.orEmpty()) }
-    var user by rememberSaveable { mutableStateOf(targets.firstOrNull()?.user ?: "root") }
-    var port by rememberSaveable { mutableStateOf((targets.firstOrNull()?.port ?: 22).toString()) }
-    var mode by rememberSaveable { mutableStateOf(AuthMode.MANAGED_KEY) }
+    // Opening a form restores only the latest non-secret endpoint.  It never
+    // launches a workflow or restores a password.  Authentication remains
+    // unselected unless the matching managed-key pair is already present.
+    val latestTarget = targets.firstOrNull()
+    // Include the endpoint identity as a saveable input.  If history is
+    // refreshed while the dialog is being opened, Compose re-runs these
+    // initializers for the new target instead of retaining an old action's
+    // host/user/port state.
+    val targetIdentity = latestTarget?.id ?: "<none>"
+    var host by rememberSaveable(action.code, targetIdentity) { mutableStateOf(latestTarget?.host.orEmpty()) }
+    var user by rememberSaveable(action.code, targetIdentity) { mutableStateOf(latestTarget?.user ?: "root") }
+    var port by rememberSaveable(action.code, targetIdentity) { mutableStateOf((latestTarget?.port ?: 22).toString()) }
+    var mode by rememberSaveable(action.code, targetIdentity) {
+        mutableStateOf(defaultAuthModeForTarget(latestTarget, keys))
+    }
     var password by remember { mutableStateOf("") }
-    var showPassword by rememberSaveable { mutableStateOf(false) }
+    var showPassword by rememberSaveable(action.code) { mutableStateOf(false) }
     val vpnActive = remember { isVpnActive(context) }
-    var vpnAcknowledged by rememberSaveable { mutableStateOf(false) }
+    var vpnAcknowledged by rememberSaveable(action.code) { mutableStateOf(false) }
     val valid = Validation.validHost(host) && Validation.validUser(user) && port.toIntOrNull()?.let(Validation::validPort) == true
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(), color = Ink) {
@@ -287,12 +299,10 @@ private fun ConnectionDialog(
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     SectionLabel(uiText(language, "登录认证方式", "AUTHENTICATION MODE"))
                     Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        FilterChip(selected = mode == AuthMode.MANAGED_KEY, onClick = { mode = AuthMode.MANAGED_KEY }, label = { Text(if (language == Language.ZH) "节点长期 KEY" else "MANAGED KEY") }, leadingIcon = { Icon(Icons.Outlined.Key, null, Modifier.size(17.dp)) })
-						FilterChip(selected = mode == AuthMode.TEMPORARY_PASSWORD, enabled = action.code != "23", onClick = { mode = AuthMode.TEMPORARY_PASSWORD }, label = { Text(if (language == Language.ZH) "临时密码" else "ONE-TIME PASSWORD") }, leadingIcon = { Icon(Icons.Outlined.Lock, null, Modifier.size(17.dp)) })
+                        FilterChip(selected = mode == AuthMode.MANAGED_KEY, onClick = { mode = AuthMode.MANAGED_KEY; password = "" }, label = { Text(if (language == Language.ZH) "节点长期 KEY" else "MANAGED KEY") }, leadingIcon = { Icon(Icons.Outlined.Key, null, Modifier.size(17.dp)) })
+                        FilterChip(selected = mode == AuthMode.TEMPORARY_PASSWORD, onClick = { mode = AuthMode.TEMPORARY_PASSWORD }, label = { Text(if (language == Language.ZH) "临时密码" else "ONE-TIME PASSWORD") }, leadingIcon = { Icon(Icons.Outlined.Lock, null, Modifier.size(17.dp)) })
                     }
-					Text(if (action.code == "23") {
-						uiText(language, "这里必须选择旧 endpoint 和原长期 key；新 IP 会在下一步输入。只有原公钥被拒绝时才会临时询问密码。", "Select the old endpoint and original managed key here; the new IP is entered next. A temporary password is requested only if the original public key is rejected.")
-					} else if (language == Language.ZH) "长期 key 按 user@host:port 独立查找；若不存在，会先询问一次密码，再明确询问是否绑定。" else "Managed keys are isolated by user@host:port. If absent, one password is requested before an explicit bind prompt.", color = TextMuted, fontSize = 12.sp)
+                    Text(if (language == Language.ZH) "已自动载入最近目标的地址，可修改；有对应长期 key 会默认选中，否则必须明确选择认证方式。密码每次输入且不保存。" else "The latest target address is loaded automatically and remains editable. A matching managed key is selected by default; otherwise choose authentication explicitly. Passwords are entered each run and never saved.", color = TextMuted, fontSize = 12.sp)
 
                     if (vpnActive) {
                         OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(2.dp), border = BorderStroke(1.dp, Amber), colors = CardDefaults.outlinedCardColors(containerColor = Panel)) {
@@ -311,7 +321,13 @@ private fun ConnectionDialog(
                     if (targets.isNotEmpty()) {
                         SectionLabel(uiText(language, "最近使用的节点", "RECENT TARGETS"))
                         targets.take(8).forEach { target ->
-                            OutlinedCard(Modifier.fillMaxWidth().clickable { host = target.host; user = target.user; port = target.port.toString() }, shape = RoundedCornerShape(2.dp), border = BorderStroke(1.dp, GridLine), colors = CardDefaults.outlinedCardColors(containerColor = Panel)) {
+                            OutlinedCard(Modifier.fillMaxWidth().clickable {
+                                host = target.host
+                                user = target.user
+                                port = target.port.toString()
+                                mode = defaultAuthModeForTarget(target, keys)
+                                password = ""
+                            }, shape = RoundedCornerShape(2.dp), border = BorderStroke(1.dp, GridLine), colors = CardDefaults.outlinedCardColors(containerColor = Panel)) {
                                 Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Outlined.Dns, null, tint = Cyan); Spacer(Modifier.width(10.dp))
                                     Column { Text(target.label.ifBlank { target.host }, fontFamily = FontFamily.Monospace); Text(target.id, color = TextMuted, fontSize = 11.sp) }
@@ -319,7 +335,7 @@ private fun ConnectionDialog(
                             }
                         }
                     }
-					SectionLabel(if (action.code == "23") uiText(language, "原节点记录（旧 IP）", "ORIGINAL NODE RECORD (OLD IP)") else uiText(language, "目标 VPS", "TARGET"))
+                    SectionLabel(uiText(language, "目标 VPS", "TARGET"))
                     OutlinedTextField(host, { host = it }, Modifier.fillMaxWidth(), label = { Text(uiText(language, "VPS IP 或主机名", "VPS IP / HOSTNAME")) }, singleLine = true, isError = host.isNotBlank() && !Validation.validHost(host))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedTextField(user, { user = it }, Modifier.weight(1f), label = { Text(uiText(language, "SSH 用户名", "SSH USER")) }, singleLine = true)
@@ -339,8 +355,8 @@ private fun ConnectionDialog(
                     }
                     Spacer(Modifier.height(8.dp))
                     Button(
-                        onClick = { onLaunch(NodeTarget(host.trim(), user.trim(), port.toInt()), mode, password.takeIf { it.isNotBlank() }) },
-                        enabled = valid && (mode == AuthMode.MANAGED_KEY || password.isNotBlank()) && (!vpnActive || vpnAcknowledged),
+                        onClick = { onLaunch(NodeTarget(host.trim(), user.trim(), port.toInt()), requireNotNull(mode), password.takeIf { it.isNotBlank() }) },
+                        enabled = valid && mode != null && (mode == AuthMode.MANAGED_KEY || password.isNotBlank()) && (!vpnActive || vpnAcknowledged),
                         modifier = Modifier.fillMaxWidth().height(54.dp),
                         shape = RoundedCornerShape(2.dp),
                     ) { Text(if (language == Language.ZH) "建立安全会话并执行" else "ESTABLISH SESSION + EXECUTE", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) }
@@ -349,6 +365,18 @@ private fun ConnectionDialog(
         }
     }
 }
+
+/**
+ * Returns the safe default authentication mode for a remembered endpoint.
+ * A managed key is selected only for an explicitly bound matching target;
+ * otherwise null forces the user to choose a method in the connection form.
+ */
+internal fun defaultAuthModeForTarget(target: NodeTarget?, keys: List<ManagedKeyRecord>): AuthMode? =
+    if (target != null && keys.any { it.targetId == target.id && it.status == KeyStatus.BOUND }) {
+        AuthMode.MANAGED_KEY
+    } else {
+        null
+    }
 
 private fun isVpnActive(context: Context): Boolean = runCatching {
     val manager = context.getSystemService(ConnectivityManager::class.java)
@@ -397,7 +425,10 @@ private fun WorkflowScreen(state: WorkflowUiState, prompt: WorkflowPrompt?, tunn
         state.secretHandoff?.let { secret ->
             Column(Modifier.fillMaxWidth().background(Panel).border(1.dp, Amber).padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.AdminPanelSettings, null, tint = Amber); Spacer(Modifier.width(8.dp)); Text(uiText(language, "已校验的秘密交接单", "VERIFIED SECRET HANDOFF"), color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    // A handoff is a credential bundle, not an on-device
+                    // account or access gate.  Use the key icon so the UI
+                    // cannot be mistaken for a privileged setup screen.
+                    Icon(Icons.Outlined.Key, null, tint = Amber); Spacer(Modifier.width(8.dp)); Text(uiText(language, "已校验的秘密交接单", "VERIFIED SECRET HANDOFF"), color = Amber, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f)); TextButton(onClick = { revealSecrets = !revealSecrets }) { Text(if (revealSecrets) uiText(language, "隐藏", "HIDE") else uiText(language, "显示", "REVEAL")) }
                 }
                 if (revealSecrets) SelectionContainer { Text(secret, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 9, overflow = TextOverflow.Ellipsis) }
@@ -427,7 +458,22 @@ private fun PromptPanel(prompt: WorkflowPrompt, language: Language, submit: (Str
     Column(Modifier.fillMaxWidth().imePadding().background(Panel).border(1.dp, if (prompt.danger) Critical else GridLine).padding(12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
         Text(prompt.title.uppercase(), color = if (prompt.danger) Critical else Cyan, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
         Text(prompt.message, color = TextPrimary, fontSize = 12.sp)
-        if (prompt.kind == PromptKind.YES_NO) {
+        if (prompt.kind == PromptKind.CHOICE && prompt.options.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                prompt.options.forEach { option ->
+                    OutlinedButton(
+                        onClick = { submit(option) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(2.dp),
+                    ) {
+                        Text(option, modifier = Modifier.fillMaxWidth(), fontFamily = FontFamily.Monospace)
+                    }
+                }
+                OutlinedButton(onClick = cancel, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(2.dp)) {
+                    Text(uiText(language, "安全停止", "SAFE STOP"))
+                }
+            }
+        } else if (prompt.kind == PromptKind.YES_NO) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { submit("y") }, shape = RoundedCornerShape(2.dp), modifier = Modifier.weight(1f)) { Text(uiText(language, "是 / Y", "YES / Y")) }
                 OutlinedButton(onClick = { submit("n") }, shape = RoundedCornerShape(2.dp), modifier = Modifier.weight(1f)) { Text(uiText(language, "否 / N", "NO / N")) }
@@ -510,7 +556,7 @@ private fun KeysScreen(language: Language, keys: List<com.proxynodeassistant.and
         onDismiss = { showExportPassphrase = false },
         onConfirm = { passphrase ->
             runCatching { viewModel.exportKeyBackup(passphrase) }
-                .onSuccess { exportPayload = it; showExportPassphrase = false; exportLauncher.launch("TextNodeAssistant-keys-v0.9.5.tnakeys") }
+                .onSuccess { exportPayload = it; showExportPassphrase = false; exportLauncher.launch("ProxyNodeAssistant-keys-v1.0.0.pnakeys") }
                 .onFailure { viewModel.showMessage(localizedUiError(it.message, language)) }
         },
     )
@@ -706,7 +752,7 @@ private fun formatDateTime(epochMs: Long, language: Language): String = SimpleDa
 @Composable
 private fun AboutScreen(language: Language) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        PageHeader("BUILD 0.9.5 / ANDROID", if (language == Language.ZH) "原生 Kotlin + Compose；SSH 基于 ConnectBot 正式 sshlib；远端与 TextNodeAssistant v0.9.5 共用同一施工核心。" else "Native Kotlin + Compose; ConnectBot production sshlib; shares the TextNodeAssistant v0.9.5 remote core.")
+        PageHeader("BUILD 1.0.0-R112 / ANDROID", if (language == Language.ZH) "原生 Kotlin + Compose；SSH 基于 ConnectBot 正式 sshlib；远端复用 ProxyNodeAssistant v1.0.0 工具包。" else "Native Kotlin + Compose; ConnectBot production sshlib; shared ProxyNodeAssistant v1.0.0 remote toolkit.")
         LocalBlock(uiText(language, "隐私契约", "PRIVACY CONTRACT"), uiText(language, "不内置任何真实节点", "NO EMBEDDED TARGETS"), uiText(language, "APK 中不编译任何真实 VPS IP、域名、邮箱、密码、API Key、Token 或私钥。", "No real VPS IP, domain, email, password, API key, token, or private key is compiled into the APK."))
         LocalBlock(uiText(language, "SSH 主机公钥", "HOST KEY"), uiText(language, "首次信任 + 指纹固定", "TOFU + PINNING"), uiText(language, "首次连接必须明确确认 TRUST；主机公钥变化时必须输入不同的 REPLACE，并且只在密码学握手成功后保存。", "First-use fingerprints require explicit TRUST. A changed key requires the distinct REPLACE confirmation and is saved only after a successful cryptographic handshake."))
         LocalBlock(uiText(language, "失败即停止", "FAIL CLOSED"), uiText(language, "不串联伪成功", "NO CHAINED SUCCESS"), uiText(language, "远端非零退出码绝不会触发凭据复制或自动打开面板；结构化元数据必须通过标记和字段校验。", "Non-zero remote exit codes never trigger handoff copy or automatic panel opening. Structured metadata must pass marker and field validation."))

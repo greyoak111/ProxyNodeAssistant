@@ -21,9 +21,9 @@ class ManagedKeyRepository(context: Context, private val vault: EncryptedVault) 
         val pair = Ed25519KeyPairGenerator().generateKeyPair()
         val privateKey = pair.private as Ed25519PrivateKey
         val publicKey = pair.public as Ed25519PublicKey
-        val privateText = OpenSSHKeyEncoder.exportOpenSSH(privateKey, publicKey, "text-node-assistant-android")
+        val privateText = OpenSSHKeyEncoder.exportOpenSSH(privateKey, publicKey, "proxy-node-assistant-android")
         val blob = Ed25519Verify.get().encodePublicKey(publicKey)
-        val publicText = "ssh-ed25519 ${Base64.encodeToString(blob, Base64.NO_WRAP)} text-node-assistant-android"
+        val publicText = "ssh-ed25519 ${Base64.encodeToString(blob, Base64.NO_WRAP)} proxy-node-assistant-android"
         return ManagedKeyRecord(targetId, privateText, publicText)
     }
 
@@ -67,12 +67,17 @@ class ManagedKeyRepository(context: Context, private val vault: EncryptedVault) 
         return keys.size
     }
 
+    /**
+     * Move the active key binding to a newly addressed endpoint after the
+     * remote identity and host key have been verified.  The old record remains
+     * available as BACKUP evidence; no key material is regenerated.
+     */
     fun rebind(oldTargetId: String, newTargetId: String): Boolean {
         if (oldTargetId == newTargetId || get(newTargetId, KeyStatus.BOUND) != null) return false
         val record = get(oldTargetId, KeyStatus.BOUND) ?: return false
-        put(record.copy(targetId = newTargetId, status = KeyStatus.BOUND, createdEpochMs = System.currentTimeMillis()))
+        put(record.copy(targetId = newTargetId, status = KeyStatus.BOUND))
         archive(oldTargetId)
-        return true
+        return get(newTargetId, KeyStatus.BOUND)?.publicKeyOpenSsh == record.publicKeyOpenSsh
     }
 
     fun restore(targetId: String, createdEpochMs: Long? = null): Boolean {

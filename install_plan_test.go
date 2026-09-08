@@ -1,0 +1,229 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func validGrayPlan() InstallPlan {
+	plan := defaultInstallPlan()
+	plan.Gray = RouteIdentity{Domain: "cover.example.com", Email: "ops@example.com"}
+	return plan
+}
+
+func TestInstallPlanGrayValidation(t *testing.T) {
+	if err := validGrayPlan().validateFor(false); err != nil {
+		t.Fatalf("default gray plan should validate: %v", err)
+	}
+}
+
+func TestInstallPlanKeepOnlyForExistingNode(t *testing.T) {
+	plan := defaultInstallPlan()
+	plan.Preferences.RouteMode = RouteKeep
+	plan.Preferences.Performance = PerformancePreserve
+	plan.Preferences.WarpMode = WarpPreserve
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "existing managed node") {
+		t.Fatalf("fresh node must reject keep, got %v", err)
+	}
+	if err := plan.validateFor(true); err != nil {
+		t.Fatalf("existing node should accept keep without route identity: %v", err)
+	}
+}
+
+func TestInstallPlanDualNeedsDifferentDomains(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Preferences.RouteMode = RouteDual
+	plan.Orange = RouteIdentity{Domain: "cover.example.com", Email: "cdn@example.com"}
+	if err := plan.validate(); err == nil || !strings.Contains(err.Error(), "different hostnames") {
+		t.Fatalf("expected a distinct-hostname error, got %v", err)
+	}
+}
+
+func TestInstallPlanReviewMasksEmail(t *testing.T) {
+	plan := validGrayPlan()
+	joined := strings.Join(plan.reviewLines(), "\n")
+	if strings.Contains(joined, plan.Gray.Email) || !strings.Contains(joined, "o***@example.com") {
+		t.Fatalf("review must mask email local-part: %s", joined)
+	}
+}
+
+func TestInstallPreferenceSummaryContainsNoRouteIdentity(t *testing.T) {
+	plan := validGrayPlan()
+	joined := strings.Join(plan.preferenceSummaryLines(), "\n")
+	if strings.Contains(joined, plan.Gray.Domain) || strings.Contains(joined, plan.Gray.Email) {
+		t.Fatalf("diagnostic preference summary leaked route identity: %s", joined)
+	}
+}
+
+func TestInstallPlanRejectsUncoordinatedPorts(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Ports.RealityShadow = 24444
+	if err := plan.validate(); err == nil || !strings.Contains(err.Error(), "coordinated port plan") {
+		t.Fatalf("expected a coordinated-port error, got %v", err)
+	}
+}
+
+func TestInstallPlanAcceptsCustomSS2022Port(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Ports.SS2022TCP = 31443
+	if err := plan.validate(); err != nil {
+		t.Fatalf("custom non-conflicting SS2022 port should validate: %v", err)
+	}
+}
+
+func TestInstallPlanUsesDedicatedFormalSS2022Default(t *testing.T) {
+	plan := defaultInstallPlan()
+	if plan.Ports.SS2022TCP != defaultSS2022TCPPort || plan.Ports.SS2022TCP == legacySS2022TrialPort {
+		t.Fatalf("formal SS2022 default must be dedicated from the trial port: %#v", plan.Ports)
+	}
+}
+
+func TestInstallPlanRejectsTrialPortForNewNode(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Ports.SS2022TCP = legacySS2022TrialPort
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("new plans must reject the legacy trial port, got %v", err)
+	}
+}
+
+func TestInstallPlanKeepsLegacyTrialPortOnlyForExistingKeep(t *testing.T) {
+	plan := defaultInstallPlan()
+	plan.Preferences.RouteMode = RouteKeep
+	plan.Preferences.Performance = PerformancePreserve
+	plan.Preferences.WarpMode = WarpPreserve
+	plan.Ports.SS2022TCP = legacySS2022TrialPort
+	if err := plan.validateFor(true); err != nil {
+		t.Fatalf("existing keep plan should be able to preserve a legacy trial port: %v", err)
+	}
+}
+
+func TestInstallPlanRejectsConflictingSS2022Port(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Ports.SS2022TCP = 443
+	if err := plan.validate(); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("expected an SS2022 port conflict, got %v", err)
+	}
+}
+
+func TestInstallPreferencesCannotSerializeRouteIdentity(t *testing.T) {
+	plan := validGrayPlan()
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, plan.Gray.Domain) || strings.Contains(text, plan.Gray.Email) {
+		t.Fatalf("route identity leaked into persisted JSON: %s", text)
+	}
+}
+
+func TestInstallPlanRequiresBackupBeforeChange(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Preferences.BackupBeforeChange = false
+	if err := plan.validate(); err == nil || !strings.Contains(err.Error(), "cannot be disabled") {
+		t.Fatalf("expected mandatory backup error, got %v", err)
+	}
+}
+
+func TestCredentialPlanCustomValidationAndRedaction(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Credentials = CredentialPlan{
+		VPSMode:       CredentialCustom,
+		VPSPassword:   "vps-custom-secret",
+		PanelMode:     CredentialCustom,
+		PanelAccount:  "operator_1",
+		PanelPassword: "panel-custom-secret",
+	}
+	if err := plan.validateFor(false); err != nil {
+		t.Fatalf("custom credential plan should validate: %v", err)
+	}
+	review := strings.Join(plan.reviewLines(), "\n")
+	for _, secret := range []string{plan.Credentials.VPSPassword, plan.Credentials.PanelPassword} {
+		if strings.Contains(review, secret) {
+			t.Fatalf("credential secret leaked into install review: %q", review)
+		}
+	}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(data)
+	for _, secret := range []string{plan.Credentials.VPSPassword, plan.Credentials.PanelPassword, plan.Credentials.PanelAccount} {
+		if strings.Contains(serialized, secret) {
+			t.Fatalf("ephemeral credential leaked into plan JSON: %q", serialized)
+		}
+	}
+}
+
+func TestCredentialPlanFreshCannotPreserve(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Credentials.VPSMode = CredentialPreserve
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "fresh install cannot preserve VPS") {
+		t.Fatalf("fresh plan should reject preserved VPS credentials, got %v", err)
+	}
+}
+
+func TestCredentialPlanRejectsShortOrUnsafeCustomSecret(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Credentials = CredentialPlan{
+		VPSMode:     CredentialCustom,
+		VPSPassword: "short",
+		PanelMode:   CredentialRandom,
+	}
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "custom VPS password") {
+		t.Fatalf("short custom VPS password should be rejected, got %v", err)
+	}
+	plan.Credentials.VPSPassword = "valid-pass\nunsafe"
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "custom VPS password") {
+		t.Fatalf("newline custom VPS password should be rejected, got %v", err)
+	}
+	plan.Credentials.VPSPassword = "valid-pass\x00unsafe"
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "custom VPS password") {
+		t.Fatalf("NUL custom VPS password should be rejected, got %v", err)
+	}
+}
+
+func TestCredentialPlanPanelAccountLengthMatchesRunbook(t *testing.T) {
+	plan := validGrayPlan()
+	plan.Credentials = CredentialPlan{
+		VPSMode:       CredentialRandom,
+		PanelMode:     CredentialCustom,
+		PanelAccount:  "a" + strings.Repeat("b", 63),
+		PanelPassword: "panel-custom-secret",
+	}
+	if err := plan.validateFor(false); err != nil {
+		t.Fatalf("64-character panel account should validate: %v", err)
+	}
+	plan.Credentials.PanelAccount += "c"
+	if err := plan.validateFor(false); err == nil || !strings.Contains(err.Error(), "panel account") {
+		t.Fatalf("65-character panel account should be rejected, got %v", err)
+	}
+}
+
+func TestCredentialMutationModeCancelAndClosedInput(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "cancel", input: "0\n", wantErr: false},
+		{name: "closed", input: "", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app := &App{reader: bufio.NewReader(strings.NewReader(test.input)), lang: LangEN}
+			mode, err := app.chooseCredentialMutationMode("Panel", "Panel")
+			if test.wantErr {
+				if !errors.Is(err, errInputClosed) {
+					t.Fatalf("closed input error = %v, want %v", err, errInputClosed)
+				}
+				return
+			}
+			if err != nil || mode != "" {
+				t.Fatalf("cancel should be a no-op, mode=%q err=%v", mode, err)
+			}
+		})
+	}
+}

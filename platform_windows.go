@@ -4,10 +4,15 @@ package main
 
 import (
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
 )
+
+func nativeCommandName(name string) string { return name }
+
+func nullDevicePath() string { return "NUL" }
 
 var consoleEchoMu sync.Mutex
 
@@ -46,6 +51,15 @@ func disableConsoleEcho() func() {
 
 func openURL(rawURL string) error {
 	cmd := exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", rawURL)
+	hideChildWindow(cmd)
+	return cmd.Start()
+}
+
+func openDirectory(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	cmd := exec.Command("explorer.exe", path)
 	hideChildWindow(cmd)
 	return cmd.Start()
 }

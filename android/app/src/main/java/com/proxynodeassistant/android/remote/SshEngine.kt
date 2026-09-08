@@ -34,48 +34,70 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 
 data class SessionCredential(val mode: AuthMode, val password: String? = null)
-data class ReboundSshSession(val handle: SshHandle, val presentedHostKey: HostKeyRecord, val usedPasswordFallback: Boolean)
+data class ReboundSshSession(
+    val handle: SshHandle,
+    val presentedHostKey: HostKeyRecord,
+    val usedPasswordFallback: Boolean,
+)
 
 class SshEngine(
     private val hostKeys: HostKeyRepository,
     private val managedKeys: ManagedKeyRepository,
     private val prompts: PromptBroker,
 ) {
-	suspend fun connectRebound(oldTarget: NodeTarget, newTarget: NodeTarget, password: String?, language: Language = Language.ZH): ReboundSshSession = withContext(Dispatchers.IO) {
-		val pinned = hostKeys.get(oldTarget.id) ?: error("LOCAL_HOST_KEY_RECORD_NOT_FOUND")
-		val key = managedKeys.get(oldTarget.id) ?: error("LOCAL_KEY_RECORD_NOT_FOUND")
-		var presented: HostKeyRecord? = null
-		var hostKeyWasPresented = false
-		val connection = Connection(newTarget.host, newTarget.port)
-		val verifier = ServerHostKeyVerifier { _, _, algorithm, serverHostKey ->
-			hostKeyWasPresented = true
-			val encoded = Base64.encodeToString(serverHostKey, Base64.NO_WRAP)
-			val fingerprint = KeyFingerprint.createSHA256Fingerprint(serverHostKey)
-			val candidate = HostKeyRecord(newTarget.id, algorithm, encoded, fingerprint)
-			if (pinned.algorithm == algorithm && pinned.keyBase64 == encoded && pinned.fingerprint == fingerprint) {
-				presented = candidate
-				true
-			} else false
-		}
-		try {
-			try {
-				connection.connect(verifier, 12_000, 25_000)
-			} catch (error: Throwable) {
-				throw IllegalStateException(if (hostKeyWasPresented) "HOST_KEY_MISMATCH" else "SSH_HOST_KEY_UNAVAILABLE", error)
-			}
-			var usedPassword = false
-			var authenticated = connection.authenticateWithPublicKey(newTarget.user, key.privateKeyOpenSsh.toCharArray(), null)
-			if (!authenticated && password != null) {
-				usedPassword = true
-				authenticated = authenticatePassword(connection, newTarget.user, password)
-			}
-			check(authenticated) { if (password == null) "PUBLICKEY_REJECTED" else "PUBLICKEY_REJECTED_AND_PASSWORD_FAILED" }
-			ReboundSshSession(SshHandle(connection, newTarget, password, prompts, language), requireNotNull(presented), usedPassword)
-		} catch (error: Throwable) {
-			connection.close()
-			throw error
-		}
-	}
+    /**
+     * Connect to a new endpoint while accepting only the host key pinned for
+     * the old endpoint and authenticating with the already-bound key.  This is
+     * intentionally separate from normal connect(): a changed public IP must
+     * never be treated as a first-time host-key approval.
+     */
+    suspend fun connectRebound(
+        oldTarget: NodeTarget,
+        newTarget: NodeTarget,
+        password: String?,
+        language: Language = Language.ZH,
+    ): ReboundSshSession = withContext(Dispatchers.IO) {
+        require(oldTarget.id != newTarget.id) { "REBOUND_TARGET_UNCHANGED" }
+        val pinned = hostKeys.get(oldTarget.id) ?: error("LOCAL_HOST_KEY_RECORD_NOT_FOUND")
+        val key = managedKeys.get(oldTarget.id) ?: error("LOCAL_KEY_RECORD_NOT_FOUND")
+        var presented: HostKeyRecord? = null
+        var hostKeyWasPresented = false
+        val connection = Connection(newTarget.host, newTarget.port)
+        val verifier = ServerHostKeyVerifier { _, _, algorithm, serverHostKey ->
+            hostKeyWasPresented = true
+            val encoded = Base64.encodeToString(serverHostKey, Base64.NO_WRAP)
+            val fingerprint = KeyFingerprint.createSHA256Fingerprint(serverHostKey)
+            val candidate = HostKeyRecord(newTarget.id, algorithm, encoded, fingerprint)
+            if (pinned.algorithm == algorithm && pinned.keyBase64 == encoded && pinned.fingerprint == fingerprint) {
+                presented = candidate
+                true
+            } else {
+                false
+            }
+        }
+        try {
+            try {
+                connection.connect(verifier, 12_000, 25_000)
+            } catch (error: Throwable) {
+                throw IllegalStateException(if (hostKeyWasPresented) "HOST_KEY_MISMATCH" else "SSH_HOST_KEY_UNAVAILABLE", error)
+            }
+            var usedPassword = false
+            var authenticated = connection.authenticateWithPublicKey(newTarget.user, key.privateKeyOpenSsh.toCharArray(), null)
+            if (!authenticated && password != null) {
+                usedPassword = true
+                authenticated = authenticatePassword(connection, newTarget.user, password)
+            }
+            check(authenticated) { if (password == null) "PUBLICKEY_REJECTED" else "PUBLICKEY_REJECTED_AND_PASSWORD_FAILED" }
+            ReboundSshSession(
+                SshHandle(connection, newTarget, password, prompts, language),
+                requireNotNull(presented),
+                usedPassword,
+            )
+        } catch (error: Throwable) {
+            connection.close()
+            throw error
+        }
+    }
 
     suspend fun connect(target: NodeTarget, credential: SessionCredential, language: Language = Language.ZH): SshHandle = withContext(Dispatchers.IO) {
         var candidate: HostKeyRecord? = null
@@ -172,7 +194,7 @@ class SshHandle internal constructor(
     private val forwards = Collections.synchronizedList(mutableListOf<LocalPortForwarder>())
     private var cachedSudoPassword: String? = loginPassword
     private val keepAlive = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "tna-ssh-keepalive").apply { isDaemon = true }
+        Thread(task, "pna-ssh-keepalive").apply { isDaemon = true }
     }.apply {
         scheduleWithFixedDelay({ runCatching { connection.sendIgnorePacket() } }, 15, 15, TimeUnit.SECONDS)
     }
@@ -252,10 +274,11 @@ class SshHandle internal constructor(
 
     private fun decodePrompt(line: String): Pair<PromptKind, String>? {
         val variants = listOf(
-            "TNA_GUI_PROMPT_B64=" to PromptKind.TEXT,
-            "TNA_GUI_SECRET_B64=" to PromptKind.SECRET,
             "PNA_GUI_PROMPT_B64=" to PromptKind.TEXT,
             "PNA_GUI_SECRET_B64=" to PromptKind.SECRET,
+            // v0.9.x toolkit prompts are accepted during an in-place upgrade.
+            "TNA_GUI_PROMPT_B64=" to PromptKind.TEXT,
+            "TNA_GUI_SECRET_B64=" to PromptKind.SECRET,
         )
         for ((prefix, kind) in variants) {
             val index = line.indexOf(prefix)

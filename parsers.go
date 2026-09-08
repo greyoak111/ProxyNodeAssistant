@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -11,27 +10,37 @@ import (
 )
 
 const (
-	handoffBegin = "__TNA_HANDOFF_BEGIN__"
-	handoffEnd   = "__TNA_HANDOFF_END__"
-	panelBegin   = "__TNA_PANEL_META_BEGIN__"
-	panelEnd     = "__TNA_PANEL_META_END__"
-	statusBegin  = "__TNA_RUN_STATUS_BEGIN__"
-	statusEnd    = "__TNA_RUN_STATUS_END__"
-	diagBegin    = "__TNA_DIAG_V1_BEGIN__"
-	diagEnd      = "__TNA_DIAG_V1_END__"
-	toolkitBegin = "__TNA_TOOLKIT_PROBE_BEGIN__"
-	toolkitEnd   = "__TNA_TOOLKIT_PROBE_END__"
+	handoffBegin = "__PNA_HANDOFF_BEGIN__"
+	handoffEnd   = "__PNA_HANDOFF_END__"
+	panelBegin   = "__PNA_PANEL_META_BEGIN__"
+	panelEnd     = "__PNA_PANEL_META_END__"
+	statusBegin  = "__PNA_RUN_STATUS_BEGIN__"
+	statusEnd    = "__PNA_RUN_STATUS_END__"
+	diagBegin    = "__PNA_DIAG_V1_BEGIN__"
+	diagEnd      = "__PNA_DIAG_V1_END__"
+	toolkitBegin = "__PNA_TOOLKIT_PROBE_BEGIN__"
+	toolkitEnd   = "__PNA_TOOLKIT_PROBE_END__"
+	// Credential readiness is a deliberately secret-free preflight.  It tells
+	// the install form whether a complete retained VPS/panel login bundle is
+	// available, without transporting any account or password value to the
+	// client.  The actual preserve path still verifies the credentials remotely
+	// before committing an upgrade.
+	credentialReadinessBegin = "__PNA_CREDENTIAL_READINESS_BEGIN__"
+	credentialReadinessEnd   = "__PNA_CREDENTIAL_READINESS_END__"
 
-	legacyHandoffBegin = "__PNA_HANDOFF_BEGIN__"
-	legacyHandoffEnd   = "__PNA_HANDOFF_END__"
-	legacyPanelBegin   = "__PNA_PANEL_META_BEGIN__"
-	legacyPanelEnd     = "__PNA_PANEL_META_END__"
-	legacyStatusBegin  = "__PNA_RUN_STATUS_BEGIN__"
-	legacyStatusEnd    = "__PNA_RUN_STATUS_END__"
-	legacyDiagBegin    = "__PNA_DIAG_V1_BEGIN__"
-	legacyDiagEnd      = "__PNA_DIAG_V1_END__"
-	legacyToolkitBegin = "__PNA_TOOLKIT_PROBE_BEGIN__"
-	legacyToolkitEnd   = "__PNA_TOOLKIT_PROBE_END__"
+	// v0.9.5 used the TNA marker namespace.  Keep these aliases while the
+	// reset line emits PNA markers so an existing toolkit can still be queried
+	// and its handoff/diagnostic payload can be validated during migration.
+	legacyHandoffBegin = "__TNA_HANDOFF_BEGIN__"
+	legacyHandoffEnd   = "__TNA_HANDOFF_END__"
+	legacyPanelBegin   = "__TNA_PANEL_META_BEGIN__"
+	legacyPanelEnd     = "__TNA_PANEL_META_END__"
+	legacyStatusBegin  = "__TNA_RUN_STATUS_BEGIN__"
+	legacyStatusEnd    = "__TNA_RUN_STATUS_END__"
+	legacyDiagBegin    = "__TNA_DIAG_V1_BEGIN__"
+	legacyDiagEnd      = "__TNA_DIAG_V1_END__"
+	legacyToolkitBegin = "__TNA_TOOLKIT_PROBE_BEGIN__"
+	legacyToolkitEnd   = "__TNA_TOOLKIT_PROBE_END__"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
@@ -39,117 +48,33 @@ var closedPattern = regexp.MustCompile(`(?i)^Connection to .+ closed\.$`)
 var diagCodePattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 var toolkitVersionPattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){1,3}$`)
 var toolkitBuildPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
-var uuidPattern = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$`)
-var cdnHostnamePattern = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,63}$`)
-var xhttpPathPattern = regexp.MustCompile(`^/[0-9a-f]{32}/$`)
-
-type CDNXHTTPLink struct {
-	UUID   string
-	Domain string
-	Port   int
-	Path   string
-	Label  string
-}
-
-func validateCDNXHTTPProfile(profile CDNXHTTPLink) error {
-	if !uuidPattern.MatchString(profile.UUID) {
-		return errors.New("CDN XHTTP link has an invalid UUID")
-	}
-	if !cdnHostnamePattern.MatchString(profile.Domain) {
-		return errors.New("CDN XHTTP link has an invalid hostname")
-	}
-	if profile.Port != 443 && profile.Port != 8443 {
-		return errors.New("CDN XHTTP link port must be 443 or 8443")
-	}
-	if !xhttpPathPattern.MatchString(profile.Path) {
-		return errors.New("CDN XHTTP link path must be / plus 32 lowercase hex characters plus /")
-	}
-	expectedLabel := "TNA-CDN-XHTTP"
-	if profile.Port == 8443 {
-		expectedLabel = "TNA-CDN-XHTTP-STAGE"
-	}
-	if profile.Label != expectedLabel {
-		return fmt.Errorf("CDN XHTTP link label must be %s", expectedLabel)
-	}
-	return nil
-}
-
-func buildCDNXHTTPLink(profile CDNXHTTPLink) (string, error) {
-	if err := validateCDNXHTTPProfile(profile); err != nil {
-		return "", err
-	}
-	query := url.Values{}
-	query.Set("encryption", "none")
-	query.Set("security", "tls")
-	query.Set("sni", profile.Domain)
-	query.Set("fp", "chrome")
-	query.Set("type", "xhttp")
-	query.Set("host", profile.Domain)
-	query.Set("path", profile.Path)
-	query.Set("mode", "packet-up")
-	parsed := url.URL{
-		Scheme:   "vless",
-		User:     url.User(profile.UUID),
-		Host:     net.JoinHostPort(profile.Domain, strconv.Itoa(profile.Port)),
-		RawQuery: query.Encode(),
-		Fragment: profile.Label,
-	}
-	return parsed.String(), nil
-}
-
-func parseCDNXHTTPLink(value string) (CDNXHTTPLink, error) {
-	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || parsed.Scheme != "vless" || parsed.User == nil {
-		return CDNXHTTPLink{}, errors.New("invalid VLESS URL")
-	}
-	if parsed.User.String() == "" || parsed.User.Username() != parsed.User.String() {
-		return CDNXHTTPLink{}, errors.New("VLESS userinfo must contain only the UUID")
-	}
-	port, err := strconv.Atoi(parsed.Port())
-	if err != nil {
-		return CDNXHTTPLink{}, errors.New("VLESS port is missing or invalid")
-	}
-	query := parsed.Query()
-	required := map[string]string{
-		"encryption": "none",
-		"security":   "tls",
-		"sni":        parsed.Hostname(),
-		"fp":         "chrome",
-		"type":       "xhttp",
-		"host":       parsed.Hostname(),
-		"mode":       "packet-up",
-	}
-	for key, expected := range required {
-		values := query[key]
-		if len(values) != 1 || values[0] != expected {
-			return CDNXHTTPLink{}, fmt.Errorf("CDN XHTTP link field %s is missing, duplicated, or invalid", key)
-		}
-	}
-	paths := query["path"]
-	if len(paths) != 1 {
-		return CDNXHTTPLink{}, errors.New("CDN XHTTP link path is missing or duplicated")
-	}
-	profile := CDNXHTTPLink{
-		UUID:   parsed.User.Username(),
-		Domain: parsed.Hostname(),
-		Port:   port,
-		Path:   paths[0],
-		Label:  parsed.Fragment,
-	}
-	if err := validateCDNXHTTPProfile(profile); err != nil {
-		return CDNXHTTPLink{}, err
-	}
-	return profile, nil
-}
+var credentialReadinessSourcePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,32}$`)
 
 type ToolkitProbe struct {
 	Present       bool
-	Brand         string
-	Root          string
 	Version       string
 	BuildID       string
 	BuildRevision int
 	Complete      bool
+}
+
+// CredentialReadiness describes only whether the protected remote handoff
+// contains each required login field.  It intentionally carries no secret
+// material.  A complete result permits the install form to treat an empty
+// credential-policy answer as "preserve and verify"; the installer remains
+// authoritative and can still reject a stale/unverifiable password.
+type CredentialReadiness struct {
+	VPSUserPresent       bool
+	VPSPasswordPresent   bool
+	PanelUserPresent     bool
+	PanelPasswordPresent bool
+	Complete             bool
+	Source               string
+}
+
+func (r CredentialReadiness) complete() bool {
+	return r.Complete && r.VPSUserPresent && r.VPSPasswordPresent &&
+		r.PanelUserPresent && r.PanelPasswordPresent
 }
 
 type ToolkitRelation string
@@ -168,24 +93,29 @@ func stripANSI(value string) string {
 
 func extractMarkedBlock(stdout, begin, end string) (string, error) {
 	lines := strings.Split(strings.ReplaceAll(stripANSI(stdout), "\r\n", "\n"), "\n")
-	inside := false
+	depth := 0
 	foundEnd := false
 	var payload []string
 	for _, raw := range lines {
 		line := strings.TrimSuffix(raw, "\r")
-		if !inside {
-			if strings.TrimSpace(line) == begin {
-				inside = true
+		trimmed := strings.TrimSpace(line)
+		if trimmed == begin {
+			depth++
+			continue
+		}
+		if depth > 0 && trimmed == end {
+			depth--
+			if depth == 0 {
+				foundEnd = true
+				break
 			}
 			continue
 		}
-		if strings.TrimSpace(line) == end {
-			foundEnd = true
-			break
+		if depth > 0 {
+			payload = append(payload, line)
 		}
-		payload = append(payload, line)
 	}
-	if !inside || !foundEnd {
+	if depth != 0 || !foundEnd {
 		return "", errors.New("required output markers were not found")
 	}
 	result := strings.TrimSpace(strings.Join(payload, "\n"))
@@ -195,7 +125,16 @@ func extractMarkedBlock(stdout, begin, end string) (string, error) {
 	return result, nil
 }
 
-func extractCurrentOrLegacyBlock(stdout, begin, end, legacyBegin, legacyEnd string) (string, error) {
+// Compatibility spelling used by the v0.9.5 protocol helpers.
+func extractMarkerBlock(stdout, begin, end string) (string, error) {
+	return extractMarkedBlock(stdout, begin, end)
+}
+
+// extractMarkerBlockCurrentOrLegacy accepts the current protocol marker pair
+// and falls back to the v0.9.x/PNA marker pair.  A few remote helpers retain
+// the legacy marker names so an existing node can be upgraded in place; keep
+// the fallback in one place instead of making every caller duplicate it.
+func extractMarkerBlockCurrentOrLegacy(stdout, begin, end, legacyBegin, legacyEnd string) (string, error) {
 	payload, err := extractMarkedBlock(stdout, begin, end)
 	if err == nil {
 		return payload, nil
@@ -205,6 +144,22 @@ func extractCurrentOrLegacyBlock(stdout, begin, end, legacyBegin, legacyEnd stri
 		return legacyPayload, nil
 	}
 	return "", err
+}
+
+// extractCurrentOrLegacyBlock is the historical helper name used by a few
+// v0.9.x callers.  Keep it as a thin alias so an in-place upgrade can compile
+// and parse old protocol output without carrying a second implementation.
+func extractCurrentOrLegacyBlock(stdout, begin, end, legacyBegin, legacyEnd string) (string, error) {
+	return extractMarkerBlockCurrentOrLegacy(stdout, begin, end, legacyBegin, legacyEnd)
+}
+
+// parseDeviceKV parses the line-oriented key/value payload emitted by the
+// remote identity, operation, and IP-rebind scripts.  It intentionally shares
+// parseKV's newline handling and last-value-wins semantics with the rest of
+// the protocol parsers while retaining the historical helper name used by the
+// v0.9.x code.
+func parseDeviceKV(block string) map[string]string {
+	return parseKV(block)
 }
 
 func parseKV(value string) map[string]string {
@@ -218,7 +173,11 @@ func parseKV(value string) map[string]string {
 		if !ok {
 			continue
 		}
-		key = strings.TrimSpace(key)
+		// Keys are protocol identifiers.  Normalize case so handoffs copied
+		// from older/manual forms do not disappear merely because a producer
+		// emitted `panel_password` instead of `PANEL_PASSWORD`; values remain
+		// trimmed according to the existing line-oriented protocol contract.
+		key = strings.ToUpper(strings.TrimSpace(key))
 		if regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(key) {
 			result[key] = strings.TrimSpace(val)
 		}
@@ -226,8 +185,83 @@ func parseKV(value string) map[string]string {
 	return result
 }
 
+// parseCredentialReadiness validates the secret-free readiness block emitted
+// by remoteCredentialReadinessCommand.  Every marker is required and must be
+// exactly 0/1; malformed or truncated output is treated as unknown by the
+// caller instead of becoming an implicit preserve decision.
+func parseCredentialReadiness(stdout string) (CredentialReadiness, error) {
+	payload, err := extractMarkedBlock(stdout, credentialReadinessBegin, credentialReadinessEnd)
+	if err != nil {
+		return CredentialReadiness{}, fmt.Errorf("credential readiness rejected: %w", err)
+	}
+	values := parseKV(payload)
+	// The readiness channel is deliberately presence-only.  Reject a response
+	// that tries to smuggle an account/password (or a future credential alias)
+	// through the marked block instead of silently ignoring it.  This keeps the
+	// Go parser's contract aligned with the Android parser and makes an
+	// accidental `cat`/full-handoff regression fail closed.
+	for key := range values {
+		if (strings.Contains(key, "PASSWORD") || strings.Contains(key, "USERNAME") || strings.Contains(key, "ACCOUNT")) && !strings.HasSuffix(key, "_PRESENT") {
+			return CredentialReadiness{}, fmt.Errorf("credential readiness unexpectedly contains credential data: %s", key)
+		}
+	}
+	readBool := func(key string) (bool, error) {
+		value, ok := values[key]
+		if !ok {
+			return false, fmt.Errorf("credential readiness marker %s is missing", key)
+		}
+		switch value {
+		case "0":
+			return false, nil
+		case "1":
+			return true, nil
+		default:
+			return false, fmt.Errorf("credential readiness marker %s is invalid", key)
+		}
+	}
+	vpsUser, err := readBool("VPS_LOGIN_USER_PRESENT")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	vpsPassword, err := readBool("VPS_LOGIN_PASSWORD_PRESENT")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	panelUser, err := readBool("PANEL_USERNAME_PRESENT")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	panelPassword, err := readBool("PANEL_PASSWORD_PRESENT")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	complete, err := readBool("COMPLETE")
+	if err != nil {
+		return CredentialReadiness{}, err
+	}
+	source := strings.TrimSpace(values["SOURCE"])
+	if source == "" {
+		source = "unknown"
+	}
+	if !credentialReadinessSourcePattern.MatchString(source) {
+		return CredentialReadiness{}, errors.New("credential readiness source is invalid")
+	}
+	result := CredentialReadiness{
+		VPSUserPresent:       vpsUser,
+		VPSPasswordPresent:   vpsPassword,
+		PanelUserPresent:     panelUser,
+		PanelPasswordPresent: panelPassword,
+		Complete:             complete,
+		Source:               source,
+	}
+	if complete != (vpsUser && vpsPassword && panelUser && panelPassword) {
+		return CredentialReadiness{}, errors.New("credential readiness complete marker disagrees with field markers")
+	}
+	return result, nil
+}
+
 func validateHandoff(stdout string) (string, error) {
-	payload, err := extractCurrentOrLegacyBlock(stdout, handoffBegin, handoffEnd, legacyHandoffBegin, legacyHandoffEnd)
+	payload, err := extractMarkerBlockCurrentOrLegacy(stdout, handoffBegin, handoffEnd, legacyHandoffBegin, legacyHandoffEnd)
 	if err != nil {
 		return "", fmt.Errorf("credential handoff rejected: %w", err)
 	}
@@ -236,12 +270,34 @@ func validateHandoff(stdout string) (string, error) {
 		return "", errors.New("credential handoff rejected: run marker is missing")
 	}
 	useful := []string{
-		"PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_API_TOKEN",
-		"VPS_LOGIN_PASSWORD", "UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY",
+		"PANEL_PORT", "PANEL_USERNAME", "PANEL_PASSWORD", "PANEL_ACCOUNT", "PANEL_API_TOKEN",
+		"XUI_USERNAME", "XUI_PASSWORD",
+		"VPS_LOGIN_USER", "VPS_LOGIN_PASSWORD", "VPS_ACCOUNT", "VPS_PASSWORD",
+		// FORM_* is the presentation vocabulary emitted by older desktop and
+		// Android handoff paths.  It is normalized to the canonical fields by
+		// the form builder, but must still count as useful when it is the only
+		// surviving credential block after an interrupted export.
+		"FORM_VPS_ACCOUNT", "FORM_VPS_PASSWORD", "FORM_PANEL_ACCOUNT", "FORM_PANEL_PASSWORD",
+		"UUID", "REALITY_PRIVATE_KEY", "REALITY_PUBLIC_KEY",
 		"VLESS_LINK", "COVER_DOMAIN", "PUBLIC_IP_AT_HANDOFF",
+		"SS2022_PASSWORD", "SS2022_LINK", "SS2022_SERVER_ADDRESS",
+		"CDN_XHTTP_LINK", "CDN_XHTTP_STAGE_LINK", "CDN_XHTTP_SUBSCRIPTION_URL",
+		"CDN_XHTTP_UUID", "CDN_XHTTP_PATH", "SUBSCRIPTION_URL", "SUBSCRIPTION_LINK",
+		"REALITY_CLIENT_1_LINK", "REALITY_CLIENT_1_SUBSCRIPTION_URL",
 	}
 	for _, key := range useful {
 		if strings.TrimSpace(kv[key]) != "" {
+			return payload, nil
+		}
+	}
+	// Client indexes are intentionally open-ended.  A node may disable its
+	// first client while retaining a later one; rejecting that handoff would
+	// strand valid credentials and subscription links during migration.
+	for key, value := range kv {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if strings.HasPrefix(key, "REALITY_CLIENT_") && (strings.HasSuffix(key, "_LINK") || strings.HasSuffix(key, "_SUBSCRIPTION_URL") || strings.HasSuffix(key, "_UUID")) {
 			return payload, nil
 		}
 	}
@@ -255,7 +311,7 @@ type PanelMetadata struct {
 }
 
 func parsePanelMetadata(stdout string) (PanelMetadata, error) {
-	payload, err := extractCurrentOrLegacyBlock(stdout, panelBegin, panelEnd, legacyPanelBegin, legacyPanelEnd)
+	payload, err := extractMarkerBlockCurrentOrLegacy(stdout, panelBegin, panelEnd, legacyPanelBegin, legacyPanelEnd)
 	if err != nil {
 		return PanelMetadata{}, fmt.Errorf("panel metadata rejected: %w", err)
 	}
@@ -293,7 +349,7 @@ func normalizePanelPath(value string) (string, error) {
 }
 
 func parseRunStatus(stdout string) (map[string]string, error) {
-	payload, err := extractCurrentOrLegacyBlock(stdout, statusBegin, statusEnd, legacyStatusBegin, legacyStatusEnd)
+	payload, err := extractMarkerBlockCurrentOrLegacy(stdout, statusBegin, statusEnd, legacyStatusBegin, legacyStatusEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +361,7 @@ func parseRunStatus(stdout string) (map[string]string, error) {
 }
 
 func parseToolkitProbe(stdout string) (ToolkitProbe, error) {
-	payload, err := extractCurrentOrLegacyBlock(stdout, toolkitBegin, toolkitEnd, legacyToolkitBegin, legacyToolkitEnd)
+	payload, err := extractMarkerBlockCurrentOrLegacy(stdout, toolkitBegin, toolkitEnd, legacyToolkitBegin, legacyToolkitEnd)
 	if err != nil {
 		return ToolkitProbe{}, fmt.Errorf("toolkit probe rejected: %w", err)
 	}
@@ -320,20 +376,6 @@ func parseToolkitProbe(stdout string) (ToolkitProbe, error) {
 	version := strings.TrimSpace(kv["TOOLKIT_VERSION"])
 	if !toolkitVersionPattern.MatchString(version) {
 		return ToolkitProbe{}, errors.New("toolkit probe rejected: invalid version")
-	}
-	brand := strings.TrimSpace(kv["TOOLKIT_BRAND"])
-	root := strings.TrimSpace(kv["TOOLKIT_ROOT"])
-	switch brand {
-	case "TNA":
-		if root != remoteRoot {
-			return ToolkitProbe{}, errors.New("toolkit probe rejected: current brand/root mismatch")
-		}
-	case "PNA_LEGACY":
-		if root != legacyRemoteRoot {
-			return ToolkitProbe{}, errors.New("toolkit probe rejected: legacy brand/root mismatch")
-		}
-	default:
-		return ToolkitProbe{}, errors.New("toolkit probe rejected: invalid brand")
 	}
 	buildID := strings.TrimSpace(kv["TOOLKIT_BUILD_ID"])
 	if buildID != "" && !toolkitBuildPattern.MatchString(buildID) {
@@ -355,7 +397,7 @@ func parseToolkitProbe(stdout string) (ToolkitProbe, error) {
 	default:
 		return ToolkitProbe{}, errors.New("toolkit probe rejected: invalid completeness flag")
 	}
-	return ToolkitProbe{Present: true, Brand: brand, Root: root, Version: strings.TrimPrefix(version, "v"), BuildID: buildID, BuildRevision: buildRevision, Complete: complete}, nil
+	return ToolkitProbe{Present: true, Version: strings.TrimPrefix(version, "v"), BuildID: buildID, BuildRevision: buildRevision, Complete: complete}, nil
 }
 
 func compareToolkitBuild(probe ToolkitProbe, localBuildID string, localRevision int) int {
@@ -377,6 +419,42 @@ func compareToolkitBuild(probe ToolkitProbe, localBuildID string, localRevision 
 		return -1
 	}
 	return 1
+}
+
+// sameVersionIncompleteRepairAllowed is the narrow overwrite policy used by
+// menu [1].  A partial toolkit cannot be used by the other actions, but it is
+// safe for the explicit deploy flow to replace the managed program directory
+// after the user confirms APPLY.  Keep the monotonic build guard: a partial
+// probe carrying a newer revision (or the same revision with a different,
+// non-empty build ID) must not be downgraded by an older EXE.  Revision 0 and
+// an empty ID mean the metadata was not written before the interrupted upload;
+// those are precisely the cases this repair path is intended to recover.
+func sameVersionIncompleteRepairAllowed(probe ToolkitProbe) bool {
+	if !probe.Present || probe.Complete || probe.Version != toolkitVersion || probe.BuildRevision < 0 {
+		return false
+	}
+	if probe.BuildRevision > toolkitBuildRevision {
+		return false
+	}
+	if probe.BuildRevision == toolkitBuildRevision && probe.BuildID != "" && probe.BuildID != toolkitBuildID {
+		return false
+	}
+	return true
+}
+
+// sameVersionToolkitOnlyUpdateRequired identifies the narrow package-refresh
+// path used by menu [1].  A clearly older complete build or an allowed
+// interrupted same-version upload may be replaced after APPLY; older 0.9.x
+// versions and divergent/newer v1 builds must continue through the full
+// migration or downgrade guard instead.
+func sameVersionToolkitOnlyUpdateRequired(probe ToolkitProbe) bool {
+	if !probe.Present || probe.Version != toolkitVersion {
+		return false
+	}
+	if !probe.Complete {
+		return sameVersionIncompleteRepairAllowed(probe)
+	}
+	return compareToolkitBuild(probe, toolkitBuildID, toolkitBuildRevision) == -1
 }
 
 func compareToolkitVersions(left, right string) (int, error) {
@@ -447,7 +525,7 @@ func classifyToolkit(probe ToolkitProbe, localVersion string) (ToolkitRelation, 
 }
 
 func parseDiagnosticProtocol(stdout string) (DiagResult, error) {
-	payload, err := extractCurrentOrLegacyBlock(stdout, diagBegin, diagEnd, legacyDiagBegin, legacyDiagEnd)
+	payload, err := extractMarkerBlockCurrentOrLegacy(stdout, diagBegin, diagEnd, legacyDiagBegin, legacyDiagEnd)
 	if err != nil {
 		return DiagResult{}, fmt.Errorf("diagnostic protocol rejected: %w", err)
 	}

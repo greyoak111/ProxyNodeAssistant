@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +10,11 @@ import (
 	"time"
 )
 
-const localMigrationSchema = 1
+// Schema 2 adds an explicit retirement boundary for the old local-admin,
+// device-identity/admission, and private-drive state. Bumping the journal
+// schema makes an already-completed migration run once more under the new
+// boundary instead of silently treating those files as active configuration.
+const localMigrationSchema = 2
 
 type localMigrationRecord struct {
 	Schema      int      `json:"schema"`
@@ -140,82 +143,137 @@ func copyLegacyTree(source, destination string, copied *[]string) error {
 	return nil
 }
 
+// retiredLegacyConfigEntry reports names that belonged exclusively to the
+// over-scoped v0.9.5 local-admin/device-admission/private-drive experiment.
+// The local migration remains copy-first for ordinary settings/history and
+// handoff material, but copying one of these entries into the current product
+// root could resurrect a removed gate. Keep this predicate limited to the
+// config-root migration below: managed SSH key and revoked-key trees still use
+// copyLegacyTree unchanged so no key is filtered by a user-chosen filename.
+func retiredLegacyConfigEntry(name string) bool {
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(name)))
+	if base == "" || base == "." || base == ".." {
+		return false
+	}
+	// Exact names cover the files emitted by v0.9.5 and the intermediate reset
+	// builds.  The token checks cover nested state directories and harmlessly
+	// catch renamed variants such as private-drive-state.json.
+	for _, exact := range []string{
+		"local-admin-verifier.json",
+		"ui-security.json",
+		"device-identity.json",
+		"tna-device-admission.json",
+		"pna-device-admission.json",
+		"device-admission.json",
+		"device-registry.json",
+		"private-drive.env",
+		"copyparty.conf",
+		"drive-accounts.tsv",
+		"drive-credential-escrow",
+		"copyparty",
+		"admission",
+		"controller",
+		"invite",
+		"invites",
+		"drive",
+		"drives",
+	} {
+		if base == exact {
+			return true
+		}
+	}
+	for _, token := range []string{
+		"local-admin",
+		"ui-security",
+		"device-identity",
+		"device-admission",
+		"device-registry",
+		"private-drive",
+		"copyparty",
+		"drive-account",
+		"drive-credential",
+		"controller-invite",
+	} {
+		if strings.Contains(base, token) {
+			return true
+		}
+	}
+	return false
+}
+
+// copyLegacyConfigTree is the guarded variant used for the old per-user
+// configuration root. It keeps ordinary settings/history and handoff material
+// while omitting retired local-admin/UI-gate/device-identity and
+// drive/admission entries. A skipped path is recorded for auditability; no
+// source data is removed.
+func copyLegacyConfigTree(source, destination string, copied, warnings *[]string) error {
+	return copyLegacyConfigTreeAt(source, destination, copied, warnings, "")
+}
+
+func copyLegacyConfigTreeAt(source, destination string, copied, warnings *[]string, relative string) error {
+	info, err := os.Lstat(source)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("legacy migration refused symlink %s", source)
+	}
+	if info.Mode().IsRegular() {
+		ok, err := copyLegacyFile(source, destination)
+		if ok {
+			*copied = append(*copied, destination)
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("legacy migration refused special file %s", source)
+	}
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		entryRelative := entry.Name()
+		if relative != "" {
+			entryRelative = filepath.Join(relative, entry.Name())
+		}
+		if retiredLegacyConfigEntry(entry.Name()) {
+			if warnings != nil {
+				*warnings = append(*warnings, "retired legacy config skipped: "+entryRelative)
+			}
+			continue
+		}
+		if err := copyLegacyConfigTreeAt(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name()), copied, warnings, entryRelative); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func managedKeyRootsForMigration() (newRoot, legacyRoot, newRevoked, legacyRevoked string, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", "", "", err
 	}
-	return filepath.Join(home, ".ssh", "text-node-assistant"),
-		filepath.Join(home, ".ssh", "proxy-runbook"),
-		filepath.Join(home, ".ssh", "text-node-assistant-revoked"),
-		filepath.Join(home, ".ssh", "proxy-runbook-revoked"), nil
-}
-
-func migrateKnownCredential(legacyTarget, currentTarget string) error {
-	if os.Getenv("TNA_DISABLE_CREDENTIAL_MIGRATION") == "1" {
-		return nil
-	}
-	if current, err := credentialRead(currentTarget); err == nil && current != "" {
-		return nil
-	}
-	legacy, err := credentialRead(legacyTarget)
-	if err != nil || legacy == "" {
-		return nil
-	}
-	return credentialWrite(currentTarget, productName+" migration", legacy)
-}
-
-// migrateLegacyLocalAdminState repairs the one state path that can be used
-// directly by the graphical outer shell. Local-admin commands intentionally
-// exit before the normal interactive App session starts, so they must still
-// copy a legacy verifier and its Windows Credential Manager entry explicitly.
-// Copy-first semantics keep the current TextNodeAssistant state authoritative
-// and never overwrite an existing verifier or credential.
-func migrateLegacyLocalAdminState() error {
-	currentRoot, err := productConfigRoot()
-	if err != nil {
-		return err
-	}
-	legacyRoot, err := legacyConfigRoot()
-	if err != nil {
-		return err
-	}
-	currentVerifier := filepath.Join(currentRoot, "local-admin-verifier.json")
-	legacyVerifier := filepath.Join(legacyRoot, "local-admin-verifier.json")
-	if _, statErr := os.Stat(currentVerifier); errors.Is(statErr, os.ErrNotExist) {
-		if _, legacyErr := os.Stat(legacyVerifier); legacyErr == nil {
-			if _, copyErr := copyLegacyFile(legacyVerifier, currentVerifier); copyErr != nil {
-				return copyErr
-			}
-		} else if !errors.Is(legacyErr, os.ErrNotExist) {
-			return legacyErr
-		}
-	} else if statErr != nil {
-		return statErr
-	}
-
-	data, readErr := os.ReadFile(currentVerifier)
-	if errors.Is(readErr, os.ErrNotExist) {
-		return nil
-	}
-	if readErr != nil {
-		return readErr
-	}
-	var verifier localAdminVerifier
-	if json.Unmarshal(data, &verifier) != nil || validateLocalAdminVerifier(verifier) != nil {
-		// Let the normal status command report corruption; migration must not
-		// manufacture a replacement verifier or silently rotate the password.
-		return nil
-	}
-	legacyTarget := "ProxyNodeAssistant/v0.9.5/local-admin/" + verifier.DeviceID
-	if err := migrateKnownCredential(legacyTarget, localAdminCredentialTarget(verifier.DeviceID)); err != nil && !errors.Is(err, errCredentialManagerUnsupported) {
-		return err
-	}
-	return nil
+	// ProxyNodeAssistant is the canonical v1 path.  v0.9.5 used the
+	// TextNodeAssistant name; migration is copy-first and never removes the
+	// legacy tree.  Keeping this direction explicit is important because an
+	// earlier reset build accidentally reversed the two names and could make
+	// an upgrade appear to lose every bound key.
+	return filepath.Join(home, ".ssh", "proxy-runbook"),
+		filepath.Join(home, ".ssh", "text-node-assistant"),
+		filepath.Join(home, ".ssh", "proxy-runbook-revoked"),
+		filepath.Join(home, ".ssh", "text-node-assistant-revoked"), nil
 }
 
 // migrateLegacyLocalState is copy-first and deliberately leaves legacy data in
-// place. New code writes only TNA paths; deletion of the recoverable legacy
+// place. New code writes only PNA paths; deletion of the recoverable legacy
 // snapshot is a separate, explicit maintenance action.
 func migrateLegacyLocalState() (localMigrationRecord, error) {
 	currentRoot, err := productConfigRoot()
@@ -227,20 +285,44 @@ func migrateLegacyLocalState() (localMigrationRecord, error) {
 		return localMigrationRecord{}, err
 	}
 	record := localMigrationRecord{Schema: localMigrationSchema, StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	if err := migrateLegacyLocalAdminState(); err != nil {
-		record.Warnings = append(record.Warnings, "local-admin migration: "+err.Error())
-	}
 	journal := filepath.Join(currentRoot, "migration", "legacy-pna-v1.json")
 	if data, readErr := os.ReadFile(journal); readErr == nil {
 		var completed localMigrationRecord
 		if json.Unmarshal(data, &completed) == nil && completed.Schema == localMigrationSchema && completed.CompletedAt != "" {
-			return completed, nil
+			// The first migration may have completed before a legacy node key was
+			// created/imported (for example, when a user binds the 160 node after
+			// first launching v1).  Do a cheap copy-first scan of both key trees
+			// on every startup instead of treating the journal as a permanent
+			// snapshot.  Existing files are never overwritten and the legacy tree
+			// remains recoverable.
+			newKeys, legacyKeys, newRevoked, legacyRevoked, keyErr := managedKeyRootsForMigration()
+			if keyErr != nil {
+				return completed, keyErr
+			}
+			incremental := completed
+			incremental.Copied = nil
+			incremental.Warnings = nil
+			if keyErr := copyLegacyTree(legacyKeys, newKeys, &incremental.Copied); keyErr != nil {
+				return completed, keyErr
+			}
+			if keyErr := copyLegacyTree(legacyRevoked, newRevoked, &incremental.Copied); keyErr != nil {
+				return completed, keyErr
+			}
+			if len(incremental.Copied) == 0 {
+				return completed, nil
+			}
+			incremental.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			incremental.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			if writeErr := writeJSONAtomic(journal, incremental, 0600); writeErr != nil {
+				return incremental, writeErr
+			}
+			return incremental, nil
 		}
 	}
 	if err := os.MkdirAll(currentRoot, 0700); err != nil {
 		return record, err
 	}
-	if err := copyLegacyTree(legacyRoot, currentRoot, &record.Copied); err != nil {
+	if err := copyLegacyConfigTree(legacyRoot, currentRoot, &record.Copied, &record.Warnings); err != nil {
 		return record, err
 	}
 	newKeys, legacyKeys, newRevoked, legacyRevoked, err := managedKeyRootsForMigration()
@@ -253,20 +335,9 @@ func migrateLegacyLocalState() (localMigrationRecord, error) {
 	if err := copyLegacyTree(legacyRevoked, newRevoked, &record.Copied); err != nil {
 		return record, err
 	}
-	if err := migrateKnownCredential("ProxyNodeAssistant/device-identity/v1", "TextNodeAssistant/device-identity/v2"); err != nil && !errors.Is(err, errCredentialManagerUnsupported) {
-		record.Warnings = append(record.Warnings, "device credential migration: "+err.Error())
-	}
 	record.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := writeJSONAtomic(journal, record, 0600); err != nil {
 		return record, err
 	}
 	return record, nil
-}
-
-func currentCredentialTarget(legacy string) string {
-	value := strings.TrimSpace(legacy)
-	if strings.HasPrefix(value, "ProxyNodeAssistant/") {
-		return "TextNodeAssistant/" + strings.TrimPrefix(value, "ProxyNodeAssistant/")
-	}
-	return value
 }

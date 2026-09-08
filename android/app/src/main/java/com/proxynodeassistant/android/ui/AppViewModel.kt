@@ -75,11 +75,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "T" -> navigate(AppPage.PROVIDER)
             "K" -> navigate(AppPage.KEYS)
             "H" -> navigate(AppPage.HISTORY)
-            "J" -> {
-                _ui.value = _ui.value.copy(selectedAction = action, showConnection = false, page = AppPage.WORKFLOW)
-                container.workflows.runLocalDeviceJoin(action, _ui.value.language)
+            else -> {
+                // Re-read the repositories immediately before opening a remote
+                // connection form.  The dashboard can stay mounted while a
+                // previous workflow (or another process) writes a recent
+                // target/key, so the state captured at ViewModel creation is
+                // not authoritative.  Without this refresh the form appears
+                // empty/stale until the user navigates away and back.
+                val freshTargets = container.targets.list()
+                val freshKeys = container.managedKeys.list()
+                _ui.value = _ui.value.copy(
+                    selectedAction = action,
+                    showConnection = true,
+                    targets = freshTargets,
+                    keys = freshKeys,
+                )
             }
-            else -> _ui.value = _ui.value.copy(selectedAction = action, showConnection = true)
         }
     }
 
@@ -132,7 +143,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun copySecret(text: String) {
         val clipboard = getApplication<Application>().getSystemService(ClipboardManager::class.java)
-        val clip = ClipData.newPlainText("TextNodeAssistant secret", text)
+        val clip = ClipData.newPlainText("ProxyNodeAssistant secret", text)
         clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
         clipboard.setPrimaryClip(clip)
         _ui.value = _ui.value.copy(toast = tr("已复制；保存到密码管理器后请立即清空剪贴板", "Copied. Clear it after saving."))

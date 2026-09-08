@@ -22,14 +22,35 @@ type RecentTarget struct {
 }
 
 func recentTargetsPath() (string, error) {
-	if override := firstEnvironment("TNA_HISTORY_PATH", "PNA_HISTORY_PATH"); override != "" {
+	if override := strings.TrimSpace(os.Getenv("PNA_HISTORY_PATH")); override != "" {
 		return filepath.Clean(override), nil
 	}
-	base, err := productConfigRoot()
-	if err != nil {
-		return "", err
+	base := os.Getenv("APPDATA")
+	if base == "" {
+		var err error
+		base, err = os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
 	}
-	return filepath.Join(base, "recent-targets.tsv"), nil
+	current := filepath.Join(base, "ProxyNodeAssistant", "recent-targets.tsv")
+	return current, nil
+}
+
+func recentTargetsLocations() (string, string, error) {
+	if override := strings.TrimSpace(os.Getenv("PNA_HISTORY_PATH")); override != "" {
+		return filepath.Clean(override), "", nil
+	}
+	base := os.Getenv("APPDATA")
+	if base == "" {
+		var err error
+		base, err = os.UserConfigDir()
+		if err != nil {
+			return "", "", err
+		}
+	}
+	return filepath.Join(base, "ProxyNodeAssistant", "recent-targets.tsv"),
+		filepath.Join(base, "TextNodeAssistant", "recent-targets.tsv"), nil
 }
 
 func recentTargetKey(target RecentTarget) string {
@@ -93,18 +114,26 @@ func encodeRecentTargets(values []RecentTarget) []byte {
 }
 
 func loadRecentTargets() ([]RecentTarget, error) {
-	path, err := recentTargetsPath()
+	current, legacy, err := recentTargetsLocations()
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return []RecentTarget{}, nil
+	paths := []string{current}
+	if legacy != "" && legacy != current {
+		paths = append(paths, legacy)
 	}
-	if err != nil {
-		return nil, err
+	merged := make([]RecentTarget, 0)
+	for _, path := range paths {
+		data, readErr := os.ReadFile(path)
+		if os.IsNotExist(readErr) {
+			continue
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
+		merged = append(merged, parseRecentTargets(data)...)
 	}
-	return parseRecentTargets(data), nil
+	return normalizeRecentTargets(merged), nil
 }
 
 func saveRecentTargets(values []RecentTarget) error {
@@ -126,6 +155,12 @@ func saveRecentTargets(values []RecentTarget) error {
 	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
 		return err
+	}
+	// A successful write migrates legacy history into the canonical location.
+	// Keeping the old file would make deleted entries reappear on the next
+	// merged read, so remove only that narrow, non-secret history file.
+	if _, legacy, legacyErr := recentTargetsLocations(); legacyErr == nil && legacy != "" && legacy != path {
+		_ = os.Remove(legacy)
 	}
 	return nil
 }
@@ -162,12 +197,17 @@ func deleteRecentTarget(index int) error {
 }
 
 func clearRecentTargets() error {
-	path, err := recentTargetsPath()
+	current, legacy, err := recentTargetsLocations()
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, path := range []string{current, legacy} {
+		if path == "" {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }
@@ -209,7 +249,7 @@ func (a *App) promptManualConnectionDetails() (string, string, int, error) {
 }
 
 func (a *App) chooseConnectionDetails() (string, string, int, error) {
-	if os.Getenv("TNA_PREFILLED_CONNECTION") == "1" || os.Getenv("PNA_PREFILLED_CONNECTION") == "1" {
+	if os.Getenv("PNA_PREFILLED_CONNECTION") == "1" {
 		return a.promptManualConnectionDetails()
 	}
 	for {

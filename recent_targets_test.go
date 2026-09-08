@@ -25,7 +25,7 @@ func TestRecentTargetsParseNormalizeAndCap(t *testing.T) {
 
 func TestRecentTargetsRememberDeleteAndClear(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "recent-targets.tsv")
-	t.Setenv("TNA_HISTORY_PATH", path)
+	t.Setenv("PNA_HISTORY_PATH", path)
 	first := RecentTarget{Host: "192.0.2.20", User: "root", Port: 22}
 	second := RecentTarget{Host: "node.example", User: "ubuntu", Port: 2222}
 	if err := rememberRecentTarget(first); err != nil {
@@ -50,5 +50,34 @@ func TestRecentTargetsRememberDeleteAndClear(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("history file still exists after clear: %v", err)
+	}
+}
+
+func TestRecentTargetsMergeCanonicalAndLegacyLocations(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("APPDATA", base)
+	t.Setenv("PNA_HISTORY_PATH", "")
+	current := filepath.Join(base, "ProxyNodeAssistant", "recent-targets.tsv")
+	legacy := filepath.Join(base, "TextNodeAssistant", "recent-targets.tsv")
+	newer := time.Date(2026, 9, 2, 1, 0, 0, 0, time.UTC)
+	older := newer.Add(-time.Hour)
+	if err := os.MkdirAll(filepath.Dir(current), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(current, []byte("node.example\troot\t22\t"+newer.Format(time.RFC3339Nano)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("legacy.example\tubuntu\t2222\t"+older.Format(time.RFC3339Nano)+"\n"+"node.example\troot\t22\t"+older.Format(time.RFC3339Nano)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	values, err := loadRecentTargets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 || values[0].Host != "node.example" || values[1].Host != "legacy.example" {
+		t.Fatalf("canonical and legacy histories were not merged/deduplicated: %#v", values)
 	}
 }

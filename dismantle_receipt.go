@@ -6,17 +6,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
 
+// dismantleReceiptSchemaVersion is intentionally separate from the remote
+// state schema.  A receipt is local evidence that a rescue archive was saved
+// and a baseline operation completed; it is not a credential or a remote
+// admission record.
 const dismantleReceiptSchemaVersion = 1
 
-// DismantleReceipt is deliberately secret-free. It remains useful after a
-// full baseline restore has removed every TNA-owned identity file from the VPS.
-// Passwords, private keys, subscription links, API tokens, and handoff text
-// must never be added to this structure.
+// DismantleReceipt is deliberately secret-free.  It contains enough stable
+// identity and rescue evidence to recognise a previously restored VPS, while
+// never persisting passwords, private keys, subscription links, API tokens,
+// or handoff text.
 type DismantleReceipt struct {
 	SchemaVersion        int      `json:"schemaVersion"`
 	Product              string   `json:"product"`
@@ -48,10 +53,9 @@ type DismantleReceipt struct {
 	RescueArchivePath   string `json:"rescueArchivePath"`
 	RescueArchiveSHA256 string `json:"rescueArchiveSha256"`
 	RescueArchiveBytes  int64  `json:"rescueArchiveBytes"`
-	DriveDataRoot       string `json:"driveDataRoot"`
-	DriveFileCount      int64  `json:"driveFileCount"`
-	DriveDataBytes      int64  `json:"driveDataBytes"`
 }
+
+var receiptModePattern = regexp.MustCompile(`^(?:FULL_BASELINE|LEGACY_FULL_BASELINE)$`)
 
 func splitReceiptIDs(value string) []string {
 	parts := strings.Split(value, ",")
@@ -65,27 +69,48 @@ func splitReceiptIDs(value string) []string {
 	return result
 }
 
+func validReceiptText(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\x00\r\n")
+}
+
 func validateDismantleReceipt(receipt DismantleReceipt) error {
 	if receipt.SchemaVersion != dismantleReceiptSchemaVersion || receipt.Product != productName || receipt.ProductVersion != version {
 		return errors.New("dismantle receipt product/schema mismatch")
 	}
-	if !nodeIDPattern.MatchString(receipt.NodeID) || !serverIDPattern.MatchString(receipt.ServerID) || !sha256HexPattern.MatchString(receipt.MachineIDHash) || !sha256FingerprintPattern.MatchString(receipt.SSHHostKeySHA256) {
+	if !nodeIDPattern.MatchString(receipt.NodeID) || !serverIDPattern.MatchString(receipt.ServerID) ||
+		!sha256HexPattern.MatchString(receipt.MachineIDHash) || !sha256FingerprintPattern.MatchString(receipt.SSHHostKeySHA256) {
 		return errors.New("dismantle receipt has an invalid stable node identity")
 	}
-	if receipt.ConnectionHost == "" || receipt.ConnectionUser == "" || receipt.ConnectionPort < 1 || receipt.ConnectionPort > 65535 {
+	if receipt.SSHHostKeyAlgorithm != "ssh-ed25519" && receipt.SSHHostKeyAlgorithm != "ssh-rsa" && !strings.HasPrefix(receipt.SSHHostKeyAlgorithm, "ecdsa-sha2-nistp") {
+		return errors.New("dismantle receipt has an invalid SSH host-key algorithm")
+	}
+	if !validReceiptText(receipt.ConnectionHost) || !userPartPattern.MatchString(receipt.ConnectionUser) || receipt.ConnectionPort < 1 || receipt.ConnectionPort > 65535 {
 		return errors.New("dismantle receipt has an invalid non-secret connection identity")
 	}
-	if receipt.Mode != "PROXY_ONLY" && receipt.Mode != "FULL_BASELINE" && receipt.Mode != "REMAINING_DRIVE" {
+	if !receiptModePattern.MatchString(receipt.Mode) {
 		return errors.New("dismantle receipt has an invalid removal mode")
 	}
 	if receipt.ReceiptStatus != "VERIFIED" && receipt.ReceiptStatus != "POST_VERIFY_FAILED" {
 		return errors.New("dismantle receipt has an invalid completion status")
 	}
-	if !sha256HexPattern.MatchString(receipt.RescueArchiveSHA256) || receipt.RescueArchiveBytes < 1 || receipt.RescueArchivePath == "" {
-		return errors.New("dismantle receipt has invalid rescue evidence")
+	if receipt.CompletedAtUTC == "" {
+		return errors.New("dismantle receipt completion timestamp is missing")
 	}
-	if receipt.CompletedAtUTC == "" || receipt.TransactionID == "" || receipt.Action == "" || receipt.RestoreGrade == "" || receipt.PostLifecycle == "" || receipt.PostVerification == "" {
-		return errors.New("dismantle receipt is incomplete")
+	if _, err := time.Parse(time.RFC3339Nano, receipt.CompletedAtUTC); err != nil {
+		return errors.New("dismantle receipt completion timestamp is invalid")
+	}
+	for label, value := range map[string]string{
+		"transaction": receipt.TransactionID, "action": receipt.Action, "restore grade": receipt.RestoreGrade,
+		"post lifecycle": receipt.PostLifecycle, "post verification": receipt.PostVerification,
+		"rescue path": receipt.RescueArchivePath,
+	} {
+		if !validReceiptText(value) {
+			return fmt.Errorf("dismantle receipt %s is invalid", label)
+		}
+	}
+	if !sha256HexPattern.MatchString(strings.ToLower(receipt.RescueArchiveSHA256)) || receipt.RescueArchiveBytes < 1 {
+		return errors.New("dismantle receipt has invalid rescue evidence")
 	}
 	return nil
 }
@@ -121,24 +146,50 @@ func writeDismantleReceipt(receipt DismantleReceipt) (string, error) {
 		return "", err
 	}
 	payload = append(payload, '\n')
-	temporary := path + ".new"
-	if err := os.WriteFile(temporary, payload, 0600); err != nil {
+	temporary, err := os.CreateTemp(directory, ".dismantle-receipt-*.new")
+	if err != nil {
 		return "", err
 	}
-	if err := os.Rename(temporary, path); err != nil {
-		_ = os.Remove(temporary)
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0600); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if _, err := temporary.Write(payload); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if err := temporary.Close(); err != nil {
+		return "", err
+	}
+	// Do not overwrite an existing receipt: the timestamp/transaction pair is
+	// immutable evidence, and a duplicate write should remain observable.
+	if _, err := os.Stat(path); err == nil {
+		return "", os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
 func readMatchingDismantleReceipts(machineIDHash, hostKeySHA256 string) ([]DismantleReceipt, error) {
+	if !sha256HexPattern.MatchString(machineIDHash) || !sha256FingerprintPattern.MatchString(hostKeySHA256) {
+		return nil, errors.New("invalid receipt lookup identity")
+	}
 	root, err := dismantleReceiptRoot()
 	if err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(root)
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
@@ -157,7 +208,12 @@ func readMatchingDismantleReceipts(machineIDHash, hostKeySHA256 string) ([]Disma
 			if file.IsDir() || !strings.HasSuffix(strings.ToLower(file.Name()), ".json") {
 				continue
 			}
-			data, readErr := os.ReadFile(filepath.Join(root, nodeDirectory.Name(), file.Name()))
+			path := filepath.Join(root, nodeDirectory.Name(), file.Name())
+			info, statErr := os.Lstat(path)
+			if statErr != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			data, readErr := os.ReadFile(path)
 			if readErr != nil {
 				continue
 			}
@@ -174,6 +230,58 @@ func readMatchingDismantleReceipts(machineIDHash, hostKeySHA256 string) ([]Disma
 	return matches, nil
 }
 
+// planArgValue extracts one line-oriented value from a remote plan/result.
+// It is intentionally strict about the key shape and never evaluates shell
+// syntax; receipt fields are evidence only.
+func planArgValue(output, key string) string {
+	if !regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`).MatchString(key) {
+		return ""
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(line, key+"=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, key+"="))
+		}
+	}
+	return ""
+}
+
+// newDismantleReceipt accepts the historical trailing arguments as opaque
+// compatibility values.  The reset line no longer inventories or preserves a
+// separate data service; only the rescue archive and baseline evidence are
+// recorded.  The final bool, when supplied, controls post-verification status.
+func newDismantleReceipt(identity NodeIdentity, c Connection, mode, planOutput, resultOutput, rescuePath, rescueSHA string, rescueBytes int64, compatibility ...interface{}) DismantleReceipt {
+	verified := true
+	for index := len(compatibility) - 1; index >= 0; index-- {
+		if value, ok := compatibility[index].(bool); ok {
+			verified = value
+			break
+		}
+	}
+	if mode != "FULL_BASELINE" && mode != "LEGACY_FULL_BASELINE" {
+		mode = "FULL_BASELINE"
+	}
+	status := "VERIFIED"
+	postVerification := "PNA_POST_DISMANTLE_VERIFY_OK"
+	if !verified {
+		status = "POST_VERIFY_FAILED"
+		postVerification = "FAILED"
+	}
+	return DismantleReceipt{
+		SchemaVersion: dismantleReceiptSchemaVersion, Product: productName, ProductVersion: version, DesktopBuildID: desktopBuildID,
+		ReceiptStatus: status, CompletedAtUTC: time.Now().UTC().Format(time.RFC3339Nano), TransactionID: planArgValue(resultOutput, "REMOVAL_TRANSACTION_ID"),
+		Mode: mode, Action: planArgValue(planOutput, "ACTION"), RestoreGrade: planArgValue(planOutput, "RESTORE_GRADE"),
+		RemovedResourceIDs: splitReceiptIDs(planArgValue(planOutput, "REMOVED_RESOURCE_IDS")), PreservedResourceIDs: splitReceiptIDs(planArgValue(planOutput, "PRESERVED_RESOURCE_IDS")),
+		PostLifecycle: "BASELINE_UNMANAGED", PostVerification: postVerification,
+		NodeID: identity.NodeID, ServerID: identity.ServerID, MachineIDHash: identity.MachineIDHash,
+		SSHHostKeyAlgorithm: identity.HostKeyAlg, SSHHostKeySHA256: identity.HostKeySHA256,
+		FirstKnownPublicIP: identity.FirstPublicIP, CurrentPublicIP: identity.CurrentPublicIP,
+		ConnectionHost: c.Host, ConnectionUser: c.User, ConnectionPort: c.Port,
+		RescueArchivePath: rescuePath, RescueArchiveSHA256: rescueSHA, RescueArchiveBytes: rescueBytes,
+	}
+}
+
+// unmanagedNodeProof is retained for baseline reinstallation checks.  It is
+// a one-shot proof of machine/SSH identity, not a device admission token.
 type unmanagedNodeProof struct {
 	MachineIDHash       string
 	SSHHostKeyAlgorithm string
@@ -197,110 +305,4 @@ func (a *App) fetchUnmanagedNodeProof(c Connection) (unmanagedNodeProof, error) 
 		return unmanagedNodeProof{}, errors.New("unmanaged node proof returned invalid evidence")
 	}
 	return proof, nil
-}
-
-func (a *App) legacyIdentityBootstrapEvidence(c Connection, original ToolkitProbe) error {
-	legacyProbe := original.Brand == "PNA_LEGACY" && original.Root == legacyRemoteRoot && !original.Complete
-	interruptedMigrationProbe := original.Brand == "TNA" && original.Root == remoteRoot
-	if !original.Present || (!legacyProbe && !interruptedMigrationProbe) {
-		return errors.New("original toolkit probe is not a legacy PNA installation or its interrupted TNA migration")
-	}
-	command := "set -eu; journal=/var/lib/text-node-assistant/migrations/pna-to-tna-v1.env; " +
-		"state=/var/lib/text-node-assistant/migrations/legacy-identity-bootstrap-v1.env; " +
-		"[ -f \"$journal\" ] && [ ! -L \"$journal\" ]; " +
-		"grep -Fqx 'MIGRATION_STATUS=COMMITTED' \"$journal\"; " +
-		"grep -Eq '^MIGRATION_COPIED=(ETC_STATE|ROOT_STATE)$' \"$journal\"; " +
-		"legacy=$(readlink -f " + legacyRemoteRoot + "); [ -n \"$legacy\" ]; [ \"$legacy\" != " + shQuote(remoteRoot) + " ]; " +
-		"[ -s \"$legacy/TOOLKIT_VERSION\" ]; [ ! -x \"$legacy/linux/23-node-identity.sh\" ]; " +
-		"[ ! -L \"$state\" ]; ! grep -Fqx 'IDENTITY_BOOTSTRAP_STATUS=COMMITTED' \"$state\" 2>/dev/null; " +
-		"if [ ! -s \"$state\" ]; then printf 'SCHEMA_VERSION=1\\nIDENTITY_BOOTSTRAP_STATUS=IN_PROGRESS\\n' > \"$state.tmp.$$\"; chmod 600 \"$state.tmp.$$\"; mv -f \"$state.tmp.$$\" \"$state\"; fi; " +
-		"grep -Fqx 'IDENTITY_BOOTSTRAP_STATUS=IN_PROGRESS' \"$state\"; " +
-		"printf 'TNA_LEGACY_IDENTITY_BOOTSTRAP_EVIDENCE_OK\\n'"
-	result := a.rootCapture(c, command)
-	if !result.OK() || !strings.Contains(result.Stdout, "TNA_LEGACY_IDENTITY_BOOTSTRAP_EVIDENCE_OK") {
-		return fmt.Errorf("legacy identity-bootstrap evidence failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
-	}
-	return nil
-}
-
-func (a *App) commitLegacyIdentityBootstrap(c Connection) error {
-	command := "set -eu; state=/var/lib/text-node-assistant/migrations/legacy-identity-bootstrap-v1.env; " +
-		"[ -f \"$state\" ] && [ ! -L \"$state\" ]; grep -Fqx 'IDENTITY_BOOTSTRAP_STATUS=IN_PROGRESS' \"$state\"; " +
-		"sed 's/^IDENTITY_BOOTSTRAP_STATUS=.*/IDENTITY_BOOTSTRAP_STATUS=COMMITTED/' \"$state\" > \"$state.tmp.$$\"; " +
-		"chmod 600 \"$state.tmp.$$\"; mv -f \"$state.tmp.$$\" \"$state\"; printf 'TNA_LEGACY_IDENTITY_BOOTSTRAP_COMMITTED\\n'"
-	result := a.rootCapture(c, command)
-	if !result.OK() || !strings.Contains(result.Stdout, "TNA_LEGACY_IDENTITY_BOOTSTRAP_COMMITTED") {
-		return fmt.Errorf("legacy identity-bootstrap commit failed (exit %d): %s", result.ExitCode, processFailureDetail(result))
-	}
-	return nil
-}
-
-func (a *App) ensureInstallNodeIdentity(c Connection, relation ToolkitRelation, original ToolkitProbe) error {
-	if _, err := a.fetchNodeIdentity(c); err == nil {
-		return nil
-	}
-	proof, proofErr := a.fetchUnmanagedNodeProof(c)
-	if proofErr != nil {
-		return proofErr
-	}
-	matches, receiptErr := readMatchingDismantleReceipts(proof.MachineIDHash, proof.SSHHostKeySHA256)
-	if receiptErr != nil {
-		return fmt.Errorf("local dismantle receipt lookup failed: %w", receiptErr)
-	}
-	legacyBootstrap := false
-	if len(matches) > 0 {
-		latest := matches[0]
-		a.println(a.msg("检测到这台物理实例曾由 TNA 整体拆除并恢复基线；不会把它伪装成从未施工的新机。", "This physical instance was previously dismantled by TNA and restored to baseline; it will not be presented as a never-managed VPS."))
-		a.println("PREVIOUS_NODE_ID=" + latest.NodeID)
-		a.println("PREVIOUS_REMOVAL_MODE=" + latest.Mode)
-		a.println(a.msg("上次本地救援包：", "Previous local rescue archive:") + " " + latest.RescueArchivePath)
-		if !a.yes(a.msg("确认以新的受管 NODE_ID 重新施工？旧网盘数据只在救援包中，不会自动灌回 VPS。", "Reinstall with a new managed NODE_ID? Old drive data remains only in the rescue archive and is not silently restored to the VPS."), false) {
-			return errors.New(a.msg("用户取消了恢复基线后的重新施工；远端身份状态未创建。", "Reinstallation after baseline restoration was cancelled; no remote identity state was created."))
-		}
-	} else if relation == ToolkitSameComplete || relation == ToolkitSameIncomplete {
-		if err := a.legacyIdentityBootstrapEvidence(c, original); err != nil {
-			return errors.New(a.msg("同版本受管节点缺失稳定身份，且没有通过旧 PNA 迁移证据校验；拒绝生成新身份掩盖漂移。请先运行 [3] 导出诊断。", "The same-version managed node is missing its stable identity and did not pass the legacy-PNA migration evidence check. A new identity will not be generated to hide drift. Run [3] and export diagnostics first."))
-		}
-		legacyBootstrap = true
-		a.println(a.msg("已验证旧 PNA 构建从未提供稳定身份；菜单 [1] 将基于 machine-id 与 SSH host key 一次性补建 NODE_ID。", "The legacy PNA build is verified to have never provided stable identity; menu [1] will bootstrap NODE_ID once from machine-id and the SSH host key."))
-	}
-	initialized := a.rootCapture(c, "bash "+remoteRoot+"/linux/23-node-identity.sh --init")
-	if !initialized.OK() {
-		return fmt.Errorf("stable node identity initialization failed (exit %d): %s", initialized.ExitCode, processFailureDetail(initialized))
-	}
-	if _, err := parseNodeIdentity(initialized.Stdout); err != nil {
-		return fmt.Errorf("stable node identity initialization returned invalid evidence: %w", err)
-	}
-	if legacyBootstrap {
-		if err := a.commitLegacyIdentityBootstrap(c); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func newDismantleReceipt(identity NodeIdentity, c Connection, mode, planOutput, resultOutput, rescuePath, rescueSHA string, rescueBytes, driveFiles, driveBytes int64, verified bool) DismantleReceipt {
-	postLifecycle := "BASELINE_UNMANAGED"
-	if mode == "PROXY_ONLY" {
-		postLifecycle = "PROXY_REMOVED_DRIVE_RETAINED"
-	}
-	status := "VERIFIED"
-	postVerification := "TNA_POST_DISMANTLE_VERIFY_OK"
-	if !verified {
-		status = "POST_VERIFY_FAILED"
-		postVerification = "FAILED"
-	}
-	return DismantleReceipt{
-		SchemaVersion: dismantleReceiptSchemaVersion, Product: productName, ProductVersion: version, DesktopBuildID: desktopBuildID,
-		ReceiptStatus: status, CompletedAtUTC: time.Now().UTC().Format(time.RFC3339Nano), TransactionID: planArgValue(resultOutput, "REMOVAL_TRANSACTION_ID"),
-		Mode: mode, Action: planArgValue(planOutput, "ACTION"), RestoreGrade: planArgValue(planOutput, "RESTORE_GRADE"),
-		RemovedResourceIDs: splitReceiptIDs(planArgValue(planOutput, "REMOVED_RESOURCE_IDS")), PreservedResourceIDs: splitReceiptIDs(planArgValue(planOutput, "PRESERVED_RESOURCE_IDS")),
-		PostLifecycle: postLifecycle, PostVerification: postVerification,
-		NodeID: identity.NodeID, ServerID: identity.ServerID, MachineIDHash: identity.MachineIDHash,
-		SSHHostKeyAlgorithm: identity.HostKeyAlg, SSHHostKeySHA256: identity.HostKeySHA256,
-		FirstKnownPublicIP: identity.FirstPublicIP, CurrentPublicIP: identity.CurrentPublicIP,
-		ConnectionHost: c.Host, ConnectionUser: c.User, ConnectionPort: c.Port,
-		RescueArchivePath: rescuePath, RescueArchiveSHA256: rescueSHA, RescueArchiveBytes: rescueBytes,
-		DriveDataRoot: planArgValue(planOutput, "DRIVE_DATA_ROOT"), DriveFileCount: driveFiles, DriveDataBytes: driveBytes,
-	}
 }

@@ -62,11 +62,15 @@ type TrafficSnapshot struct {
 }
 
 func trafficStorePath() (string, error) {
-	base, err := productConfigRoot()
-	if err != nil {
-		return "", err
+	base := os.Getenv("APPDATA")
+	if base == "" {
+		var err error
+		base, err = os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
 	}
-	return filepath.Join(base, "traffic-profiles.json"), nil
+	return filepath.Join(base, "ProxyNodeAssistant", "traffic-profiles.json"), nil
 }
 
 func loadTrafficStore() (TrafficStore, error) {
@@ -84,16 +88,6 @@ func loadTrafficStore() (TrafficStore, error) {
 	var store TrafficStore
 	if err := json.Unmarshal(data, &store); err != nil {
 		return TrafficStore{}, fmt.Errorf("traffic profile file is invalid: %w", err)
-	}
-	for index := range store.Profiles {
-		legacyTarget := store.Profiles[index].CredentialTarget
-		currentTarget := currentCredentialTarget(legacyTarget)
-		if currentTarget != legacyTarget {
-			if err := migrateKnownCredential(legacyTarget, currentTarget); err != nil && !errors.Is(err, errCredentialManagerUnsupported) {
-				return TrafficStore{}, fmt.Errorf("traffic credential migration failed: %w", err)
-			}
-			store.Profiles[index].CredentialTarget = currentTarget
-		}
 	}
 	return store, nil
 }
@@ -129,7 +123,7 @@ func normalizeTrafficID(value string) string {
 }
 
 func providerCredentialTarget(provider, id string) string {
-	return "TextNodeAssistant/traffic/" + normalizeTrafficID(provider) + "/" + normalizeTrafficID(id)
+	return "ProxyNodeAssistant/traffic/" + normalizeTrafficID(provider) + "/" + normalizeTrafficID(id)
 }
 
 func upsertTrafficProfile(store *TrafficStore, profile TrafficProfile) {

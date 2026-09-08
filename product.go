@@ -7,31 +7,29 @@ import (
 	"strings"
 )
 
-var errCredentialManagerUnsupported = errors.New("Windows Credential Manager is unavailable on this platform")
-
+// ProxyNodeAssistant is the public product name for the reset line.  The
+// previous v0.9.x build used TextNodeAssistant in a number of on-disk and
+// credential-store paths; that name is retained only as a migration fallback.
 const (
-	productName         = "TextNodeAssistant"
-	productAbbreviation = "TNA"
-	version             = "0.9.5"
+	productName         = "ProxyNodeAssistant"
+	productAbbreviation = "PNA"
+	legacyProductName   = "TextNodeAssistant"
 
-	stateSchemaVersion           = "1"
-	driveSchemaVersion           = "1"
-	deviceAdmissionSchemaVersion = "2"
-	desktopBuildID               = "tna-v095-dev"
-	androidBuildID               = "tna-android-v095-dev"
-
-	legacyProductName = "ProxyNodeAssistant"
+	stateSchemaVersion = "1"
+	driveSchemaVersion = "1" // retained for parsing old receipts only
+	desktopBuildID     = "pna-v100"
+	androidBuildID     = "pna-android-v100"
 )
 
-const (
-	guiPromptPrefix       = "TNA_GUI_PROMPT_B64="
-	guiSecretPromptPrefix = "TNA_GUI_SECRET_B64="
-
-	legacyGUIPromptPrefix       = "PNA_GUI_PROMPT_B64="
-	legacyGUISecretPromptPrefix = "PNA_GUI_SECRET_B64="
-)
+// The platform-specific credential backends use this sentinel. Keeping it
+// here makes ordinary SSH credential migration/reporting behave uniformly on
+// Windows, macOS, and Linux when no native store is available.
+var errCredentialManagerUnsupported = errors.New("no supported credential manager is available")
 
 func productConfigRoot() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("PNA_CONFIG_ROOT")); override != "" {
+		return filepath.Clean(override), nil
+	}
 	if override := strings.TrimSpace(os.Getenv("TNA_CONFIG_ROOT")); override != "" {
 		return filepath.Clean(override), nil
 	}
@@ -47,6 +45,9 @@ func productConfigRoot() (string, error) {
 }
 
 func legacyConfigRoot() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("PNA_LEGACY_CONFIG_ROOT")); override != "" {
+		return filepath.Clean(override), nil
+	}
 	if override := strings.TrimSpace(os.Getenv("TNA_LEGACY_CONFIG_ROOT")); override != "" {
 		return filepath.Clean(override), nil
 	}
@@ -62,7 +63,7 @@ func legacyConfigRoot() (string, error) {
 }
 
 func guiModeEnabled() bool {
-	return os.Getenv("TNA_GUI_MODE") == "1" || os.Getenv("PNA_GUI_MODE") == "1"
+	return os.Getenv("PNA_GUI_MODE") == "1" || os.Getenv("TNA_GUI_MODE") == "1"
 }
 
 func firstEnvironment(names ...string) string {
