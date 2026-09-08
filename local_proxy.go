@@ -197,7 +197,7 @@ func (a *App) removeLocalProxy() error {
 
 func (a *App) manageLocalProxy() error {
 	if runtime.GOOS == "darwin" {
-		a.println(a.msg("本功能管理当前 Mac 的系统级 HTTP/HTTPS/SOCKS 代理：不会读取或连接 VPS。配置前自动保存每个可用网络服务的原设置，同时关闭 PAC/WPAD；撤销时完整恢复；修改系统代理时只会出现 macOS 自己的管理员授权框。", "This feature manages the Mac system-wide HTTP/HTTPS/SOCKS proxy and never reads or connects to a VPS. It saves each readable service before configuration, disables PAC/WPAD, and restores everything on removal; macOS may show its own administrator authorization dialog for the system change."))
+		a.println(a.msg("本功能只管理当前 Mac 的系统级 HTTP/HTTPS/SOCKS 代理：不会读取或连接 VPS，也不会安装、启动、停止或拆除 v2rayN/sing-box/Clash 等第三方 TUN。配置前自动保存每个可用网络服务的原设置，同时关闭 PAC/WPAD；撤销时仅恢复本工具保存且仍由本工具接管的快照。", "This feature manages only the Mac system-wide HTTP/HTTPS/SOCKS proxy and never reads or connects to any VPS. It does not install, start, stop, or remove third-party TUN clients such as v2rayN, sing-box, or Clash. It saves each readable service before configuration and disables PAC/WPAD; removal restores only a snapshot saved by this tool while the tool still owns the settings."))
 	} else if runtime.GOOS != "windows" {
 		a.println(a.msg("macOS/Linux 只能影响本工具及其子进程；无法替父 shell 持久写入环境。", "On macOS/Linux this affects only this tool and its child processes; it cannot persistently modify the parent shell."))
 		a.println(a.msg("本功能只修改本工具进程的代理环境变量，不会询问或连接任何 VPS。", "This feature only changes proxy environment variables for this tool process. It never asks for or connects to any VPS."))

@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +62,83 @@ type macOSProxyState struct {
 	Endpoint string                   `json:"endpoint"`
 	Captured string                   `json:"capturedAt"`
 	Services []macOSProxyServiceState `json:"services"`
+}
+
+type macOSLocalProxyRuntime struct {
+	ListenerPIDs  []string
+	HTTPConnect   bool
+	SOCKS5        bool
+	TUNInterfaces []string
+	TUNProcesses  []string
+}
+
+func probeLocalHTTPProxy() bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", macOSProxyServer, macOSProxyPort), 2*time.Second)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := fmt.Fprintf(conn, "CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1:9\r\n\r\n"); err != nil {
+		return false
+	}
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	return err == nil && n >= 5 && bytes.HasPrefix(buf[:n], []byte("HTTP/"))
+}
+
+func probeLocalSOCKS5() bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", macOSProxyServer, macOSProxyPort), 2*time.Second)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		return false
+	}
+	response := make([]byte, 2)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return false
+	}
+	return response[0] == 0x05 && response[1] != 0xff
+}
+
+func inspectMacOSLocalProxyRuntime() macOSLocalProxyRuntime {
+	status := macOSLocalProxyRuntime{}
+	if runtime.GOOS != "darwin" {
+		return status
+	}
+	if result := runCaptured("/usr/sbin/lsof", []string{"-nP", "-iTCP:10808", "-sTCP:LISTEN", "-t"}, nil, true); result.OK() {
+		for _, line := range strings.Fields(result.Stdout) {
+			if line != "" {
+				status.ListenerPIDs = append(status.ListenerPIDs, line)
+			}
+		}
+	}
+	if result := runCaptured("/sbin/ifconfig", []string{"-l"}, nil, true); result.OK() {
+		for _, name := range strings.Fields(result.Stdout) {
+			if strings.HasPrefix(name, "utun") {
+				status.TUNInterfaces = append(status.TUNInterfaces, name)
+			}
+		}
+	}
+	if len(status.TUNInterfaces) > 0 {
+		if result := runCaptured("/bin/ps", []string{"-axo", "comm="}, nil, true); result.OK() {
+			seen := map[string]bool{}
+			for _, line := range strings.Split(result.Stdout, "\n") {
+				line = strings.TrimSpace(line)
+				lower := strings.ToLower(line)
+				if (strings.Contains(lower, "v2ray") || strings.Contains(lower, "sing-box") || strings.Contains(lower, "mihomo") || strings.Contains(lower, "clash") || strings.Contains(lower, "surge") || strings.Contains(lower, "loon")) && !seen[line] {
+					status.TUNProcesses = append(status.TUNProcesses, line)
+					seen[line] = true
+				}
+			}
+		}
+	}
+	status.HTTPConnect = probeLocalHTTPProxy()
+	status.SOCKS5 = probeLocalSOCKS5()
+	return status
 }
 
 // localProxyEnvBefore is process-only bookkeeping.  It is intentionally not
@@ -745,10 +824,24 @@ func (a *App) showMacOSProxyStatus() error {
 	} else {
 		a.println(a.msg("  尚未保存恢复快照；首次配置会先保存当前设置。", "  No restore snapshot exists; the first configure action saves the current settings first."))
 	}
+	runtimeStatus := inspectMacOSLocalProxyRuntime()
 	if tcpReachable("127.0.0.1", macOSProxyPort) {
-		a.println(a.msg("[GOOD] 127.0.0.1:10808 当前有程序监听。", "[GOOD] A program is listening on 127.0.0.1:10808."))
+		if runtimeStatus.HTTPConnect || runtimeStatus.SOCKS5 {
+			a.println(a.msg("[GOOD] 127.0.0.1:10808 监听正常，协议探针通过：HTTP CONNECT="+boolToChineseState(runtimeStatus.HTTPConnect)+"，SOCKS5="+boolToChineseState(runtimeStatus.SOCKS5)+"。", "[GOOD] 127.0.0.1:10808 is listening and protocol probes passed: HTTP CONNECT="+boolToEnglishState(runtimeStatus.HTTPConnect)+", SOCKS5="+boolToEnglishState(runtimeStatus.SOCKS5)+"."))
+		} else {
+			a.println(a.msg("[WARN] 127.0.0.1:10808 有监听但 HTTP CONNECT 与 SOCKS5 探针均失败；可能只是占用端口的其他程序。", "[WARN] 127.0.0.1:10808 is listening, but both HTTP CONNECT and SOCKS5 probes failed; another program may own the port."))
+		}
+		if len(runtimeStatus.ListenerPIDs) > 0 {
+			a.println("  " + a.msg("监听 PID：", "Listener PID(s):") + strings.Join(runtimeStatus.ListenerPIDs, ","))
+		}
 	} else {
 		a.println(a.msg("[WARN] 127.0.0.1:10808 当前没有程序监听；系统代理仍会生效，但请求会失败。", "[WARN] Nothing is listening on 127.0.0.1:10808; the system proxy will still be active, but requests will fail."))
+	}
+	if len(runtimeStatus.TUNInterfaces) > 0 {
+		a.println(a.msg("[WARN] 检测到 TUN 接口 "+strings.Join(runtimeStatus.TUNInterfaces, ", ")+"；系统代理设置与 TUN 是两层，DNS/公网出口可能由 TUN 接管。本工具不会关闭或拆除第三方 TUN。", "[WARN] TUN interface(s) detected: "+strings.Join(runtimeStatus.TUNInterfaces, ", ")+". System proxy and TUN are separate layers; DNS/public egress may be owned by TUN. This tool will not stop or remove a third-party TUN."))
+	}
+	if len(runtimeStatus.TUNProcesses) > 0 {
+		a.println("  " + a.msg("发现相关外部 TUN/代理进程：", "Detected related external TUN/proxy process(es):") + strings.Join(runtimeStatus.TUNProcesses, "; "))
 	}
 	return nil
 }
@@ -757,6 +850,10 @@ func (a *App) configureMacOSProxy() error {
 	services, err := discoverMacOSProxyServices()
 	if err != nil {
 		return err
+	}
+	runtimeStatus := inspectMacOSLocalProxyRuntime()
+	if len(runtimeStatus.TUNInterfaces) > 0 {
+		a.println(a.msg("[WARN] 当前检测到 "+strings.Join(runtimeStatus.TUNInterfaces, ", ")+"；这通常表示第三方 TUN 正在接管路由。本操作只配置 macOS 系统代理，不会安装、停止或拆除 TUN。", "[WARN] Detected "+strings.Join(runtimeStatus.TUNInterfaces, ", ")+". A third-party TUN may own routing. This action changes only macOS system proxy settings and will not install, stop, or remove the TUN."))
 	}
 	for _, service := range services {
 		if service.Web.Authenticated || service.SecureWeb.Authenticated || service.Socks.Authenticated {
@@ -826,6 +923,20 @@ func (a *App) configureMacOSProxy() error {
 	if err := verifyMacOSProxyServices(services, true); err != nil {
 		return fmt.Errorf("macOS 系统代理回读验证失败：%w", err)
 	}
+	runtimeStatus = inspectMacOSLocalProxyRuntime()
+	if !runtimeStatus.HTTPConnect && !runtimeStatus.SOCKS5 {
+		restoreCommands, restoreErr := macOSProxyRestoreCommands(state)
+		if restoreErr != nil {
+			return fmt.Errorf("127.0.0.1:10808 协议探针失败，无法生成原系统代理恢复命令：%w", restoreErr)
+		}
+		if restoreErr = runMacOSAdminCommands(restoreCommands); restoreErr != nil {
+			return fmt.Errorf("127.0.0.1:10808 协议探针失败，且自动恢复原系统代理失败：%w", restoreErr)
+		}
+		if verifyErr := verifyMacOSProxyServices(state.Services, false); verifyErr != nil {
+			return fmt.Errorf("127.0.0.1:10808 协议探针失败，原系统代理恢复后回读失败：%w", verifyErr)
+		}
+		return errors.New("127.0.0.1:10808 未通过 HTTP CONNECT 或 SOCKS5 协议探针；已保留快照，请先启动兼容的 mixed/HTTP/SOCKS 代理后重试")
+	}
 	rememberAndSetLocalProxyEnvironment()
 	a.println(a.msg("[GOOD] 已将当前可用 macOS 网络服务的 HTTP/HTTPS/SOCKS 系统代理强制设为 127.0.0.1:10808，并关闭 PAC/WPAD，完成回读验证。", "[GOOD] HTTP/HTTPS/SOCKS system proxy is now forced to 127.0.0.1:10808 for every readable macOS network service; PAC/WPAD were disabled and read-back verification passed."))
 	return a.showMacOSProxyStatus()
@@ -838,6 +949,20 @@ func (a *App) removeMacOSProxy() error {
 	}
 	if !exists {
 		return errors.New("没有可恢复的 macOS 代理快照；为避免误删用户原设置，未修改系统代理。请先用本工具完成一次配置，或在系统设置中手动恢复")
+	}
+	current, currentErr := discoverMacOSProxyServices()
+	if currentErr != nil {
+		return fmt.Errorf("无法确认当前系统代理仍由本工具接管；快照保留，未执行恢复：%w", currentErr)
+	}
+	currentByName := make(map[string]macOSProxyServiceState, len(current))
+	for _, service := range current {
+		currentByName[service.Name] = service
+	}
+	for _, saved := range state.Services {
+		service, ok := currentByName[saved.Name]
+		if !ok || !macOSProxyServiceForced(service) {
+			return fmt.Errorf("网络服务 %q 已被其他设置改变；为避免覆盖新代理，未执行恢复，快照保留", saved.Name)
+		}
 	}
 	commands, err := macOSProxyRestoreCommands(state)
 	if err != nil {

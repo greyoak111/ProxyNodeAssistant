@@ -328,9 +328,9 @@ APPLY
 
 ### `[14]` macOS 系统级 HTTP/HTTPS/SOCKS 代理：127.0.0.1:10808
 
-此项不登录 VPS，也不自动证明 `127.0.0.1:10808` 上的程序可信。
+此项不登录 VPS。它会做 HTTP CONNECT/SOCKS5 最小协议探针并显示监听 PID，但不会把第三方监听器认领为本工具资产。
 
-macOS 原生 GUI 和 Darwin CLI 的 `[14]` 会把 macOS 系统网络服务的 HTTP、HTTPS 与 SOCKS 代理切换到固定地址 `127.0.0.1:10808`，并关闭 PAC/WPAD 自动接管。配置前先保存当前每个可用网络服务的完整代理设置；选择撤销或恢复时，按这份保存内容还原原设置。修改系统网络设置时只请求 macOS 管理员授权，不读取 VPS 地址、SSH 用户或密码，不建立 SSH 连接，也不设置 `HTTP_PROXY`、`HTTPS_PROXY` 或 `NO_PROXY` 环境变量。
+macOS 原生 GUI 和 Darwin CLI 的 `[14]` 会把 macOS 系统网络服务的 HTTP、HTTPS 与 SOCKS 代理切换到固定地址 `127.0.0.1:10808`，并关闭 PAC/WPAD 自动接管。配置前先保存当前每个可用网络服务的完整代理设置；恢复前会确认这些服务仍保持本工具强制态，再按快照还原原设置。状态页会显示监听 PID、HTTP CONNECT/SOCKS5 协议探针以及 `utun*`/疑似第三方 TUN；第三方 v2rayN、sing-box、Clash 或其 10808 后端不由本工具安装、停止或拆除。没有本工具快照时不会伪造恢复点，也不会覆盖外部设置。修改系统网络设置时只请求 macOS 管理员授权，不读取 VPS 地址、SSH 用户或密码，不建立 SSH 连接，也不设置 `HTTP_PROXY`、`HTTPS_PROXY` 或 `NO_PROXY` 环境变量。
 
 Windows 的 `[14]` 仍管理当前用户的 `HTTP_PROXY`、`HTTPS_PROXY` 与 `NO_PROXY`；Android 的 `[14]` 是独立的应用内开关，只让本应用的服务商 API 请求经 `10808`，不接管 SSH，也不修改 Android 系统 VPN/代理。
 
