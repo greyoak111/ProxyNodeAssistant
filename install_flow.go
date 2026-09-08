@@ -568,7 +568,22 @@ func (a *App) retireLegacyDeviceDriveIfPresent(c Connection, forceLegacyV095Audi
 	// The retirement worker is intentionally still the v0.9.5 worker and owns
 	// the legacy /etc/text-node-assistant namespace.  Probe both namespaces so
 	// a renamed v1 client does not miss an old device-gate/drive installation.
-	probe := a.rootCapture(c, "present=0; for path in /etc/text-node-assistant/device-registry.json /etc/text-node-assistant/private-drive.env /etc/systemd/system/text-node-assistant-copyparty.service /opt/text-node-assistant/copyparty /etc/proxy-node-assistant/device-registry.json /etc/proxy-node-assistant/private-drive.env /etc/systemd/system/proxy-node-assistant-copyparty.service /opt/proxy-node-assistant/copyparty /etc/nginx/sites-available/tna-private-drive; do if [ -e \"$path\" ]; then present=1; fi; done; if grep -RqsE '[[:space:]](text-node-assistant-device|proxy-node-assistant-device):[^[:space:]]+[[:space:]]*$' /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys 2>/dev/null; then present=1; fi; printf 'TNA_RETIRED_FEATURES_PRESENT=%s\\n' \"$present\"")
+	probe := a.rootCapture(c, "present=0; for path in "+
+		"/etc/text-node-assistant/device-registry.json /etc/text-node-assistant/private-drive.env "+
+		"/etc/systemd/system/text-node-assistant-copyparty.service /opt/text-node-assistant/copyparty "+
+		"/etc/proxy-node-assistant/device-registry.json /etc/proxy-node-assistant/private-drive.env "+
+		"/etc/systemd/system/proxy-node-assistant-copyparty.service /opt/proxy-node-assistant/copyparty "+
+		"/etc/proxy-runbook/device-registry.json /etc/proxy-runbook/private-drive.env "+
+		"/etc/proxy-runbook/copyparty.conf /etc/proxy-runbook/drive-accounts.tsv "+
+		"/etc/proxy-runbook/drive-credential-escrow /etc/proxy-runbook/candidates/private-drive-production.conf "+
+		"/etc/proxy-runbook/candidates/private-drive-production.conf.sha256 "+
+		"/etc/systemd/system/proxy-runbook-copyparty.service /opt/proxy-runbook/copyparty "+
+		"/var/lib/proxy-runbook/copyparty /var/log/proxy-runbook/copyparty "+
+		"/var/lib/proxy-runbook/drive-transaction.lock /etc/proxy-runbook/.private-drive.* "+
+		"/etc/nginx/sites-available/tna-private-drive; do if [ -e \"$path\" ] || [ -L \"$path\" ]; then present=1; fi; done; "+
+		"if grep -RqsE '[[:space:]](text-node-assistant-device|proxy-node-assistant-device):[^[:space:]]+[[:space:]]*$' "+
+		"/root/.ssh/authorized_keys /home/*/.ssh/authorized_keys 2>/dev/null; then present=1; fi; "+
+		"printf 'TNA_RETIRED_FEATURES_PRESENT=%s\\n' \"$present\"")
 	if !probe.OK() {
 		return fmt.Errorf("legacy feature inspection failed (exit %d): %s", probe.ExitCode, processFailureDetail(probe))
 	}

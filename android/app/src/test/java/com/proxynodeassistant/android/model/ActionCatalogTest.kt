@@ -12,11 +12,14 @@ class ActionCatalogTest {
 
         assertTrue(local.titleZh.contains("本机 IP"))
         assertTrue(local.titleZh.contains("添加"))
+        assertTrue(local.descriptionZh.contains("OP:24"))
         assertTrue(manager.titleZh.contains("管理 SS2022 白名单"))
+        assertTrue(manager.titleZh.contains("OP:19"))
         assertTrue(manager.descriptionZh.contains("查看"))
         assertTrue(manager.descriptionZh.contains("添加"))
         assertTrue(manager.descriptionZh.contains("删除"))
         assertTrue(manager.descriptionZh.contains("不接受 CIDR"))
+        assertTrue(manager.descriptionEn.contains("freely add/remove"))
     }
 
     @Test

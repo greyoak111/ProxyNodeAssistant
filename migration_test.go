@@ -57,6 +57,51 @@ func TestLegacyLocalMigrationIsCopyFirstAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestLegacyKeyMigrationRescansAfterCompletedJournal(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, "legacy")
+	current := filepath.Join(root, "current")
+	home := filepath.Join(root, "home")
+	t.Setenv("TNA_LEGACY_CONFIG_ROOT", legacy)
+	t.Setenv("TNA_CONFIG_ROOT", current)
+	t.Setenv("TNA_DISABLE_CREDENTIAL_MIGRATION", "1")
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(legacy, 0700); err != nil {
+		t.Fatal(err)
+	}
+	firstKey := filepath.Join(home, ".ssh", "text-node-assistant", "first-root", "id_ed25519")
+	if err := os.MkdirAll(filepath.Dir(firstKey), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(firstKey, []byte("first"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrateLegacyLocalState(); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a key imported/bound after the initial v1 startup. The journal
+	// is already complete, so this specifically exercises the incremental scan.
+	laterKey := filepath.Join(home, ".ssh", "text-node-assistant", "later-root", "id_ed25519")
+	if err := os.MkdirAll(filepath.Dir(laterKey), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(laterKey, []byte("later"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	record, err := migrateLegacyLocalState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(record.Copied) == 0 {
+		t.Fatalf("completed migration did not report the newly discovered key: %#v", record)
+	}
+	migrated := filepath.Join(home, ".ssh", "proxy-runbook", "later-root", "id_ed25519")
+	if _, err := os.Stat(migrated); err != nil {
+		t.Fatalf("new legacy key was not copied after journal completion: %v", err)
+	}
+}
+
 func TestLegacyConfigMigrationSkipsRetiredDriveAndAdmissionState(t *testing.T) {
 	root := t.TempDir()
 	legacy := filepath.Join(root, "legacy")
