@@ -15,7 +15,7 @@ func TestPanelPreflightUsesOneSSHInvocation(t *testing.T) {
 		"n=0; [ -r '" + countPath + "' ] && n=$(cat '" + countPath + "'); n=$((n+1)); printf '%s' \"$n\" > '" + countPath + "'\n" +
 		"cat <<'EOF'\n" +
 		"__PNA_TOOLKIT_PROBE_BEGIN__\n" +
-		"TOOLKIT_PRESENT=1\nTOOLKIT_VERSION=1.0.0\nTOOLKIT_BUILD_ID=20260901-v100-ss2022-r112\nTOOLKIT_BUILD_REVISION=112\nTOOLKIT_COMPLETE=1\n" +
+		"TOOLKIT_PRESENT=1\nTOOLKIT_VERSION=1.0.0\nTOOLKIT_BUILD_ID=20260901-v100-ss2022-r113\nTOOLKIT_BUILD_REVISION=113\nTOOLKIT_COMPLETE=1\n" +
 		"__PNA_TOOLKIT_PROBE_END__\n" +
 		"__PNA_PANEL_META_BEGIN__\nPANEL_PORT=2053\nWEB_BASE_PATH=/panel/\nPANEL_METADATA_SOURCE=fixture\n__PNA_PANEL_META_END__\n" +
 		"__PNA_HANDOFF_BEGIN__\nHANDOFF_RUN_STARTED=fixture\nPANEL_PORT=2053\n__PNA_HANDOFF_END__\n" +

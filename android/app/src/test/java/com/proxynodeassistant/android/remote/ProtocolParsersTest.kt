@@ -153,7 +153,7 @@ class ProtocolParsersTest {
     }
 
     @Test fun toolkitProbeAndVersionComparisonAreStrict() {
-        val value = "${ProtocolParsers.TOOLKIT_BEGIN}\nTOOLKIT_PRESENT=1\nTOOLKIT_VERSION=v1.0.0\nTOOLKIT_BUILD_ID=20260901-v100-ss2022-r112\nTOOLKIT_BUILD_REVISION=112\nTOOLKIT_COMPLETE=1\n${ProtocolParsers.TOOLKIT_END}"
+        val value = "${ProtocolParsers.TOOLKIT_BEGIN}\nTOOLKIT_PRESENT=1\nTOOLKIT_VERSION=v1.0.0\nTOOLKIT_BUILD_ID=20260901-v100-ss2022-r113\nTOOLKIT_BUILD_REVISION=113\nTOOLKIT_COMPLETE=1\n${ProtocolParsers.TOOLKIT_END}"
         val probe = ProtocolParsers.toolkit(value)
         assertTrue(probe.installed)
         assertTrue(probe.complete)

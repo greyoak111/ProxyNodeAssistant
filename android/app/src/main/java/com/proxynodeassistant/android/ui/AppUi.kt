@@ -36,6 +36,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -96,6 +98,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -486,6 +489,16 @@ private fun PromptPanel(prompt: WorkflowPrompt, language: Language, submit: (Str
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text(prompt.placeholder) },
                 visualTransformation = if (prompt.kind == PromptKind.SECRET) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+                keyboardOptions = if (prompt.kind == PromptKind.TEXT) {
+                    KeyboardOptions.Default
+                } else {
+                    KeyboardOptions.Default.copy(imeAction = ImeAction.Done)
+                },
+                keyboardActions = if (prompt.kind == PromptKind.TEXT) {
+                    KeyboardActions.Default
+                } else {
+                    KeyboardActions(onDone = { submit(input) })
+                },
                 singleLine = prompt.kind != PromptKind.TEXT,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
