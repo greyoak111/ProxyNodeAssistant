@@ -859,6 +859,14 @@ namespace ProxyNodeAssistant.Gui
         private static bool UsesStandardRemoteForm(OperationInfo operation)
         {
             if (operation == null) return false;
+            // IP rebind is intentionally a pre-connect workflow.  The old
+            // endpoint may already be unreachable after a provider assigns a
+            // new address, and the backend selects the original node from
+            // the locally bound stable-key inventory before connecting to the
+            // new endpoint.  Showing the ordinary target/auth form here was
+            // misleading (its values were ignored) and could make operators
+            // enter the new IP only to have the backend ask for it again.
+            if (operation.Id.Equals("23", StringComparison.OrdinalIgnoreCase)) return false;
             return operation.Id != "12" && operation.Id != "14" &&
                    !operation.Id.Equals("T", StringComparison.OrdinalIgnoreCase) &&
                    !operation.Id.Equals("K", StringComparison.OrdinalIgnoreCase) &&
