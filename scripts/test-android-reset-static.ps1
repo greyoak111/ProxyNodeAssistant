@@ -21,7 +21,7 @@ function Assert-NoMatch([string]$text, [string]$pattern, [string]$message) {
 $gradle = Read-RepoFile "android/app/build.gradle.kts"
 Assert-Match $gradle 'namespace\s*=\s*"com\.proxynodeassistant\.android"' "Android namespace changed; legacy upgrade compatibility would break"
 Assert-Match $gradle 'applicationId\s*=\s*"com\.proxynodeassistant\.android"' "Android applicationId changed; in-place upgrades would break"
-Assert-Match $gradle 'versionCode\s*=\s*1000000' "Android versionCode is not the v1.0.0 release code"
+Assert-Match $gradle 'versionCode\s*=\s*1000001' "Android versionCode is not the repaired v1.0.0 release code"
 Assert-Match $gradle 'versionName\s*=\s*"1\.0\.0"' "Android visible version is not v1.0.0"
 
 $workflow = Read-RepoFile "android/app/src/main/java/com/proxynodeassistant/android/remote/WorkflowRunner.kt"

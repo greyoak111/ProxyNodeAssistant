@@ -13,7 +13,9 @@ android {
         targetSdk = 36
         // Keep the applicationId stable for in-place upgrades. The code is
         // monotonically above every pre-reset 0.9.x Android build.
-        versionCode = 1000000
+        // Keep the visible release at 1.0.0 while allowing this repaired APK
+        // to install over the original 1.0.0 package on Android.
+        versionCode = 1000001
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
