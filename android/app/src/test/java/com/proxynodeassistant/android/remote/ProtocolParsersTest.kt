@@ -157,7 +157,7 @@ class ProtocolParsersTest {
         val probe = ProtocolParsers.toolkit(value)
         assertTrue(probe.installed)
         assertTrue(probe.complete)
-        assertEquals(112, probe.buildRevision)
+        assertEquals(113, probe.buildRevision)
         assertTrue(ProtocolParsers.compareVersions("0.10.0", "0.9.9") > 0)
         assertEquals(0, ProtocolParsers.compareVersions("v0.9", "0.9.0"))
     }
