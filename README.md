@@ -8,6 +8,15 @@
 
 [完整使用说明书](ProxyNodeAssistant-v1.0.0-完整使用说明书.md) · [从零部署教程](ProxyNodeAssistant-v1.0.0-从零部署教程.md) · [更新说明](ProxyNodeAssistant-v1.0.0-更新说明.md) · [Android 手册](ANDROID.md) · [构建说明](BUILD.md) · [MIT License](LICENSE)
 
+## 架构
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/proxynodeassistant-architecture-dark.png">
+  <img alt="ProxyNodeAssistant 架构：macOS 与 Windows 界面通过 --gui-action 调用 Go 核心，核心经 OpenSSH 上传运维工具包；Android 用内置 SSH 直连；工具包在 VPS 上安装并验证 3x-ui + Xray（Reality）与 Nginx（XHTTP），Cloudflare CDN 可选回源到 Nginx；macOS 的菜单 14 管理系统代理" src="docs/diagrams/proxynodeassistant-architecture-light.png">
+</picture>
+
+可交互版本（引导视图、深浅色、导出）：下载 [`docs/diagrams/proxynodeassistant-architecture.html`](docs/diagrams/proxynodeassistant-architecture.html) 用浏览器打开；图的源文件是同目录的 `proxynodeassistant-architecture.json`。图由 [Archify](https://github.com/tt-a1i/archify) 生成。
+
 ## 重置后的产品边界
 
 ProxyNodeAssistant 只做一件事：在本人拥有或获得明确授权的 VPS 上，以可审计、可回滚、失败即停的方式管理节点。
@@ -159,6 +168,10 @@ open ~/Applications/ProxyNodeAssistant.app
 - 推荐：KVM、1 GB 以上内存、10 GB 以上磁盘、可用的服务商 Console/VNC 救援入口。
 
 源码构建见 [BUILD.md](BUILD.md) 和 [ANDROID.md](ANDROID.md)。发布前必须扫描源码、EXE/APK、内嵌 tar 及说明文档，确认没有真实部署数据或私钥。
+
+## 特别鸣谢
+
+- **[Archify](https://github.com/tt-a1i/archify)**（tt-a1i，MIT）：上面的架构图用它生成，并通过了它的布局校验和视觉检查。Archify 只用于文档，不是本工具的组成部分；许可证见 [`ThirdPartyLicenses/Archify/LICENSE`](ThirdPartyLicenses/Archify/LICENSE)。
 
 ## 使用声明
 

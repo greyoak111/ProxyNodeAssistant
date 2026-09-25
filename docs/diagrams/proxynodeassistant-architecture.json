@@ -1,0 +1,279 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ProxyNodeAssistant 架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "deploy",
+        "label": "部署路径",
+        "focus": [
+          "mac",
+          "win",
+          "cli",
+          "toolkit",
+          "xui",
+          "nginx"
+        ],
+        "note": "界面调用 Go 核心，核心经 SSH 上传工具包，工具包在 VPS 上安装、备份、验证，失败即回滚。"
+      },
+      {
+        "id": "android",
+        "label": "Android",
+        "focus": [
+          "android",
+          "toolkit"
+        ],
+        "note": "Android 用内置 SSH 引擎直连 VPS，凭据放在 Android Keystore。"
+      },
+      {
+        "id": "routes",
+        "label": "双线路",
+        "focus": [
+          "xui",
+          "nginx",
+          "cdn"
+        ],
+        "note": "灰线：Reality 直连 :24443；橙线：Cloudflare CDN 经 Nginx XHTTP :8443。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "mac",
+      "type": "frontend",
+      "label": "macOS 应用",
+      "sublabel": "SwiftUI · PTY 中继",
+      "pos": [
+        40,
+        90
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "sysproxy",
+      "type": "frontend",
+      "label": "系统代理",
+      "sublabel": "networksetup · 快照恢复",
+      "pos": [
+        290,
+        315
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "win",
+      "type": "frontend",
+      "label": "Windows 应用",
+      "sublabel": "WPF · AskPass",
+      "pos": [
+        40,
+        240
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "Go 核心 CLI",
+      "sublabel": "计划 · 事务 · 校验",
+      "pos": [
+        290,
+        165
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "android",
+      "type": "frontend",
+      "label": "Android 应用",
+      "sublabel": "Compose · 内置 SSH",
+      "pos": [
+        40,
+        390
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "toolkit",
+      "type": "backend",
+      "label": "运维工具包",
+      "sublabel": "预检 · 备份 · 安装 · 回滚",
+      "pos": [
+        590,
+        240
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "xui",
+      "type": "backend",
+      "label": "3x-ui + Xray",
+      "sublabel": "Reality :24443",
+      "pos": [
+        850,
+        90
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "nginx",
+      "type": "backend",
+      "label": "Nginx",
+      "sublabel": "XHTTP :8443",
+      "pos": [
+        850,
+        390
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "cdn",
+      "type": "cloud",
+      "label": "Cloudflare CDN",
+      "sublabel": "橙线 · 可选",
+      "pos": [
+        1100,
+        390
+      ],
+      "size": [
+        160,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "本机 / 手机",
+      "wraps": [
+        "mac",
+        "win",
+        "android",
+        "cli",
+        "sysproxy"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "VPS · Ubuntu / Debian",
+      "wraps": [
+        "toolkit",
+        "xui",
+        "nginx"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "mac-cli",
+      "from": "mac",
+      "to": "cli",
+      "label": "--gui-action",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "win-cli",
+      "from": "win",
+      "to": "cli",
+      "label": "--gui-action",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "cli-ssh",
+      "from": "cli",
+      "to": "toolkit",
+      "label": "OpenSSH · 上传",
+      "variant": "emphasis"
+    },
+    {
+      "id": "android-ssh",
+      "from": "android",
+      "to": "toolkit",
+      "label": "SSH",
+      "variant": "emphasis"
+    },
+    {
+      "id": "cli-proxy",
+      "from": "cli",
+      "to": "sysproxy",
+      "label": "菜单 14",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "install-xui",
+      "from": "toolkit",
+      "to": "xui",
+      "label": "安装 · 验证"
+    },
+    {
+      "id": "install-nginx",
+      "from": "toolkit",
+      "to": "nginx",
+      "label": "暂存 · 验证"
+    },
+    {
+      "id": "cdn-origin",
+      "from": "cdn",
+      "to": "nginx",
+      "label": "回源"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "本机",
+      "items": [
+        "界面只负责交互，操作都由 Go 核心执行",
+        "Android 用内置 SSH 引擎，凭据放 Keystore"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "VPS",
+      "items": [
+        "先预检和备份，确认计划需输入 APPLY",
+        "任何一步失败即停止并回滚"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "隐私",
+      "items": [
+        "凭据放系统钥匙串 / 凭据管理器 / Keystore",
+        "密码不进日志和历史；交付信息验证通过后才输出"
+      ]
+    }
+  ]
+}
