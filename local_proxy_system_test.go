@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -141,7 +142,11 @@ func TestMacOSProxyStateRoundTripIsUserPrivateAndContainsNoPassword(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
+	// Windows has no POSIX permission bits: Go reports 0666 for a writable file and 0444
+	// for a read-only one, so 0600 is unachievable there by construction. On Windows the
+	// privacy contract is carried by ACLs, which this test does not inspect. The
+	// round-trip and no-password assertions below still run on every platform.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("state file mode is %o, want 0600", info.Mode().Perm())
 	}
 	data, err := os.ReadFile(path)

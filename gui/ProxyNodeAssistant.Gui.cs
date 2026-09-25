@@ -94,6 +94,18 @@ namespace ProxyNodeAssistant.Gui
         [DllImport("kernel32.dll")]
         private static extern void GetNativeSystemInfo(out NativeSystemInfo systemInfo);
 
+        // GetNativeSystemInfo answers with the architecture a process is EMULATED as, not the
+        // machine it is really running on -- documented Microsoft behaviour.  On ARM64 Windows
+        // an AnyCPU .NET Framework app can land in an x64-emulated process, so the host reads
+        // as "x64" and the payload preflight below would reject this file's own ARM64 engine.
+        // IsWow64Process2 reports the true native machine, which is what the check needs.
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
         private sealed class RuntimeFiles
         {
             public string CliPath;
@@ -1466,6 +1478,27 @@ namespace ProxyNodeAssistant.Gui
 
         private static string NativeWindowsArchitecture()
         {
+            // Ask the kernel for the REAL native machine first.  Inside an emulated process
+            // GetNativeSystemInfo answers with the emulated architecture, which makes an ARM64
+            // host look like x64 and breaks the payload preflight for the ARM64 build.
+            try
+            {
+                ushort processMachine;
+                ushort nativeMachine;
+                if (IsWow64Process2(GetCurrentProcess(), out processMachine, out nativeMachine))
+                {
+                    switch (nativeMachine)
+                    {
+                        case ImageFileMachineArm64: return "ARM64";
+                        case ImageFileMachineAmd64: return "x64";
+                        case ImageFileMachineI386: return "x86";
+                    }
+                }
+            }
+            catch
+            {
+                // Fall through to the older probes below.
+            }
             try
             {
                 NativeSystemInfo systemInfo;

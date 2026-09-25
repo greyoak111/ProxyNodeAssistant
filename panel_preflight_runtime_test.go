@@ -3,11 +3,15 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestPanelPreflightUsesOneSSHInvocation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell ssh fixture")
+	}
 	dir := t.TempDir()
 	countPath := filepath.Join(dir, "count")
 	script := filepath.Join(dir, "ssh-fixture")

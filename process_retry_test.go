@@ -28,6 +28,9 @@ func TestHasControlSocketArgsRecognizesOpenSSHForms(t *testing.T) {
 }
 
 func TestRunCapturedRetriesStaleControlSocketFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix control sockets")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "ssh-fixture")
 	count := filepath.Join(dir, "count")
@@ -65,6 +68,9 @@ func TestRunCapturedRetriesStaleControlSocketFailure(t *testing.T) {
 }
 
 func TestRunCapturedRetriesOnlyInitialControlTransportFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix control sockets")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "ssh-fixture")
 	count := filepath.Join(dir, "count")
